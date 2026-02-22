@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
 import type { z } from 'zod';
-import chalk from 'chalk';
 
 import type { AIRunner, AIRunnerOptions, AIPlatform, GenerateResult } from './ai-runner.js';
 import { extractJson } from './ai-runner.js';
@@ -71,7 +70,6 @@ export abstract class GitDiffRunner implements AIRunner {
       const child = spawn(this.binary, args, {
         cwd,
         stdio: ['inherit', 'pipe', 'inherit'],
-        env: { ...process.env },
       });
 
       let resultText = '';
@@ -85,11 +83,8 @@ export abstract class GitDiffRunner implements AIRunner {
         for (const line of lines) {
           if (!line.trim()) continue;
           resultText += line + '\n';
-          console.log(
-            chalk.dim(
-              `  ${this.logPrefix}: ${line.length > 100 ? line.slice(0, 97) + '...' : line}`,
-            ),
-          );
+          const display = line.length > 100 ? line.slice(0, 97) + '...' : line;
+          this.options.onLogLine?.(`  ${this.logPrefix}: ${display}`);
         }
       });
 

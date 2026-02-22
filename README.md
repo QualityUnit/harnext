@@ -144,7 +144,7 @@ This is the central quality gate. It runs a risk classification first, then cond
 | `test`             | Tier 2+     | Runs `vitest` with JUnit reporter. Uploads `test-results.xml` as artifact.                                                                                |
 | `build`            | Tier 2+     | Runs `npm run build` (tsup).                                                                                                                              |
 | `structural-tests` | Tier 2+     | Runs `scripts/structural-tests.sh` to validate architectural boundaries.                                                                                  |
-| `harness-smoke`    | Tier 2+     | Validates `harness.config.json` schema, checks CLAUDE.md exists, verifies critical files and workflow files are present.                                  |
+| `harness-smoke`    | Tier 2+     | Validates `harness.config.json` schema, checks agent instruction file exists, verifies critical files and workflow files are present.                     |
 | `manual-approval`  | Tier 3 only | Requires a maintainer to approve the `tier3-approval` environment. 24-hour timeout.                                                                       |
 
 All downstream jobs check out at the exact SHA reported by the risk gate (SHA discipline).
@@ -335,7 +335,7 @@ Three checks:
 Validates:
 
 - `harness.config.json` schema (version, riskTiers with tier1/2/3, commands, shaDiscipline, architecturalBoundaries).
-- CLAUDE.md is present and non-empty.
+- Agent instruction file (CLAUDE.md, KIRO.md, or CODEX.md) is present and non-empty.
 - Critical project files exist (src/index.ts, src/cli.ts, package.json, tsconfig.json, tsup.config.ts, vitest.config.ts, eslint.config.js).
 - CI workflow files exist.
 - PR template exists.
@@ -483,7 +483,7 @@ scripts/
     └── remediation-guard.ts    Remediation guard logic
 
 harness.config.json             Risk tiers, architectural boundaries, critical paths
-CLAUDE.md                       Project conventions for all agents
+CLAUDE.md / KIRO.md / CODEX.md  Project conventions for all agents (platform-specific)
 ```
 
 Changes to these files take effect on the next CI run. Because they are committed to the repo, agent behavior is versioned and shared with the whole team.

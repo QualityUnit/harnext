@@ -22,11 +22,11 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ### core
 
-- **Purpose**: The engine — stack detection, Claude SDK integration, configuration persistence, and file operation tracking.
-- **Contains**: `ClaudeRunner` (spawns `claude` CLI, parses stream-JSON, tracks Write/Edit operations), `detector.ts` (two-phase detection: `runHeuristicDetection` and `runFullDetection`), `config.ts` (`loadHarnessConfig`, `saveHarnessConfig`, `HarnessConfig` type), `file-writer.ts` (`FileWriter` class that tracks created vs modified files).
+- **Purpose**: The engine — stack detection, AI runner abstraction, configuration persistence, and file operation tracking.
+- **Contains**: `ai-runner.ts` (`AIRunner` interface, `AIPlatform` type, `INSTRUCTION_FILES` constant, `extractJson()`), `claude-runner.ts` (spawns `claude` CLI, parses stream-JSON, tracks Write/Edit operations), `git-diff-runner.ts` (abstract base for Kiro/Codex runners using git-diff file tracking), `kiro-runner.ts` (AWS Kiro runner), `codex-runner.ts` (OpenAI Codex runner), `runner-factory.ts` (`createRunner()` factory, `validatePlatformCLI()`), `detector.ts` (two-phase detection: `runHeuristicDetection` and `runFullDetection`), `config.ts` (`loadHarnessConfig`, `saveHarnessConfig`, `HarnessConfig` type), `file-writer.ts` (`FileWriter` class that tracks created vs modified files).
 - **Allowed dependencies**: `utils`
 - **Forbidden dependencies**: `ui`, `commands`, `prompts`, `providers`, `harnesses`. Core must never import UI components or harness-specific logic. This prevents circular dependencies and keeps the engine testable without terminal I/O.
-- **Public API**: `ClaudeRunner`, `FileWriter`, `DetectionResult`, `HeuristicResult`, `HarnessConfig`, detection functions, config functions.
+- **Public API**: `AIRunner`, `AIPlatform`, `createRunner`, `validatePlatformCLI`, `ClaudeRunner`, `GitDiffRunner`, `KiroRunner`, `CodexRunner`, `FileWriter`, `DetectionResult`, `HeuristicResult`, `HarnessConfig`, `INSTRUCTION_FILES`, detection functions, config functions.
 
 ### prompts
 
@@ -54,7 +54,7 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ### harnesses
 
-- **Purpose**: The 13 harness modules, each responsible for generating a specific set of artifacts (CI workflows, review-agent config, pre-commit hooks, etc.).
+- **Purpose**: The 16 harness modules, each responsible for generating a specific set of artifacts (CI workflows, review-agent config, pre-commit hooks, etc.).
 - **Contains**: `types.ts` (contracts: `HarnessModule`, `HarnessContext`, `HarnessOutput`, `UserPreferences`), `index.ts` (registry: `getHarnessModules()`, `getHarnessById()`), and one implementation file per harness (e.g., `risk-contract.ts`, `ci-pipeline.ts`, `review-agent.ts`).
 - **Allowed dependencies**: `core`, `prompts`, `providers`, `utils`
 - **Forbidden dependencies**: `ui`, `commands`. Harness modules must not produce terminal output directly — they return `HarnessOutput` objects and let the orchestrator (`commands/init.ts`) handle logging.

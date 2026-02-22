@@ -6,6 +6,7 @@ export interface AIRunnerOptions {
   maxTurns?: number;
   systemPrompt?: string;
   cwd?: string;
+  onLogLine?: (line: string) => void;
 }
 
 export interface GenerateResult {

@@ -36,8 +36,11 @@ const harnessChoices = allHarnesses.map((h) => ({ ... }));
 ```typescript
 export interface HarnessModule { ... }
 export interface DetectionResult { ... }
+export interface AIRunner { ... }
 export class ClaudeRunner { ... }
+export class GitDiffRunner { ... }
 export class FileWriter { ... }
+export class PlatformCLINotFoundError extends Error { ... }
 export class NotAGitRepoError extends Error { ... }
 ```
 

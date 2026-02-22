@@ -1,6 +1,6 @@
 # Architecture
 
-CodeFactory is a CLI tool that automates harness engineering setup for AI coding agents. It analyzes any Git repository, detects its technology stack, and generates 13 production-grade harness artifacts — CI workflows, review-agent integration, risk-tiered gates, documentation structures, and more.
+CodeFactory is a CLI tool that automates harness engineering setup for AI coding agents. It analyzes any Git repository, detects its technology stack, and generates 16 production-grade harness artifacts — CI workflows, review-agent integration, risk-tiered gates, documentation structures, and more.
 
 ## Project Structure
 
@@ -12,15 +12,20 @@ codefactory/
 │   ├── commands/             # CLI command handlers
 │   │   └── init.ts           # Main orchestration: detect → prompt → generate
 │   ├── core/                 # Engine: detection, generation, config, file tracking
-│   │   ├── claude-runner.ts  # Agent SDK wrapper (analyze + generate)
+│   │   ├── ai-runner.ts      # AIRunner interface and shared types
+│   │   ├── claude-runner.ts  # Claude Code runner (stream-json parsing)
+│   │   ├── kiro-runner.ts    # AWS Kiro runner (git-diff tracking)
+│   │   ├── codex-runner.ts   # OpenAI Codex runner (git-diff tracking)
+│   │   ├── git-diff-runner.ts # Abstract base for Kiro/Codex runners
+│   │   ├── runner-factory.ts # Platform-aware runner factory
 │   │   ├── config.ts         # harness.config.json loader/saver
 │   │   ├── detector.ts       # Two-phase stack detection (heuristic + Claude)
 │   │   └── file-writer.ts    # File creation/modification tracker
-│   ├── harnesses/            # 13 harness modules (HarnessModule interface)
+│   ├── harnesses/            # 16 harness modules (HarnessModule interface)
 │   │   ├── types.ts          # HarnessModule, HarnessContext, HarnessOutput contracts
 │   │   ├── index.ts          # Registry: getHarnessModules(), getHarnessById()
 │   │   └── *.ts              # One file per harness (risk-contract, ci-pipeline, etc.)
-│   ├── prompts/              # Prompt templates sent to Claude for each harness
+│   ├── prompts/              # Prompt templates sent to the AI runner for each harness
 │   │   ├── system.ts         # Shared system prompt (role, principles, risk model)
 │   │   ├── detect-stack.ts   # Stack detection prompt
 │   │   └── *.ts              # One prompt builder per harness
@@ -46,7 +51,7 @@ codefactory/
 │   └── integration/          # End-to-end init flow tests
 ├── dist/                     # Build output (tsup, ESM, shebang banner)
 ├── harness.config.json       # This project's own harness configuration
-├── CLAUDE.md                 # Agent instruction file for this project
+├── CLAUDE.md                 # Agent instruction file (or KIRO.md / CODEX.md)
 └── package.json              # ESM package with "bin": {"codefactory": "./dist/index.js"}
 ```
 
@@ -66,7 +71,7 @@ This pattern suits the project because:
 Key design principles:
 
 - **Interface-driven contracts**: `HarnessModule`, `CIProvider`, and `DetectionResult` define the contracts between layers.
-- **Dependency inversion**: Harness modules receive a `HarnessContext` (containing `ClaudeRunner`, `FileWriter`, and detection results) rather than constructing their own dependencies.
+- **Dependency inversion**: Harness modules receive a `HarnessContext` (containing an `AIRunner`, `FileWriter`, and detection results) rather than constructing their own dependencies.
 - **Fail-soft execution**: Each harness runs in a try/catch — a single harness failure logs a warning and does not abort the remaining harnesses.
 
 ## Component Diagram
@@ -75,7 +80,7 @@ Key design principles:
 graph TD
     CLI["cli.ts<br/>(Commander)"] --> Init["commands/init.ts<br/>(Orchestrator)"]
     Init --> Detector["core/detector.ts<br/>(Stack Detection)"]
-    Init --> Runner["core/claude-runner.ts<br/>(Agent SDK)"]
+    Init --> Runner["core/ai-runner.ts<br/>(Runner Factory)"]
     Init --> Config["core/config.ts<br/>(harness.config.json)"]
     Init --> FW["core/file-writer.ts<br/>(File Tracker)"]
     Init --> UI["ui/<br/>(Logger, Spinner, Prompts)"]
@@ -84,7 +89,7 @@ graph TD
     Registry --> H1["risk-contract"]
     Registry --> H2["claude-md"]
     Registry --> H3["docs-structure"]
-    Registry --> Hdots["... 10 more harnesses"]
+    Registry --> Hdots["... 13 more harnesses"]
 
     H1 --> Prompts["prompts/<br/>(Prompt Builders)"]
     H1 --> Runner
@@ -95,8 +100,8 @@ graph TD
 
     Prompts --> System["prompts/system.ts<br/>(Shared System Prompt)"]
 
-    Runner -->|"spawns"| Claude["Claude CLI<br/>(Agent SDK)"]
-    Claude -->|"stream-json"| Runner
+    Runner -->|"spawns"| AICLI["AI CLI<br/>(claude / kiro-cli / codex)"]
+    AICLI -->|"output"| Runner
 
     Detector --> Runner
     Detector --> Utils["utils/<br/>(fs, git, errors)"]
@@ -115,20 +120,20 @@ graph TD
 
 ### core
 
-- **Responsibility**: The engine — stack detection, Claude SDK integration, configuration I/O, and file tracking.
-- **Contains**: `ClaudeRunner` (spawns `claude` CLI with `--output-format stream-json`, parses JSONL, tracks file operations), `detector.ts` (two-phase: heuristic file checks + Claude-powered deep analysis via Zod-validated schema), `config.ts` (load/save `harness.config.json`), `file-writer.ts` (tracks created vs modified files).
+- **Responsibility**: The engine — stack detection, AI runner abstraction, configuration I/O, and file tracking.
+- **Contains**: `ai-runner.ts` (`AIRunner` interface, `AIPlatform` type, `INSTRUCTION_FILES` constant, `extractJson()` utility), `claude-runner.ts` (spawns `claude` CLI with `--output-format stream-json`, parses JSONL, tracks file operations), `git-diff-runner.ts` (abstract base for runners using git-diff file tracking), `kiro-runner.ts` (AWS Kiro runner), `codex-runner.ts` (OpenAI Codex runner), `runner-factory.ts` (`createRunner()` factory, `validatePlatformCLI()`), `detector.ts` (two-phase: heuristic file checks + AI-powered deep analysis via Zod-validated schema), `config.ts` (load/save `harness.config.json`), `file-writer.ts` (tracks created vs modified files).
 - **Allowed imports**: `utils`
 
 ### harnesses
 
-- **Responsibility**: The 13 harness modules, each generating a specific set of artifacts.
+- **Responsibility**: The 16 harness modules, each generating a specific set of artifacts.
 - **Contains**: `types.ts` (the `HarnessModule` interface with `name`, `order`, `isApplicable()`, `execute()`), `index.ts` (registry sorted by `order`), and one file per harness module.
 - **Allowed imports**: `core`, `prompts`, `providers`, `utils`
 
 ### prompts
 
-- **Responsibility**: Prompt templates sent to Claude for each harness generation step.
-- **Contains**: `system.ts` (shared system prompt establishing Claude's role, risk-tier model, and SHA discipline), `detect-stack.ts` (stack analysis prompt), and one prompt builder per harness module.
+- **Responsibility**: Prompt templates sent to the AI runner for each harness generation step.
+- **Contains**: `system.ts` (shared system prompt establishing the AI agent's role, risk-tier model, and SHA discipline), `agent-system.ts` (REPL agent system prompt), `detect-stack.ts` (stack analysis prompt), and one prompt builder per harness module.
 - **Allowed imports**: `core`, `utils`
 
 ### providers
@@ -146,7 +151,7 @@ graph TD
 ### utils
 
 - **Responsibility**: Pure utility functions with zero cross-layer dependencies.
-- **Contains**: `errors.ts` (custom error classes: `UserCancelledError`, `PlatformCLINotFoundError`, `NotAGitRepoError`), `fs.ts` (`fileExists`, `readFileIfExists`, `getDirectoryTree`), `git.ts` (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`).
+- **Contains**: `errors.ts` (custom error classes: `UserCancelledError`, `PlatformCLINotFoundError`, `NotAGitRepoError`), `fs.ts` (`fileExists`, `readFileIfExists`, `getDirectoryTree`), `git.ts` (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`, `snapshotUntrackedFiles`, `snapshotModifiedFiles`, `diffWorkingTree`).
 - **Allowed imports**: none (leaf layer)
 
 ### Dependency Diagram
@@ -189,13 +194,13 @@ A typical `codefactory init` execution follows this path:
 
 ## External Dependencies
 
-| Dependency                | Purpose                                        | Abstraction                                                                                                                  |
-| ------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **Claude CLI** (`claude`) | AI-powered code analysis and file generation   | `ClaudeRunner` wraps the CLI as a child process with `--output-format stream-json`, exposing `analyze<T>()` and `generate()` |
-| **GitHub Actions**        | CI/CD workflow execution                       | `GitHubActionsProvider` implements `CIProvider` interface, generating YAML via the `yaml` package                            |
-| **Git**                   | Repository metadata (root, remote URL, status) | `utils/git.ts` wraps `git` CLI calls via `child_process.exec`                                                                |
+| Dependency                                    | Purpose                                        | Abstraction                                                                                                                                                              |
+| --------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **AI CLI** (`claude`, `kiro-cli`, or `codex`) | AI-powered code analysis and file generation   | `AIRunner` interface with three implementations: `ClaudeRunner` (stream-json), `KiroRunner` and `CodexRunner` (git-diff tracking), selected via `createRunner()` factory |
+| **GitHub Actions**                            | CI/CD workflow execution                       | `GitHubActionsProvider` implements `CIProvider` interface, generating YAML via the `yaml` package                                                                        |
+| **Git**                                       | Repository metadata (root, remote URL, status) | `utils/git.ts` wraps `git` CLI calls via `child_process.exec`                                                                                                            |
 
-The Claude CLI dependency is the only runtime requirement beyond Node.js. It is spawned as a subprocess with explicit `--allowedTools` whitelists per operation — `analyze()` permits only read-only tools (`Read`, `Glob`, `Grep`, `Bash`), while `generate()` additionally permits `Write` and `Edit`.
+One of the three AI CLIs is required at runtime beyond Node.js. Claude is spawned as a subprocess with explicit `--allowedTools` whitelists per operation — `analyze()` permits only read-only tools (`Read`, `Glob`, `Grep`, `Bash`), while `generate()` additionally permits `Write` and `Edit`. Kiro and Codex use their own trust/approval flags and track file changes via git-diff.
 
 ## Architecture Decision Records
 
@@ -223,7 +228,7 @@ The Claude CLI dependency is the only runtime requirement beyond Node.js. It is 
 
 **Status**: Accepted
 
-**Context**: The system needs 13+ harness types that can be independently developed, tested, and toggled.
+**Context**: The system needs 16 harness types that can be independently developed, tested, and toggled.
 
 **Decision**: Every harness implements `HarnessModule` with `name`, `order`, `isApplicable()`, and `execute()`. A registry in `harnesses/index.ts` collects and sorts them.
 

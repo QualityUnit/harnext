@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-CodeFactory is a CLI tool that automates harness engineering setup for AI coding agents. Written in TypeScript (ESM), it uses the Claude Code Agent SDK to analyze repositories and generate production-grade CI, review, and safety artifacts. No framework; runs on Node.js >= 18.
+CodeFactory is a CLI tool that automates harness engineering setup for AI coding agents. Written in TypeScript (ESM), it uses the Claude Code Agent SDK to analyze repositories and generate production-grade CI, review, and safety artifacts. No framework; runs on Node.js >= 20.
 
 ## Build & Run Commands
 
@@ -41,6 +41,7 @@ src/
 ```
 
 **Dependency rule** (enforced in `harness.config.json` → `architecturalBoundaries`):
+
 - `utils` imports nothing. `ui` imports only `utils`. `core` imports only `utils`.
 - `commands` imports `core`, `ui`, `utils`. `prompts` imports `core`, `utils`.
 - `providers` imports `core`, `utils`. `harnesses` imports `core`, `prompts`, `providers`, `utils`.
@@ -77,6 +78,7 @@ These are classified as **Tier 3 (high risk)** in `harness.config.json`. All Tie
 ## Harness System Reference
 
 This project uses harness engineering with layered CI gates:
+
 - **Risk tiers** defined in `harness.config.json` — Tier 1 (docs), Tier 2 (features), Tier 3 (critical paths).
 - **SHA discipline** enforced — all CI gates and review passes pin to exact commit SHA.
 - **Review agent** automatically reviews PRs; Tier 3 changes also require manual approval.

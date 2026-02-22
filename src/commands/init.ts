@@ -233,7 +233,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   await ensureGitHubLabels(repoRoot, ciProvider);
 
   // ── 5. Harness execution ─────────────────────────────────────────────
-  const runner = createRunner(aiPlatform, { cwd: repoRoot });
+  const runner = createRunner(aiPlatform, {
+    cwd: repoRoot,
+    onLogLine: (line) => logger.dim(line),
+  });
   const fileWriter = new FileWriter();
   const previousOutputs = new Map<string, HarnessOutput>();
 
