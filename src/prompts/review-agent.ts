@@ -1,9 +1,11 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the review agent workflow and supporting scripts.
  */
 export function buildReviewAgentPrompt(detection: DetectionResult, prefs: UserPreferences): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate a review agent integration system for this ${detection.primaryLanguage} project. The review agent uses Claude to automatically review pull requests, provide structured feedback, and track review state with SHA deduplication.
 
 ## Detected Stack Context
@@ -141,31 +143,34 @@ The review agent's instructions are stored at \`.codefactory/prompts/review-agen
 
 Do NOT generate a separate \`scripts/review-prompt.md\` file. The prompt lives in \`.codefactory/prompts/review-agent.md\` and is the single source of truth.
 
-The review agent workflow should use \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` for authentication. Do NOT use \`ANTHROPIC_API_KEY\`.
+The review agent workflow should use \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\` for authentication. Do NOT use raw API keys directly.
 
-**IMPORTANT — Extracting Claude's response**: The action does NOT have a \`result\` output. Claude's response is available via the \`execution_file\` output — a JSON array of SDK turn objects (NOT JSONL, do NOT use \`jq -s\`). Turn types: \`system\` (init), \`assistant\` (Claude responses with \`.message.content[]\`), \`user\` (tool results), \`result\` (final summary with \`.result\` text). To extract:
+**IMPORTANT — Extracting the agent's response**: ${agentAction.executionFileOutputKey ? `The action's response is available via the \`${agentAction.executionFileOutputKey}\` output — a JSON array of SDK turn objects (NOT JSONL, do NOT use \`jq -s\`). Turn types: \`system\` (init), \`assistant\` (responses with \`.message.content[]\`), \`user\` (tool results), \`result\` (final summary with \`.result\` text).` : `The action's response is available via the \`${agentAction.textOutputKey}\` output.`} To extract:
 \`\`\`yaml
-- name: Run Claude review
+- name: Run AI review
   id: review
-  uses: anthropics/claude-code-action@v1
+  uses: ${agentAction.action}
   with:
-    claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-    prompt: |
-      Review this pull request for bugs, security issues, and architectural violations.
-    claude_args: '--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"'
-    allowed_bots: 'github-actions,implementer-bot'
+    ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+    ${agentAction.promptInputKey}: |
+      Review this pull request for bugs, security issues, and architectural violations.${agentAction.argsInputKey ? `\n    ${agentAction.argsInputKey}: '--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"'` : ''}${prefs.aiPlatform === 'claude' ? `\n    allowed_bots: 'github-actions,implementer-bot'` : ''}
 
-- name: Extract review from execution file
+- name: Extract review output
   id: extract
   env:
-    EXECUTION_FILE: \${{ steps.review.outputs.execution_file }}
-  run: |
+    ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.review.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.review.outputs.${agentAction.textOutputKey} }}`}
+  run: |${
+    agentAction.executionFileOutputKey
+      ? `
     # Primary: final result text from the "result" turn
     REVIEW_TEXT=$(jq -r '[.[] | select(.type == "result")] | last | .result // ""' "$EXECUTION_FILE" 2>/dev/null || echo "")
     # Fallback: last assistant text content
     if [[ -z "$REVIEW_TEXT" || "$REVIEW_TEXT" == "null" ]]; then
       REVIEW_TEXT=$(jq -r '[.[] | select(.type == "assistant") | .message.content[] | select(.type == "text") | .text] | last // ""' "$EXECUTION_FILE" 2>/dev/null || echo "")
-    fi
+    fi`
+      : `
+    REVIEW_TEXT="$FINAL_MESSAGE"`
+  }
     if [[ -n "$REVIEW_TEXT" && "$REVIEW_TEXT" != "null" ]]; then
       { echo "review<<REVIEW_EOF"; echo "$REVIEW_TEXT"; echo "REVIEW_EOF"; } >> "$GITHUB_OUTPUT"
       echo "found=true" >> "$GITHUB_OUTPUT"
@@ -174,7 +179,7 @@ The review agent workflow should use \`anthropics/claude-code-action@v1\` with \
     fi
 \`\`\`
 
-The available action outputs are: \`execution_file\`, \`structured_output\` (only with \`--json-schema\`), \`session_id\`, \`branch_name\`. There is NO \`result\` output.
+The available action outputs are: ${agentAction.executionFileOutputKey ? `\`${agentAction.executionFileOutputKey}\`, ` : ''}${agentAction.structuredOutputKey ? `\`${agentAction.structuredOutputKey}\` (only with \`--json-schema\`), ` : ''}\`${agentAction.textOutputKey}\`. There is NO \`result\` output.
 
 ## SHA Discipline
 

@@ -1,5 +1,6 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
-import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 import { buildRemediationLoopPrompt } from '../prompts/remediation-loop.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -20,9 +21,10 @@ export const remediationLoopHarness: HarnessModule = {
     const testCmd = detection.testCommand ?? 'npm test';
     const lintCmd = detection.lintCommand ?? 'npm run lint';
     const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const platform = ctx.runner.platform;
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildRemediationWorkflow(testCmd, lintCmd, instructionFile);
+    const refWorkflow = buildRemediationWorkflow(testCmd, lintCmd, instructionFile, platform);
     const refPrompt = buildRemediationPrompt(lintCmd, testCmd, instructionFile);
     const refGuard = buildRemediationGuard(instructionFile);
 
@@ -76,7 +78,9 @@ function buildRemediationWorkflow(
   testCmd: string,
   lintCmd: string,
   instructionFile: string,
+  platform: AIPlatform,
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[platform];
   const lines = [
     'name: Remediation Agent',
     '',
@@ -289,14 +293,16 @@ function buildRemediationWorkflow(
     "            core.setOutput('prompt', prompt);",
     '            core.info(`Prompt built (${prompt.length} chars)`);',
     '',
-    '      - name: Run Claude remediation',
+    '      - name: Run AI remediation',
     "        if: steps.guard.outputs.should-remediate == 'true'",
     '        id: claude',
-    '        uses: anthropics/claude-code-action@v1',
+    `        uses: ${agentAction.action}`,
     '        with:',
-    '          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
-    '          prompt: ${{ steps.build-prompt.outputs.prompt }}',
-    "          claude_args: '--max-turns 15'",
+    `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,
+    `          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}`,
+    ...(agentAction.argsInputKey
+      ? [`          ${agentAction.argsInputKey}: '--max-turns 15'`]
+      : []),
     '',
     '      - name: Check for file changes',
     "        if: steps.guard.outputs.should-remediate == 'true'",

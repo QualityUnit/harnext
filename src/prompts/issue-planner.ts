@@ -1,4 +1,5 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the issue-planner agent workflow and supporting scripts.
@@ -8,6 +9,7 @@ export function buildIssuePlannerPrompt(
   prefs: UserPreferences,
   instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an issue-planner agent system for this ${detection.primaryLanguage} project. When an issue is labeled with \`agent:plan\` (by the triage workflow), the system spawns a Claude Code agent that reads the issue, analyzes the codebase, and posts a structured implementation plan as a comment on the issue. It then adds the \`agent:implement\` label and dispatches the implementer workflow.
 
 ## Detected Stack Context
@@ -97,12 +99,10 @@ When triggered via \`workflow_dispatch\`:
    - Include \`harness.config.json\` for architectural boundaries
 
 5. **Agent execution**:
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token\`
-   - Set \`--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"\` in \`claude_args\` (claude-code-action does NOT enable tools by default — without \`--allowedTools\`, all tool calls will be permission-denied)
-   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by the triage workflow using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`${agentAction.argsInputKey ? `\n   - Set \`--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"\` in \`${agentAction.argsInputKey}\`` : ''}${prefs.aiPlatform === 'claude' ? `\n   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by the triage workflow using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.` : ''}
    - The agent reads the codebase (read-only) and produces a structured plan
    - Timeout: 15 minutes
-   - **IMPORTANT**: The action does NOT have a \`result\` output. Claude's response is in the \`execution_file\` output (a JSON array, NOT JSONL — do NOT use \`jq -s\`). Extract the result turn: \`jq -r '[.[] | select(.type == "result")] | last | .result // ""' "$EXECUTION_FILE"\`. Fallback to last assistant text: \`jq -r '[.[] | select(.type == "assistant") | .message.content[] | select(.type == "text") | .text] | last // ""' "$EXECUTION_FILE"\`
+   - **IMPORTANT**: ${agentAction.executionFileOutputKey ? `The action's response is in the \`${agentAction.executionFileOutputKey}\` output (a JSON array, NOT JSONL — do NOT use \`jq -s\`). Extract the result turn: \`jq -r '[.[] | select(.type == "result")] | last | .result // ""' "$EXECUTION_FILE"\`. Fallback to last assistant text: \`jq -r '[.[] | select(.type == "assistant") | .message.content[] | select(.type == "text") | .text] | last // ""' "$EXECUTION_FILE"\`` : `The action's response is available via the \`${agentAction.textOutputKey}\` output.`}
 
 6. **Post plan as comment**:
    - Extract Claude's plan text from the \`execution_file\` (see above) and post as a comment on the issue

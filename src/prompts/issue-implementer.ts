@@ -1,4 +1,5 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the issue-implementer agent workflow and supporting scripts.
@@ -8,6 +9,7 @@ export function buildIssueImplementerPrompt(
   prefs: UserPreferences,
   instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an issue-implementer agent system for this ${detection.primaryLanguage} project. When a new issue is opened (or labeled with a trigger label), the system spawns a Claude Code agent that reads the issue, creates a worktree branch, implements the change, and opens a pull request.
 
 ## Detected Stack Context
@@ -121,11 +123,9 @@ When triggered via \`workflow_dispatch\` (issue mode):
    - For workflow_dispatch: use \`(issue.user || {}).login || 'unknown'\` for safe author access
 
 6. **Agent execution**:
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` (NOT \`ANTHROPIC_API_KEY\`)
-   - Pass the built prompt via the action's \`prompt\` input
-   - The agent reads ${instructionFile} and harness.config.json for project conventions
-   - Set \`--max-turns 100 --allowedTools "Edit,Write,Read,Glob,Grep,Bash"\` in \`claude_args\` (claude-code-action does NOT enable write tools by default — without \`--allowedTools\`, all Edit/Write/Bash calls will be permission-denied)
-   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by other workflows using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`
+   - Pass the built prompt via the action's \`${agentAction.promptInputKey}\` input
+   - The agent reads ${instructionFile} and harness.config.json for project conventions${agentAction.argsInputKey ? `\n   - Set \`--max-turns 100 --allowedTools "Edit,Write,Read,Glob,Grep,Bash"\` in \`${agentAction.argsInputKey}\`` : ''}${prefs.aiPlatform === 'claude' ? `\n   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by other workflows using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.` : ''}
    - Set a timeout of ${prefs.strictnessLevel === 'strict' ? '30' : prefs.strictnessLevel === 'standard' ? '45' : '60'} minutes
 
 7. **Post-implementation checks**:

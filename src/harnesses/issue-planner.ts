@@ -1,6 +1,7 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
-import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 import { buildIssuePlannerPrompt } from '../prompts/issue-planner.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -21,7 +22,8 @@ export const issuePlannerHarness: HarnessModule = {
     const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildIssuePlannerWorkflowYml(detection, instructionFile);
+    const platform = ctx.runner.platform;
+    const refWorkflow = buildIssuePlannerWorkflowYml(detection, instructionFile, platform);
     const refGuard = buildIssuePlannerGuardTs();
     const refPromptMd = buildIssuePlannerPromptMd(instructionFile);
 
@@ -85,9 +87,14 @@ function resolveCacheKey(det: DetectionResult): string {
 
 /* eslint-disable no-useless-escape */
 
-function buildIssuePlannerWorkflowYml(det: DetectionResult, instructionFile: string): string {
+function buildIssuePlannerWorkflowYml(
+  det: DetectionResult,
+  instructionFile: string,
+  platform: AIPlatform,
+): string {
   const installCmd = resolveInstallCmd(det);
   const cache = resolveCacheKey(det);
+  const agentAction = CI_AGENT_ACTIONS[platform];
 
   return `name: Issue Planner Agent
 
@@ -260,21 +267,19 @@ jobs:
             core.setOutput('prompt', prompt);
             core.info(\`Planning prompt built (\${prompt.length} chars)\`);
 
-      - name: Run Claude planning analysis
+      - name: Run AI planning analysis
         if: steps.guard.outputs.should-plan == 'true'
         id: claude-plan
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: \${{ steps.build-prompt.outputs.prompt }}
-          claude_args: '--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"'
-          allowed_bots: 'github-actions'
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"'` : ''}${platform === 'claude' ? `\n          allowed_bots: 'github-actions'` : ''}
 
       - name: Extract plan from execution file
         if: steps.guard.outputs.should-plan == 'true'
         id: extract-plan
         env:
-          EXECUTION_FILE: \${{ steps.claude-plan.outputs.execution_file }}
+          ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.claude-plan.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.claude-plan.outputs.${agentAction.textOutputKey} }}`}
         run: |
           if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then
             echo "found=false" >> "$GITHUB_OUTPUT"

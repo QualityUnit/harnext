@@ -1,9 +1,11 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
-import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 import { buildGarbageCollectionPrompt } from '../prompts/garbage-collection.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
-function buildDocGardeningWorkflow(instructionFile: string): string {
+function buildDocGardeningWorkflow(instructionFile: string, platform: AIPlatform): string {
+  const agentAction = CI_AGENT_ACTIONS[platform];
   return `name: Documentation Gardening
 
 on:
@@ -41,11 +43,10 @@ jobs:
         run: npm ci
 
       - name: Run documentation gardening agent
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'
-          claude_args: '--max-turns 10'
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--max-turns 10'` : ''}
 
       - name: Revert non-documentation changes
         id: safety
@@ -243,9 +244,10 @@ export const garbageCollectionHarness: HarnessModule = {
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
     const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const platform = ctx.runner.platform;
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildDocGardeningWorkflow(instructionFile);
+    const refWorkflow = buildDocGardeningWorkflow(instructionFile, platform);
     const refPrompt = buildDocGardeningPrompt(instructionFile);
 
     // 2. Build the prompt with reference context

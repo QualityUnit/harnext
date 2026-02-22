@@ -1,4 +1,5 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the remediation loop workflow and agent.
@@ -8,6 +9,7 @@ export function buildRemediationLoopPrompt(
   prefs: UserPreferences,
   instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an automated remediation loop system for this ${detection.primaryLanguage} project. This system allows an AI agent to automatically fix issues found by the review agent, push corrective commits, and trigger re-review.
 
 ## Detected Stack Context
@@ -68,7 +70,7 @@ ${
    - Read harness.config.json for project rules
 
 4. **Remediation execution**:
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` (NOT \`ANTHROPIC_API_KEY\`)
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`
    - Pass the remediation prompt via the action's \`prompt\` input
    - The agent fixes ONLY the flagged issues — no refactoring, no improvements
    - After each fix, run validation:

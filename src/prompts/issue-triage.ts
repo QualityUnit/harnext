@@ -1,9 +1,11 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the issue-triage agent workflow and supporting scripts.
  */
 export function buildIssueTriagePrompt(detection: DetectionResult, prefs: UserPreferences): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an issue-triage agent system for this ${detection.primaryLanguage} project. When a new issue is opened or edited, the system evaluates it for quality and completeness, then routes actionable issues to the planning pipeline by adding the \`agent:plan\` label.
 
 ## Detected Stack Context
@@ -86,9 +88,8 @@ The workflow runs on every issue open, edit, and reopen event. The guard script 
        "additionalProperties": false
      }
      \`\`\`
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\`
-   - Pass the triage prompt and full issue title/body/labels via the action's \`prompt\` input
-   - **CRITICAL**: Use \`--json-schema '<schema>'\` in \`claude_args\` to force structured output. The verdict is then available via \`steps.<id>.outputs.structured_output\` — this is the ONLY reliable way to get structured data from claude-code-action. Do NOT try to read \`claude_output\` or parse \`execution_file\` — those outputs do not contain the response text.
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`
+   - Pass the triage prompt and full issue title/body/labels via the action's \`${agentAction.promptInputKey}\` input${agentAction.structuredOutputKey ? `\n   - **CRITICAL**: Use \`--json-schema '<schema>'\` in \`${agentAction.argsInputKey}\` to force structured output. The verdict is then available via \`steps.<id>.outputs.${agentAction.structuredOutputKey}\` — this is the ONLY reliable way to get structured data from the action.` : `\n   - Parse the agent's text output to extract the structured verdict.`}
    - The agent evaluates the issue against quality criteria
 
 4. **Parse structured verdict**:

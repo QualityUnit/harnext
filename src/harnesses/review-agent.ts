@@ -1,5 +1,6 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
-import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 import { buildReviewAgentPrompt } from '../prompts/review-agent.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -18,9 +19,10 @@ export const reviewAgentHarness: HarnessModule = {
     const { detection, userPreferences } = ctx;
 
     const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const platform = ctx.runner.platform;
 
     // 1. Generate reference templates from existing builders
-    const refCodeReviewWorkflow = buildCodeReviewWorkflow(instructionFile);
+    const refCodeReviewWorkflow = buildCodeReviewWorkflow(instructionFile, platform);
     const refRerunWorkflow = buildRerunWorkflow();
     const refAutoResolveWorkflow = buildAutoResolveWorkflow();
     const refReviewAgentUtils = buildReviewAgentUtils();
@@ -82,7 +84,8 @@ ${refCodefactoryPrompt}
 
 // ── File builders ─────────────────────────────────────────────────────────
 
-function buildCodeReviewWorkflow(instructionFile: string): string {
+function buildCodeReviewWorkflow(instructionFile: string, platform: AIPlatform): string {
+  const agentAction = CI_AGENT_ACTIONS[platform];
   const lines = [
     'name: Code Review Agent',
     '',
@@ -369,7 +372,7 @@ function buildCodeReviewWorkflow(instructionFile: string): string {
     "            core.setOutput('prompt', prompt);",
     '            core.info(`Review prompt built (${prompt.length} chars)`);',
     '',
-    '      - name: Run Claude review',
+    '      - name: Run AI review',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: review',
     '        # OIDC validation requires the workflow file to match main exactly.',
@@ -378,18 +381,26 @@ function buildCodeReviewWorkflow(instructionFile: string): string {
     '        # continue-on-error so the job still completes and the check run is marked',
     '        # neutral rather than hard-failing the PR.',
     '        continue-on-error: true',
-    '        uses: anthropics/claude-code-action@v1',
+    `        uses: ${agentAction.action}`,
     '        with:',
-    '          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
-    '          prompt: ${{ steps.build-prompt.outputs.prompt }}',
-    '          claude_args: \'--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"\'',
-    "          allowed_bots: 'github-actions,implementer-bot'",
+    `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,
+    `          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}`,
+    ...(agentAction.argsInputKey
+      ? [
+          `          ${agentAction.argsInputKey}: '--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"'`,
+        ]
+      : []),
+    ...(platform === 'claude' ? ["          allowed_bots: 'github-actions,implementer-bot'"] : []),
     '',
-    '      - name: Extract review from execution file',
+    '      - name: Extract review output',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: extract',
     '        env:',
-    '          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}',
+    ...(agentAction.executionFileOutputKey
+      ? [
+          `          EXECUTION_FILE: \${{ steps.review.outputs.${agentAction.executionFileOutputKey} }}`,
+        ]
+      : [`          FINAL_MESSAGE: \${{ steps.review.outputs.${agentAction.textOutputKey} }}`]),
     '        run: |',
     '          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then',
     '            echo "found=false" >> "$GITHUB_OUTPUT"',
@@ -482,10 +493,10 @@ function buildCodeReviewWorkflow(instructionFile: string): string {
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true' && steps.extract.outputs.found == 'true'",
     '        id: classifier',
     '        continue-on-error: true',
-    '        uses: anthropics/claude-code-action@v1',
+    `        uses: ${agentAction.action}`,
     '        with:',
-    '          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
-    '          prompt: |',
+    `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,
+    `          ${agentAction.promptInputKey}: |`,
     '            Read the following code review and classify the verdict.',
     '',
     '            Rules:',
@@ -496,18 +507,30 @@ function buildCodeReviewWorkflow(instructionFile: string): string {
     '            <review>',
     '            ${{ steps.extract.outputs.review }}',
     '            </review>',
-    '          claude_args: >-',
-    '            --model claude-haiku-4-5-20251001',
-    '            --max-turns 3',
-    '            --json-schema \'{"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REQUEST_CHANGES","COMMENT"]},"reason":{"type":"string","description":"One sentence explaining the verdict"}},"required":["verdict","reason"]}\'',
-    "          allowed_bots: 'github-actions,implementer-bot'",
+    ...(agentAction.argsInputKey
+      ? [
+          `          ${agentAction.argsInputKey}: >-`,
+          '            --model claude-haiku-4-5-20251001',
+          '            --max-turns 3',
+          '            --json-schema \'{"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REQUEST_CHANGES","COMMENT"]},"reason":{"type":"string","description":"One sentence explaining the verdict"}},"required":["verdict","reason"]}\'',
+        ]
+      : []),
+    ...(platform === 'claude' ? ["          allowed_bots: 'github-actions,implementer-bot'"] : []),
     '',
     '      - name: Extract verdict',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: verdict',
     '        env:',
-    "          STRUCTURED_OUTPUT: ${{ steps.classifier.outputs.structured_output || '' }}",
-    "          EXECUTION_FILE: ${{ steps.classifier.outputs.execution_file || '' }}",
+    ...(agentAction.structuredOutputKey
+      ? [
+          `          STRUCTURED_OUTPUT: \${{ steps.classifier.outputs.${agentAction.structuredOutputKey} || '' }}`,
+        ]
+      : ["          STRUCTURED_OUTPUT: ''"]),
+    ...(agentAction.executionFileOutputKey
+      ? [
+          `          EXECUTION_FILE: \${{ steps.classifier.outputs.${agentAction.executionFileOutputKey} || '' }}`,
+        ]
+      : ["          EXECUTION_FILE: ''"]),
     "          CLASSIFIER_OUTCOME: ${{ steps.classifier.outcome || 'failure' }}",
     '        run: |',
     '          VERDICT="COMMENT"',

@@ -26,6 +26,63 @@ export const INSTRUCTION_FILES: Record<AIPlatform, string> = {
   codex: 'CODEX.md',
 };
 
+export interface CIAgentAction {
+  /** The GitHub Action to use (e.g., 'anthropics/claude-code-action@v1') */
+  action: string;
+  /** Secret name to reference (e.g., 'CLAUDE_CODE_OAUTH_TOKEN') */
+  secretName: string;
+  /** Secret env key in the action's `with:` block (e.g., 'claude_code_oauth_token') */
+  secretInputKey: string;
+  /** Key for the prompt input (e.g., 'prompt') */
+  promptInputKey: string;
+  /** Key for CLI args (e.g., 'claude_args') — null if not applicable */
+  argsInputKey: string | null;
+  /** Output key containing the final text response */
+  textOutputKey: string;
+  /** Output key containing structured JSON output — null if not applicable */
+  structuredOutputKey: string | null;
+  /** Output key for execution file — null if not applicable */
+  executionFileOutputKey: string | null;
+  /** Whether this platform needs extra setup steps (Kiro's AWS OIDC + CLI install) */
+  needsSetupSteps: boolean;
+}
+
+export const CI_AGENT_ACTIONS: Record<AIPlatform, CIAgentAction> = {
+  claude: {
+    action: 'anthropics/claude-code-action@v1',
+    secretName: 'CLAUDE_CODE_OAUTH_TOKEN',
+    secretInputKey: 'claude_code_oauth_token',
+    promptInputKey: 'prompt',
+    argsInputKey: 'claude_args',
+    textOutputKey: 'execution_file',
+    structuredOutputKey: 'structured_output',
+    executionFileOutputKey: 'execution_file',
+    needsSetupSteps: false,
+  },
+  codex: {
+    action: 'openai/codex-action@v1',
+    secretName: 'OPENAI_API_KEY',
+    secretInputKey: 'openai_api_key',
+    promptInputKey: 'prompt',
+    argsInputKey: null,
+    textOutputKey: 'final-message',
+    structuredOutputKey: null,
+    executionFileOutputKey: null,
+    needsSetupSteps: false,
+  },
+  kiro: {
+    action: 'clouatre-labs/setup-kiro-action@v1',
+    secretName: 'AWS_ROLE_ARN',
+    secretInputKey: '',
+    promptInputKey: '',
+    argsInputKey: null,
+    textOutputKey: '',
+    structuredOutputKey: null,
+    executionFileOutputKey: null,
+    needsSetupSteps: true,
+  },
+};
+
 export const AI_PLATFORMS: { name: string; value: AIPlatform; description: string }[] = [
   {
     name: 'Claude Code',

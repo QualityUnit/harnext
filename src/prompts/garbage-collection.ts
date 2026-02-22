@@ -1,4 +1,5 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating the documentation garbage collection (doc-gardening) system.
@@ -8,6 +9,7 @@ export function buildGarbageCollectionPrompt(
   prefs: UserPreferences,
   instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate a documentation garbage collection (doc-gardening) system for this ${detection.primaryLanguage} project. This system runs periodically to detect stale, outdated, or inaccurate documentation and creates PRs to fix it.
 
 ## Detected Stack Context
@@ -50,11 +52,10 @@ jobs:
       - name: Set up environment
         # Set up Node.js/Python/etc. as needed for the project
       - name: Run documentation gardening agent
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'
-          claude_args: '--max-turns 10'
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--max-turns 10'` : ''}
       - name: Create PR if changes detected
         uses: peter-evans/create-pull-request@v6
         with:
@@ -156,7 +157,7 @@ After making changes, provide a summary listing:
 - If many issues are found, prefer creating a single focused PR over multiple
 - The prompt must be specific enough to avoid false positives and unnecessary churn
 - Include a manual workflow_dispatch trigger for on-demand gardening
-- The workflow must use \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token\` for authentication (NOT \`ANTHROPIC_API_KEY\`)
+- The workflow must use \`${agentAction.action}\` with \`${agentAction.secretInputKey}\` for authentication
 - The workflow must include \`id-token: write\` in its permissions for the Claude Code Action OAuth flow
 
 ## Output Format

@@ -1,4 +1,5 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 /**
  * Prompt for generating CI pipeline workflows.
@@ -8,6 +9,7 @@ export function buildCiPipelinePrompt(
   prefs: UserPreferences,
   instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   const ciFormat = {
     'github-actions': 'GitHub Actions YAML workflow files in `.github/workflows/`',
     'gitlab-ci': 'GitLab CI YAML in `.gitlab-ci.yml`',
@@ -144,27 +146,26 @@ Validates the harness engineering setup itself:
 - **TypeScript Execution**: Use \`npx tsx\` to run TypeScript scripts, NOT \`npx ts-node\` (this project uses ESM)
 - **Structural Tests**: The structural-tests job must run \`bash scripts/structural-tests.sh\`, NOT \`npm test\` — it validates architectural boundaries, not unit tests
 
-## Claude Code Integration (IMPORTANT)
+## AI Agent Integration (IMPORTANT)
 
-Any CI workflow that invokes Claude Code MUST use the \`anthropics/claude-code-action@v1\` GitHub Action with OAuth authentication. Do NOT use \`ANTHROPIC_API_KEY\` in any workflow.
+Any CI workflow that invokes the AI agent MUST use the \`${agentAction.action}\` GitHub Action with the appropriate authentication. Do NOT use raw API keys directly in workflows.
 
-**Required pattern for all Claude-powered CI steps:**
+**Required pattern for all AI-powered CI steps:**
 \`\`\`yaml
 permissions:
-  id-token: write  # Required for Claude Code Action OAuth
+  id-token: write
   contents: read
 
 steps:
   - uses: actions/checkout@v4
-  - name: Run Claude Code
-    uses: anthropics/claude-code-action@v1
+  - name: Run AI Agent
+    uses: ${agentAction.action}
     with:
-      claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      prompt: 'Your task prompt here'
-      claude_args: '--max-turns 5'
+      ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+      ${agentAction.promptInputKey}: 'Your task prompt here'${agentAction.argsInputKey ? `\n      ${agentAction.argsInputKey}: '--max-turns 5'` : ''}
 \`\`\`
 
-Never reference \`ANTHROPIC_API_KEY\` or invoke the \`claude\` CLI directly with API key authentication. Always use the action with \`claude_code_oauth_token\`.
+Always use the action with \`${agentAction.secretInputKey}\` referencing the \`${agentAction.secretName}\` secret.
 
 ## Required Output Files (ALL mandatory)
 

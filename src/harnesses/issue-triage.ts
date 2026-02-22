@@ -1,5 +1,7 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 import { buildIssueTriagePrompt } from '../prompts/issue-triage.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -15,9 +17,10 @@ export const issueTriageHarness: HarnessModule = {
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
+    const platform = ctx.runner.platform;
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildIssueTriageWorkflowYml(detection);
+    const refWorkflow = buildIssueTriageWorkflowYml(detection, platform);
     const refGuard = buildIssueTriageGuardTs();
     const refPromptMd = buildIssueTriagePromptMd();
 
@@ -81,9 +84,10 @@ function resolveCacheKey(det: DetectionResult): string {
 
 /* eslint-disable no-useless-escape */
 
-function buildIssueTriageWorkflowYml(det: DetectionResult): string {
+function buildIssueTriageWorkflowYml(det: DetectionResult, platform: AIPlatform): string {
   const installCmd = resolveInstallCmd(det);
   const cache = resolveCacheKey(det);
+  const agentAction = CI_AGENT_ACTIONS[platform];
 
   return `name: Issue Triage Agent
 
@@ -246,21 +250,20 @@ jobs:
           SCHEMA=$(cat /tmp/triage-schema.json | tr -d '\\n' | tr -s ' ')
           echo "value=\${SCHEMA}" >> "$GITHUB_OUTPUT"
 
-      - name: Run Claude triage analysis
+      - name: Run AI triage analysis
         if: steps.guard.outputs.should-triage == 'true'
         id: claude-triage
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: \${{ steps.build-prompt.outputs.prompt }}
-          claude_args: "--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: "--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"` : ''}
 
       - name: Parse structured verdict
         if: steps.guard.outputs.should-triage == 'true'
         id: verdict
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          STRUCTURED_OUTPUT: \${{ steps.claude-triage.outputs.structured_output || '' }}
+          STRUCTURED_OUTPUT: \${{ steps.claude-triage.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
         with:
           script: |
             const raw = process.env.STRUCTURED_OUTPUT || '';
@@ -348,10 +351,10 @@ jobs:
           steps.devserver.outputs.available == 'true'
         id: reproduce
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: |
             You are a bug reproduction agent. Your goal is to reproduce a reported bug using a headless browser.
 
             ## Issue
@@ -378,8 +381,7 @@ jobs:
               "notes": "Brief description of what you observed"
             }
             \`\`\`
-          claude_args: '--max-turns 20'
-
+${agentAction.argsInputKey ? `          ${agentAction.argsInputKey}: '--max-turns 20'` : ''}
       - name: Parse reproduction result
         if: steps.reproduce.outcome == 'success'
         id: repro-result
