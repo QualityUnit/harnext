@@ -293,10 +293,16 @@ When you use Chrome DevTools for a triage or planning task, include in your outp
 `;
 
 function getSkills(platform: AIPlatform): Array<{ name: string; content: string }> {
-  return [
+  const skills: Array<{ name: string; content: string }> = [
     { name: 'check-docs', content: buildCheckDocsSkill(platform) },
-    { name: 'chrome-devtools', content: CHROME_DEVTOOLS_SKILL },
   ];
+
+  // Chrome DevTools skill is Claude-specific (uses /chrome command, claude --chrome flag)
+  if (platform === 'claude') {
+    skills.push({ name: 'chrome-devtools', content: CHROME_DEVTOOLS_SKILL });
+  }
+
+  return skills;
 }
 
 export const skillsInstallerHarness: HarnessModule = {

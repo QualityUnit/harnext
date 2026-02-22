@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -13,7 +13,8 @@ import { borderedInput } from '../ui/bordered-input.js';
 import type { SlashCommand } from '../ui/bordered-input.js';
 import { isGitRepo, getRepoRoot, hasUncommittedChanges } from '../utils/git.js';
 import { readFileIfExists } from '../utils/fs.js';
-import { NotAGitRepoError, PlatformCLINotFoundError } from '../utils/errors.js';
+import { NotAGitRepoError } from '../utils/errors.js';
+import { validatePlatformCLI } from '../core/runner-factory.js';
 import { generateBranchName, createWorktree } from '../core/worktree.js';
 import { openInNewTerminal } from '../core/terminal.js';
 import type { PromptEntry } from '../core/prompt-store.js';
@@ -246,13 +247,7 @@ export async function replCommand(): Promise<void> {
     throw new NotAGitRepoError();
   }
 
-  try {
-    execFileSync(process.platform === 'win32' ? 'where' : 'which', ['claude'], {
-      stdio: 'ignore',
-    });
-  } catch {
-    throw new PlatformCLINotFoundError('claude', 'claude');
-  }
+  validatePlatformCLI('claude');
 
   const repoRoot = await getRepoRoot();
   const store = new PromptStore(repoRoot);

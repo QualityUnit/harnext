@@ -1,5 +1,6 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 import { buildIssuePlannerPrompt } from '../prompts/issue-planner.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -17,10 +18,12 @@ export const issuePlannerHarness: HarnessModule = {
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
 
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildIssuePlannerWorkflowYml(detection);
+    const refWorkflow = buildIssuePlannerWorkflowYml(detection, instructionFile);
     const refGuard = buildIssuePlannerGuardTs();
-    const refPromptMd = buildIssuePlannerPromptMd();
+    const refPromptMd = buildIssuePlannerPromptMd(instructionFile);
 
     // 2. Build the prompt with reference context
     const basePrompt = buildIssuePlannerPrompt(detection, userPreferences);
@@ -82,7 +85,7 @@ function resolveCacheKey(det: DetectionResult): string {
 
 /* eslint-disable no-useless-escape */
 
-function buildIssuePlannerWorkflowYml(det: DetectionResult): string {
+function buildIssuePlannerWorkflowYml(det: DetectionResult, instructionFile: string): string {
   const installCmd = resolveInstallCmd(det);
   const cache = resolveCacheKey(det);
 
@@ -225,7 +228,7 @@ jobs:
             const template = process.env.PLANNER_TEMPLATE || '';
 
             let conventions = '';
-            try { conventions = fs.readFileSync('CLAUDE.md', 'utf-8').slice(0, 6000); } catch {}
+            try { conventions = fs.readFileSync('${instructionFile}', 'utf-8').slice(0, 6000); } catch {}
 
             let config = '';
             try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}
@@ -243,9 +246,9 @@ jobs:
               '',
               issue.body || '*(empty body)*',
               '',
-              '## Project Conventions (from CLAUDE.md)',
+              '## Project Conventions (from ${instructionFile})',
               '',
-              conventions || 'No CLAUDE.md found.',
+              conventions || 'No ${instructionFile} found.',
               '',
               '## Harness Configuration',
               '',
@@ -683,14 +686,14 @@ if (process.argv.includes('--self-test')) {
 `;
 }
 
-function buildIssuePlannerPromptMd(): string {
+function buildIssuePlannerPromptMd(instructionFile: string): string {
   return `# Issue Planner Agent Instructions
 
 You are a planning agent. Your task is to analyze a GitHub issue and produce a structured implementation plan. You do NOT write code \u2014 you produce a plan that the implementation agent will follow.
 
 ## Rules
 
-1. **Read first**: Before planning, read CLAUDE.md for project conventions and harness.config.json for architectural boundaries.
+1. **Read first**: Before planning, read ${instructionFile} for project conventions and harness.config.json for architectural boundaries.
 2. **Understand the issue**: Parse the issue title and body to understand what needs to be built. Identify acceptance criteria if present.
 3. **Read-only analysis**: You MUST NOT modify any files. Use only Read, Glob, Grep, and Bash (for read-only commands like \`ls\`, \`git log\`) to explore the codebase. Do NOT call Write, Edit, NotebookEdit, or any file-modifying tools.
 4. **No plan mode**: Do NOT call \`EnterPlanMode\` or \`ExitPlanMode\`. You are running in CI with no human to approve plans. Output your plan directly.

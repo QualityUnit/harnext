@@ -1,4 +1,5 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 
 import { buildRemediationLoopPrompt } from '../prompts/remediation-loop.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -18,11 +19,12 @@ export const remediationLoopHarness: HarnessModule = {
 
     const testCmd = detection.testCommand ?? 'npm test';
     const lintCmd = detection.lintCommand ?? 'npm run lint';
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildRemediationWorkflow(testCmd, lintCmd);
-    const refPrompt = buildRemediationPrompt(lintCmd, testCmd);
-    const refGuard = buildRemediationGuard();
+    const refWorkflow = buildRemediationWorkflow(testCmd, lintCmd, instructionFile);
+    const refPrompt = buildRemediationPrompt(lintCmd, testCmd, instructionFile);
+    const refGuard = buildRemediationGuard(instructionFile);
 
     // 2. Build the prompt with reference context
     const basePrompt = buildRemediationLoopPrompt(detection, userPreferences);
@@ -70,7 +72,11 @@ ${refGuard}
 
 // ── File builders ─────────────────────────────────────────────────────────
 
-function buildRemediationWorkflow(testCmd: string, lintCmd: string): string {
+function buildRemediationWorkflow(
+  testCmd: string,
+  lintCmd: string,
+  instructionFile: string,
+): string {
   const lines = [
     'name: Remediation Agent',
     '',
@@ -240,7 +246,7 @@ function buildRemediationWorkflow(testCmd: string, lintCmd: string): string {
     "            try { template = fs.readFileSync('scripts/remediation-agent-prompt.md', 'utf-8'); } catch {}",
     '',
     "            let conventions = '';",
-    "            try { conventions = fs.readFileSync('CLAUDE.md', 'utf-8').slice(0, 6000); } catch {}",
+    `            try { conventions = fs.readFileSync('${instructionFile}', 'utf-8').slice(0, 6000); } catch {}`,
     '',
     "            let config = '';",
     "            try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}",
@@ -251,9 +257,9 @@ function buildRemediationWorkflow(testCmd: string, lintCmd: string): string {
     '            const prompt = [',
     '              template,',
     "              '',",
-    "              '## Project Conventions (from CLAUDE.md)',",
+    `              '## Project Conventions (from ${instructionFile})',`,
     "              '',",
-    "              conventions || 'No CLAUDE.md found.',",
+    `              conventions || 'No ${instructionFile} found.',`,
     "              '',",
     "              '## Harness Configuration',",
     "              '',",
@@ -322,7 +328,7 @@ function buildRemediationWorkflow(testCmd: string, lintCmd: string): string {
     '          while IFS= read -r file; do',
     '            [[ -z "$file" ]] && continue',
     '            case "$file" in',
-    '              .github/workflows/*|harness.config.json|CLAUDE.md|package-lock.json|yarn.lock|pnpm-lock.yaml)',
+    `              .github/workflows/*|harness.config.json|${instructionFile}|package-lock.json|yarn.lock|pnpm-lock.yaml)`,
     '                VIOLATIONS="${VIOLATIONS}  - ${file}\\n"',
     '                git checkout -- "$file"',
     '                echo "::warning::Reverted protected file: ${file}"',
@@ -537,7 +543,7 @@ function buildRemediationWorkflow(testCmd: string, lintCmd: string): string {
   return lines.join('\n') + '\n';
 }
 
-function buildRemediationPrompt(lintCmd: string, testCmd: string): string {
+function buildRemediationPrompt(lintCmd: string, testCmd: string, instructionFile: string): string {
   return `# Remediation Agent Instructions
 
 You are a code remediation agent. Your task is to fix specific review findings on a pull request for a TypeScript (ESM) project.
@@ -572,7 +578,7 @@ You are a code remediation agent. Your task is to fix specific review findings o
 
 - \`.github/workflows/*\` — CI/CD workflow files
 - \`harness.config.json\` — harness configuration
-- \`CLAUDE.md\` — project conventions
+- \`${instructionFile}\` — project conventions
 - \`package-lock.json\`, \`yarn.lock\`, \`pnpm-lock.yaml\` — lock files
 - \`package.json\`, \`tsconfig.json\`, \`tsup.config.ts\`, \`vitest.config.ts\`, \`eslint.config.js\` — build infrastructure
 
@@ -628,7 +634,7 @@ Do not output anything besides the JSON object. No markdown wrapping, no explana
 `;
 }
 
-function buildRemediationGuard(): string {
+function buildRemediationGuard(instructionFile: string): string {
   const lines = [
     '#!/usr/bin/env npx tsx',
     '// ============================================================================',
@@ -703,7 +709,7 @@ function buildRemediationGuard(): string {
     'const PROTECTED_FILE_PATTERNS = [',
     '  /^\\.github\\/workflows\\//',
     '  /^harness\\.config\\.json$/',
-    '  /^CLAUDE\\.md$/',
+    `  /^${instructionFile.replace('.', '\\\\.')}$/`,
     '  /^package-lock\\.json$/',
     '  /^yarn\\.lock$/',
     '  /^pnpm-lock\\.yaml$/',
@@ -928,8 +934,8 @@ function buildRemediationGuard(): string {
     "    'harness.config.json should be protected',",
     '  );',
     '  console.assert(',
-    "    isProtectedFile('CLAUDE.md') === true,",
-    "    'CLAUDE.md should be protected',",
+    `    isProtectedFile('${instructionFile}') === true,`,
+    `    '${instructionFile} should be protected',`,
     '  );',
     '  console.assert(',
     "    isProtectedFile('package-lock.json') === true,",

@@ -1,51 +1,14 @@
 import { ClaudeRunner } from '../../src/core/claude-runner.js';
 import { z } from 'zod';
-import { spawn } from 'child_process';
-import { EventEmitter, Readable } from 'stream';
+import { spawn } from 'node:child_process';
+import { createMockChild, mockSpawnWith } from './helpers/mock-child-process.js';
 
-vi.mock('child_process', () => ({
+vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
   execSync: vi.fn(),
 }));
 
 const mockedSpawn = vi.mocked(spawn);
-
-function createMockChild(stdoutData: string, exitCode = 0) {
-  const child = new EventEmitter() as EventEmitter & {
-    stdout: Readable;
-    stderr: Readable;
-    stdin: Readable;
-  };
-  child.stdout = new Readable({
-    read() {
-      this.push(stdoutData);
-      this.push(null);
-    },
-  });
-  child.stderr = new Readable({
-    read() {
-      this.push(null);
-    },
-  });
-  child.stdin = new Readable({
-    read() {
-      this.push(null);
-    },
-  });
-
-  // Emit close after stdout ends
-  child.stdout.on('end', () => {
-    setTimeout(() => child.emit('close', exitCode), 0);
-  });
-
-  return child;
-}
-
-function mockSpawnWith(stdoutData: string, exitCode = 0) {
-  const child = createMockChild(stdoutData, exitCode);
-  mockedSpawn.mockReturnValue(child as any);
-  return child;
-}
 
 describe('ClaudeRunner', () => {
   let runner: ClaudeRunner;
@@ -69,7 +32,7 @@ describe('ClaudeRunner', () => {
         subtype: 'success',
         result: JSON.stringify(expectedData),
       });
-      mockSpawnWith(resultMsg + '\n');
+      mockSpawnWith(mockedSpawn, resultMsg + '\n');
 
       const result = await runner.analyze('Analyze this project', schema);
       expect(result).toEqual(expectedData);
@@ -83,14 +46,14 @@ describe('ClaudeRunner', () => {
         subtype: 'success',
         result: '```json\n{"count": 42}\n```',
       });
-      mockSpawnWith(resultMsg + '\n');
+      mockSpawnWith(mockedSpawn, resultMsg + '\n');
 
       const result = await runner.analyze('Count items', schema);
       expect(result).toEqual({ count: 42 });
     });
 
     it('should throw when no response is received', async () => {
-      mockSpawnWith('\n');
+      mockSpawnWith(mockedSpawn, '\n');
 
       const schema = z.object({ data: z.string() });
       await expect(runner.analyze('Test', schema)).rejects.toThrow();
@@ -102,7 +65,7 @@ describe('ClaudeRunner', () => {
         type: 'result',
         result: '{"ok": true}',
       });
-      mockSpawnWith(resultMsg + '\n');
+      mockSpawnWith(mockedSpawn, resultMsg + '\n');
 
       await runner.analyze('Test prompt', schema);
 
@@ -143,7 +106,7 @@ describe('ClaudeRunner', () => {
           ],
         },
       });
-      mockSpawnWith(msg + '\n');
+      mockSpawnWith(mockedSpawn, msg + '\n');
 
       const result = await runner.generate('Generate files');
       expect(result.filesCreated).toContain('/project/harness.config.json');
@@ -164,7 +127,7 @@ describe('ClaudeRunner', () => {
           ],
         },
       });
-      mockSpawnWith(msg + '\n');
+      mockSpawnWith(mockedSpawn, msg + '\n');
 
       const result = await runner.generate('Modify files');
       expect(result.filesModified).toContain('/project/package.json');
@@ -189,7 +152,7 @@ describe('ClaudeRunner', () => {
           ],
         },
       });
-      mockSpawnWith(msg + '\n');
+      mockSpawnWith(mockedSpawn, msg + '\n');
 
       const result = await runner.generate('Create and modify');
       expect(result.filesCreated).toContain('/project/config.json');
@@ -199,7 +162,7 @@ describe('ClaudeRunner', () => {
 
   describe('error handling', () => {
     it('should reject when claude exits with non-zero code', async () => {
-      mockSpawnWith('\n', 1);
+      mockSpawnWith(mockedSpawn, '\n', 1);
 
       const schema = z.object({ data: z.string() });
       await expect(runner.analyze('Test', schema)).rejects.toThrow('Claude exited with code 1');
@@ -210,10 +173,21 @@ describe('ClaudeRunner', () => {
         type: 'result',
         result: 'not valid json at all',
       });
-      mockSpawnWith(resultMsg + '\n');
+      mockSpawnWith(mockedSpawn, resultMsg + '\n');
 
       const schema = z.object({ data: z.string() });
       await expect(runner.analyze('Test', schema)).rejects.toThrow();
+    });
+
+    it('should reject when spawn fails', async () => {
+      const child = createMockChild('', 0);
+      mockedSpawn.mockReturnValue(child as any);
+
+      const promise = runner.analyze('Test', z.object({ data: z.string() }));
+
+      setTimeout(() => child.emit('error', new Error('ENOENT')), 0);
+
+      await expect(promise).rejects.toThrow('Failed to spawn Claude CLI');
     });
   });
 });

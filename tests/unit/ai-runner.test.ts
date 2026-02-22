@@ -47,4 +47,28 @@ describe('extractJson', () => {
     const result = extractJson(input);
     expect(JSON.parse(result)).toEqual({ a: 1 });
   });
+
+  it('should handle nested JSON objects correctly', () => {
+    const input = 'result: {"a": {"b": 1}, "c": 2}';
+    const result = extractJson(input);
+    expect(JSON.parse(result)).toEqual({ a: { b: 1 }, c: 2 });
+  });
+
+  it('should handle nested arrays and objects', () => {
+    const input = '{"items": [{"id": 1}, {"id": 2}], "total": 2}';
+    const result = extractJson(input);
+    expect(JSON.parse(result)).toEqual({ items: [{ id: 1 }, { id: 2 }], total: 2 });
+  });
+
+  it('should handle braces inside JSON strings', () => {
+    const input = '{"msg": "use {braces} here", "ok": true}';
+    const result = extractJson(input);
+    expect(JSON.parse(result)).toEqual({ msg: 'use {braces} here', ok: true });
+  });
+
+  it('should handle escaped quotes inside JSON strings', () => {
+    const input = '{"msg": "say \\"hello\\"", "ok": true}';
+    const result = extractJson(input);
+    expect(JSON.parse(result)).toEqual({ msg: 'say "hello"', ok: true });
+  });
 });

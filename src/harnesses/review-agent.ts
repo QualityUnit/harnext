@@ -1,4 +1,5 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 
 import { buildReviewAgentPrompt } from '../prompts/review-agent.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -16,12 +17,14 @@ export const reviewAgentHarness: HarnessModule = {
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
 
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+
     // 1. Generate reference templates from existing builders
-    const refCodeReviewWorkflow = buildCodeReviewWorkflow();
+    const refCodeReviewWorkflow = buildCodeReviewWorkflow(instructionFile);
     const refRerunWorkflow = buildRerunWorkflow();
     const refAutoResolveWorkflow = buildAutoResolveWorkflow();
     const refReviewAgentUtils = buildReviewAgentUtils();
-    const refCodefactoryPrompt = buildCodefactoryPrompt();
+    const refCodefactoryPrompt = buildCodefactoryPrompt(instructionFile);
 
     // 2. Build the prompt with reference context
     const basePrompt = buildReviewAgentPrompt(detection, userPreferences);
@@ -79,7 +82,7 @@ ${refCodefactoryPrompt}
 
 // ── File builders ─────────────────────────────────────────────────────────
 
-function buildCodeReviewWorkflow(): string {
+function buildCodeReviewWorkflow(instructionFile: string): string {
   const lines = [
     'name: Code Review Agent',
     '',
@@ -337,7 +340,7 @@ function buildCodeReviewWorkflow(): string {
     "            const changedFiles = process.env.CHANGED_FILES || '';",
     '',
     "            let conventions = '';",
-    "            try { conventions = fs.readFileSync('CLAUDE.md', 'utf-8').slice(0, 6000); } catch {}",
+    `            try { conventions = fs.readFileSync('${instructionFile}', 'utf-8').slice(0, 6000); } catch {}`,
     '',
     "            let config = '';",
     "            try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}",
@@ -351,9 +354,9 @@ function buildCodeReviewWorkflow(): string {
     '              `**Changed Files**:`,',
     "              changedFiles ? changedFiles.split('\\n').map(f => `- ${f}`).join('\\n') : '*(none detected)*',",
     "              '',",
-    "              '## Project Conventions (from CLAUDE.md)',",
+    `              '## Project Conventions (from ${instructionFile})',`,
     "              '',",
-    "              conventions || 'No CLAUDE.md found.',",
+    `              conventions || 'No ${instructionFile} found.',`,
     "              '',",
     "              '## Harness Configuration',",
     "              '',",
@@ -1238,7 +1241,7 @@ function buildReviewAgentUtils(): string {
   return lines.join('\n') + '\n';
 }
 
-function buildCodefactoryPrompt(): string {
+function buildCodefactoryPrompt(instructionFile: string): string {
   return `# Review Agent Instructions
 
 You are a code review agent. Your task is to review a pull request for quality, correctness, and adherence to project conventions.
@@ -1247,7 +1250,7 @@ You are a code review agent. Your task is to review a pull request for quality, 
 
 ### Code Quality
 
-- Does the code follow the project's style conventions (see CLAUDE.md)?
+- Does the code follow the project's style conventions (see ${instructionFile})?
 - Are there any obvious bugs, race conditions, or edge cases?
 - Is error handling appropriate and consistent?
 - Are there any security concerns (injection, XSS, secrets, etc.)?

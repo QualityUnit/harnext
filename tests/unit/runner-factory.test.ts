@@ -66,6 +66,19 @@ describe('validatePlatformCLI', () => {
     expect(() => validatePlatformCLI('kiro')).toThrow('kiro-cli CLI not found in PATH');
   });
 
+  it('should use "where" on Windows to locate binaries', () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', writable: true });
+
+    try {
+      mockedExecFileSync.mockReturnValue(Buffer.from('C:\\Program Files\\claude\\claude.exe'));
+      expect(() => validatePlatformCLI('claude')).not.toThrow();
+      expect(mockedExecFileSync).toHaveBeenCalledWith('where', ['claude'], { stdio: 'ignore' });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true });
+    }
+  });
+
   it('should include install instructions in error message', () => {
     mockedExecFileSync.mockImplementation(() => {
       throw new Error('not found');

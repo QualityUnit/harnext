@@ -1,9 +1,9 @@
 import { CodexRunner } from '../../src/core/codex-runner.js';
 import { z } from 'zod';
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
 import { createMockChild, mockSpawnWith } from './helpers/mock-child-process.js';
 
-vi.mock('child_process', () => ({
+vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
@@ -150,7 +150,7 @@ describe('CodexRunner', () => {
       // Simulate spawn error
       setTimeout(() => child.emit('error', new Error('ENOENT')), 0);
 
-      await expect(promise).rejects.toThrow('Failed to spawn codex CLI');
+      await expect(promise).rejects.toThrow('Failed to spawn codex');
     });
   });
 });

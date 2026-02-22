@@ -44,14 +44,48 @@ export const AI_PLATFORMS: { name: string; value: AIPlatform; description: strin
 ];
 
 export function extractJson(text: string): string {
+  // 1. Try code fences first
   const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
   if (fenceMatch) {
     return fenceMatch[1].trim();
   }
 
-  const jsonMatch = text.match(/(\{[\s\S]*?\}|\[[\s\S]*?\])/);
-  if (jsonMatch) {
-    return jsonMatch[1].trim();
+  // 2. Find balanced JSON object or array using brace counting
+  const startIdx = text.search(/[{[]/);
+  if (startIdx !== -1) {
+    const openChar = text[startIdx];
+    const closeChar = openChar === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    for (let i = startIdx; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escape) {
+        escape = false;
+        continue;
+      }
+
+      if (ch === '\\' && inString) {
+        escape = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (ch === openChar) depth++;
+      else if (ch === closeChar) depth--;
+
+      if (depth === 0) {
+        return text.slice(startIdx, i + 1).trim();
+      }
+    }
   }
 
   return text.trim();
