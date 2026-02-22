@@ -1,6 +1,6 @@
 import { claudeMdHarness } from '../../../src/harnesses/claude-md.js';
 import type { HarnessContext } from '../../../src/harnesses/types.js';
-import type { ClaudeRunner } from '../../../src/core/claude-runner.js';
+import type { AIRunner } from '../../../src/core/ai-runner.js';
 import type { DetectionResult } from '../../../src/core/detector.js';
 
 vi.mock('../../../src/prompts/claude-md.js', () => ({
@@ -39,17 +39,19 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
     repoRoot: '/tmp/test-repo',
     detection,
     runner: {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: ['/tmp/test-repo/CLAUDE.md'],
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner,
+      platform: 'claude' as const,
+    } as unknown as AIRunner,
     fileWriter: {} as HarnessContext['fileWriter'],
     userPreferences: {
       ciProvider: 'github-actions',
       strictnessLevel: 'standard',
       selectedHarnesses: ['claude-md'],
+      aiPlatform: 'claude' as const,
     },
     previousOutputs: new Map(),
     ...overrides,
@@ -63,7 +65,7 @@ describe('claudeMdHarness', () => {
 
   it('should have correct metadata', () => {
     expect(claudeMdHarness.name).toBe('claude-md');
-    expect(claudeMdHarness.displayName).toBe('CLAUDE.md');
+    expect(claudeMdHarness.displayName).toBe('Agent Instructions');
     expect(claudeMdHarness.order).toBe(2);
   });
 
@@ -121,7 +123,8 @@ describe('claudeMdHarness', () => {
       runner: {
         generate: vi.fn().mockRejectedValue(new Error('Generation failed')),
         analyze: vi.fn(),
-      } as unknown as ClaudeRunner,
+        platform: 'claude' as const,
+      } as unknown as AIRunner,
     });
 
     await expect(claudeMdHarness.execute(ctx)).rejects.toThrow(

@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
-import type { ClaudeRunner, GenerateResult } from '../../src/core/claude-runner.js';
+import type { AIRunner } from '../../src/core/ai-runner.js';
 import type { DetectionResult } from '../../src/core/detector.js';
 import type {
   HarnessContext,
@@ -112,6 +112,7 @@ describe('Init flow integration', () => {
 
     const prefs: UserPreferences = {
       ciProvider: 'github-actions',
+      aiPlatform: 'claude',
       strictnessLevel: 'standard',
       selectedHarnesses: ['risk-contract', 'claude-md'],
     };
@@ -119,7 +120,7 @@ describe('Init flow integration', () => {
     const ctx: HarnessContext = {
       repoRoot: nodeProjectDir,
       detection,
-      runner: {} as ClaudeRunner,
+      runner: { platform: 'claude' as const } as AIRunner,
       fileWriter: {} as HarnessContext['fileWriter'],
       userPreferences: prefs,
       previousOutputs: new Map(),
@@ -131,12 +132,13 @@ describe('Init flow integration', () => {
 
   it('should execute harnesses and accumulate outputs', async () => {
     const mockRunner = {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      platform: 'claude' as const,
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: ['/tmp/test-repo/harness.config.json'],
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner;
+    } as unknown as AIRunner;
 
     const detection: DetectionResult = {
       primaryLanguage: 'typescript',
@@ -161,6 +163,7 @@ describe('Init flow integration', () => {
 
     const prefs: UserPreferences = {
       ciProvider: 'github-actions',
+      aiPlatform: 'claude',
       strictnessLevel: 'standard',
       selectedHarnesses: ['risk-contract', 'claude-md'],
     };
@@ -177,9 +180,7 @@ describe('Init flow integration', () => {
     };
 
     const harnesses = getHarnessModules();
-    const selected = harnesses.filter((h) =>
-      prefs.selectedHarnesses.includes(h.name),
-    );
+    const selected = harnesses.filter((h) => prefs.selectedHarnesses.includes(h.name));
 
     expect(selected.length).toBe(2);
 
@@ -196,12 +197,13 @@ describe('Init flow integration', () => {
 
   it('should pass previous outputs between harnesses', async () => {
     const mockRunner = {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      platform: 'claude' as const,
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: ['/tmp/test-repo/generated-file.json'],
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner;
+    } as unknown as AIRunner;
 
     const detection: DetectionResult = {
       primaryLanguage: 'typescript',
@@ -226,6 +228,7 @@ describe('Init flow integration', () => {
 
     const prefs: UserPreferences = {
       ciProvider: 'github-actions',
+      aiPlatform: 'claude',
       strictnessLevel: 'standard',
       selectedHarnesses: ['risk-contract', 'claude-md'],
     };
@@ -242,9 +245,7 @@ describe('Init flow integration', () => {
     };
 
     const harnesses = getHarnessModules();
-    const selected = harnesses.filter((h) =>
-      prefs.selectedHarnesses.includes(h.name),
-    );
+    const selected = harnesses.filter((h) => prefs.selectedHarnesses.includes(h.name));
 
     // Execute in order - risk-contract first, then claude-md
     for (const harness of selected) {

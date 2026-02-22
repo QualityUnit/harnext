@@ -1,4 +1,6 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
 
 import { buildReviewAgentPrompt } from '../prompts/review-agent.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -16,12 +18,15 @@ export const reviewAgentHarness: HarnessModule = {
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
 
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const platform = ctx.runner.platform;
+
     // 1. Generate reference templates from existing builders
-    const refCodeReviewWorkflow = buildCodeReviewWorkflow();
+    const refCodeReviewWorkflow = buildCodeReviewWorkflow(instructionFile, platform);
     const refRerunWorkflow = buildRerunWorkflow();
     const refAutoResolveWorkflow = buildAutoResolveWorkflow();
     const refReviewAgentUtils = buildReviewAgentUtils();
-    const refCodefactoryPrompt = buildCodefactoryPrompt();
+    const refCodefactoryPrompt = buildCodefactoryPrompt(instructionFile);
 
     // 2. Build the prompt with reference context
     const basePrompt = buildReviewAgentPrompt(detection, userPreferences);
@@ -58,8 +63,8 @@ ${refReviewAgentUtils}
 ${refCodefactoryPrompt}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
@@ -79,7 +84,8 @@ ${refCodefactoryPrompt}
 
 // ── File builders ─────────────────────────────────────────────────────────
 
-function buildCodeReviewWorkflow(): string {
+function buildCodeReviewWorkflow(instructionFile: string, platform: AIPlatform): string {
+  const agentAction = CI_AGENT_ACTIONS[platform];
   const lines = [
     'name: Code Review Agent',
     '',
@@ -337,7 +343,7 @@ function buildCodeReviewWorkflow(): string {
     "            const changedFiles = process.env.CHANGED_FILES || '';",
     '',
     "            let conventions = '';",
-    "            try { conventions = fs.readFileSync('CLAUDE.md', 'utf-8').slice(0, 6000); } catch {}",
+    `            try { conventions = fs.readFileSync('${instructionFile}', 'utf-8').slice(0, 6000); } catch {}`,
     '',
     "            let config = '';",
     "            try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}",
@@ -351,9 +357,9 @@ function buildCodeReviewWorkflow(): string {
     '              `**Changed Files**:`,',
     "              changedFiles ? changedFiles.split('\\n').map(f => `- ${f}`).join('\\n') : '*(none detected)*',",
     "              '',",
-    "              '## Project Conventions (from CLAUDE.md)',",
+    `              '## Project Conventions (from ${instructionFile})',`,
     "              '',",
-    "              conventions || 'No CLAUDE.md found.',",
+    `              conventions || 'No ${instructionFile} found.',`,
     "              '',",
     "              '## Harness Configuration',",
     "              '',",
@@ -366,7 +372,7 @@ function buildCodeReviewWorkflow(): string {
     "            core.setOutput('prompt', prompt);",
     '            core.info(`Review prompt built (${prompt.length} chars)`);',
     '',
-    '      - name: Run Claude review',
+    '      - name: Run AI review',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: review',
     '        # OIDC validation requires the workflow file to match main exactly.',
@@ -375,48 +381,55 @@ function buildCodeReviewWorkflow(): string {
     '        # continue-on-error so the job still completes and the check run is marked',
     '        # neutral rather than hard-failing the PR.',
     '        continue-on-error: true',
-    '        uses: anthropics/claude-code-action@v1',
+    `        uses: ${agentAction.action}`,
     '        with:',
-    '          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
-    '          prompt: ${{ steps.build-prompt.outputs.prompt }}',
-    '          claude_args: \'--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"\'',
-    "          allowed_bots: 'github-actions,implementer-bot'",
+    `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,
+    `          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}`,
+    ...(agentAction.argsInputKey
+      ? [
+          `          ${agentAction.argsInputKey}: '--max-turns 100 --allowedTools "Read,Glob,Grep,Bash"'`,
+        ]
+      : []),
+    ...(platform === 'claude' ? ["          allowed_bots: 'github-actions,implementer-bot'"] : []),
     '',
-    '      - name: Extract review from execution file',
+    '      - name: Extract review output',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: extract',
     '        env:',
-    '          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}',
+    ...(agentAction.executionFileOutputKey
+      ? [
+          `          EXECUTION_FILE: \${{ steps.review.outputs.${agentAction.executionFileOutputKey} }}`,
+        ]
+      : [`          FINAL_MESSAGE: \${{ steps.review.outputs.${agentAction.textOutputKey} }}`]),
     '        run: |',
-    '          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then',
-    '            echo "found=false" >> "$GITHUB_OUTPUT"',
-    '            echo "::warning::No execution file available"',
-    '            exit 0',
-    '          fi',
+    ...(agentAction.executionFileOutputKey
+      ? [
+          '          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then',
+          '            echo "found=false" >> "$GITHUB_OUTPUT"',
+          '            echo "::warning::No execution file available"',
+          '            exit 0',
+          '          fi',
+          '',
+          '          echo "Execution file: ${EXECUTION_FILE} ($(wc -c < "$EXECUTION_FILE") bytes)"',
+          '',
+          "          REVIEW_TEXT=$(jq -r '",
+          '            [.[] | select(.type == "result")] | last | .result // ""',
+          '          \' "$EXECUTION_FILE" 2>/dev/null || echo "")',
+          '',
+          '          if [[ -z "$REVIEW_TEXT" || "$REVIEW_TEXT" == "null" ]]; then',
+          "            REVIEW_TEXT=$(jq -r '",
+          '              [.[] | select(.type == "assistant") |',
+          '               .message.content[] | select(.type == "text") | .text',
+          '              ] | last // ""',
+          '            \' "$EXECUTION_FILE" 2>/dev/null || echo "")',
+          '          fi',
+        ]
+      : ['          REVIEW_TEXT="$FINAL_MESSAGE"']),
     '',
-    '          echo "Execution file: ${EXECUTION_FILE} ($(wc -c < "$EXECUTION_FILE") bytes)"',
-    '',
-    '          # The execution file is a JSON array (not JSONL) from Claude Code SDK.',
-    '          # It contains a "result" turn at the end with the final response text.',
-    '          # Fallback: extract last assistant text content from message turns.',
-    "          REVIEW_TEXT=$(jq -r '",
-    '            [.[] | select(.type == "result")] | last | .result // ""',
-    '          \' "$EXECUTION_FILE" 2>/dev/null || echo "")',
-    '',
-    '          # Fallback: if result turn is empty, get last assistant text',
     '          if [[ -z "$REVIEW_TEXT" || "$REVIEW_TEXT" == "null" ]]; then',
-    "            REVIEW_TEXT=$(jq -r '",
-    '              [.[] | select(.type == "assistant") |',
-    '               .message.content[] | select(.type == "text") | .text',
-    '              ] | last // ""',
-    '            \' "$EXECUTION_FILE" 2>/dev/null || echo "")',
-    '          fi',
-    '',
-    '          if [[ -z "$REVIEW_TEXT" || "$REVIEW_TEXT" == "null" ]]; then',
     '            echo "found=false" >> "$GITHUB_OUTPUT"',
-    '            echo "::warning::Could not extract review text from execution file"',
+    '            echo "::warning::Could not extract review text"',
     '          else',
-    '            # Truncate to 60000 chars to stay within GitHub comment limits',
     '            REVIEW_TEXT="${REVIEW_TEXT:0:60000}"',
     '            {',
     '              echo "review<<REVIEW_EOF"',
@@ -479,10 +492,10 @@ function buildCodeReviewWorkflow(): string {
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true' && steps.extract.outputs.found == 'true'",
     '        id: classifier',
     '        continue-on-error: true',
-    '        uses: anthropics/claude-code-action@v1',
+    `        uses: ${agentAction.action}`,
     '        with:',
-    '          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}',
-    '          prompt: |',
+    `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,
+    `          ${agentAction.promptInputKey}: |`,
     '            Read the following code review and classify the verdict.',
     '',
     '            Rules:',
@@ -493,18 +506,30 @@ function buildCodeReviewWorkflow(): string {
     '            <review>',
     '            ${{ steps.extract.outputs.review }}',
     '            </review>',
-    '          claude_args: >-',
-    '            --model claude-haiku-4-5-20251001',
-    '            --max-turns 3',
-    '            --json-schema \'{"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REQUEST_CHANGES","COMMENT"]},"reason":{"type":"string","description":"One sentence explaining the verdict"}},"required":["verdict","reason"]}\'',
-    "          allowed_bots: 'github-actions,implementer-bot'",
+    ...(agentAction.argsInputKey
+      ? [
+          `          ${agentAction.argsInputKey}: >-`,
+          '            --model claude-haiku-4-5-20251001',
+          '            --max-turns 3',
+          '            --json-schema \'{"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REQUEST_CHANGES","COMMENT"]},"reason":{"type":"string","description":"One sentence explaining the verdict"}},"required":["verdict","reason"]}\'',
+        ]
+      : []),
+    ...(platform === 'claude' ? ["          allowed_bots: 'github-actions,implementer-bot'"] : []),
     '',
     '      - name: Extract verdict',
     "        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'",
     '        id: verdict',
     '        env:',
-    "          STRUCTURED_OUTPUT: ${{ steps.classifier.outputs.structured_output || '' }}",
-    "          EXECUTION_FILE: ${{ steps.classifier.outputs.execution_file || '' }}",
+    ...(agentAction.structuredOutputKey
+      ? [
+          `          STRUCTURED_OUTPUT: \${{ steps.classifier.outputs.${agentAction.structuredOutputKey} || '' }}`,
+        ]
+      : ["          STRUCTURED_OUTPUT: ''"]),
+    ...(agentAction.executionFileOutputKey
+      ? [
+          `          EXECUTION_FILE: \${{ steps.classifier.outputs.${agentAction.executionFileOutputKey} || '' }}`,
+        ]
+      : ["          EXECUTION_FILE: ''"]),
     "          CLASSIFIER_OUTCOME: ${{ steps.classifier.outcome || 'failure' }}",
     '        run: |',
     '          VERDICT="COMMENT"',
@@ -611,7 +636,7 @@ function buildCodeReviewWorkflow(): string {
     '              completed_at: new Date().toISOString(),',
     '              output: {',
     "                title: `Review Agent — ${conclusion === 'success' ? 'Complete' : 'Review Needed'}`,",
-    '                summary: `Claude Code review completed with outcome: ${reviewOutcome}`,',
+    '                summary: `AI code review completed with outcome: ${reviewOutcome}`,',
     '              },',
     '            });',
     '',
@@ -1238,7 +1263,7 @@ function buildReviewAgentUtils(): string {
   return lines.join('\n') + '\n';
 }
 
-function buildCodefactoryPrompt(): string {
+function buildCodefactoryPrompt(instructionFile: string): string {
   return `# Review Agent Instructions
 
 You are a code review agent. Your task is to review a pull request for quality, correctness, and adherence to project conventions.
@@ -1247,7 +1272,7 @@ You are a code review agent. Your task is to review a pull request for quality, 
 
 ### Code Quality
 
-- Does the code follow the project's style conventions (see CLAUDE.md)?
+- Does the code follow the project's style conventions (see ${instructionFile})?
 - Are there any obvious bugs, race conditions, or edge cases?
 - Is error handling appropriate and consistent?
 - Are there any security concerns (injection, XSS, secrets, etc.)?

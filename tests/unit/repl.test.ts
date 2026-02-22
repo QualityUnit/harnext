@@ -1,5 +1,4 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import type { exec as execType } from 'node:child_process';
 
 // Use vi.hoisted so these are available inside vi.mock factories (which are hoisted above imports).
 const { mockPromptStoreInstance, MockPromptStore } = vi.hoisted(() => {
@@ -68,12 +67,9 @@ vi.mock('../../src/utils/fs.js', () => ({
   fileExists: vi.fn(),
 }));
 
-// Mock exec so that promisify(exec) works correctly.
-// The callback-style mock lets `promisify` convert it to a promise.
+// Mock execFileSync so that the claude CLI check works.
 vi.mock('node:child_process', () => ({
-  exec: vi.fn((_cmd: string, cb: (err: Error | null, result?: unknown) => void) => {
-    cb(null, { stdout: '/usr/bin/claude', stderr: '' });
-  }),
+  execFileSync: vi.fn(),
   spawnSync: vi.fn(),
 }));
 
@@ -99,16 +95,16 @@ vi.mock('../../src/core/terminal.js', () => ({
   openInNewTerminal: vi.fn(),
 }));
 
-import { exec } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import { isGitRepo, getRepoRoot, hasUncommittedChanges } from '../../src/utils/git.js';
 import { inputPrompt, selectPrompt, confirmPrompt } from '../../src/ui/prompts.js';
 import { replCommand } from '../../src/commands/repl.js';
-import { NotAGitRepoError, ClaudeNotFoundError } from '../../src/utils/errors.js';
+import { NotAGitRepoError, PlatformCLINotFoundError } from '../../src/utils/errors.js';
 import { createWorktree } from '../../src/core/worktree.js';
 import { openInNewTerminal } from '../../src/core/terminal.js';
 
-const mockedExec = vi.mocked(exec);
+const mockedExecFileSync = vi.mocked(execFileSync);
 const mockedIsGitRepo = vi.mocked(isGitRepo);
 const mockedGetRepoRoot = vi.mocked(getRepoRoot);
 const mockedHasUncommittedChanges = vi.mocked(hasUncommittedChanges);
@@ -143,18 +139,15 @@ describe('replCommand', () => {
     expect(mockedIsGitRepo).toHaveBeenCalledOnce();
   });
 
-  it('should throw ClaudeNotFoundError when claude is not installed', async () => {
+  it('should throw PlatformCLINotFoundError when claude is not installed', async () => {
     mockedIsGitRepo.mockResolvedValue(true);
 
-    // Make exec reject (simulates `which claude` failing)
-    mockedExec.mockImplementation(
-      (_cmd: string, cb: (err: Error | null, result?: unknown) => void) => {
-        cb(new Error('not found'));
-        return undefined as unknown as ReturnType<typeof execType>;
-      },
-    );
+    // Make execFileSync throw (simulates `which claude` failing)
+    mockedExecFileSync.mockImplementation(() => {
+      throw new Error('not found');
+    });
 
-    await expect(replCommand()).rejects.toThrow(ClaudeNotFoundError);
+    await expect(replCommand()).rejects.toThrow(PlatformCLINotFoundError);
   });
 
   /**
@@ -164,12 +157,7 @@ describe('replCommand', () => {
   function setupReplStartup(repoRoot = '/fake/repo'): void {
     mockedIsGitRepo.mockResolvedValue(true);
     mockedGetRepoRoot.mockResolvedValue(repoRoot);
-    mockedExec.mockImplementation(
-      (_cmd: string, cb: (err: Error | null, result?: unknown) => void) => {
-        cb(null, { stdout: '/usr/bin/claude', stderr: '' });
-        return undefined as unknown as ReturnType<typeof execType>;
-      },
-    );
+    mockedExecFileSync.mockReturnValue(Buffer.from('/usr/bin/claude'));
   }
 
   /** Throw ExitPromptError to break out of the REPL loop. */

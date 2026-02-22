@@ -2,7 +2,7 @@ import { join } from 'node:path';
 
 import { skillsInstallerHarness } from '../../../src/harnesses/skills-installer.js';
 import type { HarnessContext } from '../../../src/harnesses/types.js';
-import type { ClaudeRunner } from '../../../src/core/claude-runner.js';
+import type { AIRunner } from '../../../src/core/ai-runner.js';
 import type { FileWriter } from '../../../src/core/file-writer.js';
 import type { DetectionResult } from '../../../src/core/detector.js';
 
@@ -62,12 +62,14 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
     runner: {
       generate: vi.fn(),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner,
+      platform: 'claude' as const,
+    } as unknown as AIRunner,
     fileWriter: createMockFileWriter(),
     userPreferences: {
       ciProvider: 'github-actions',
       strictnessLevel: 'standard',
       selectedHarnesses: ['skills-installer'],
+      aiPlatform: 'claude' as const,
     },
     previousOutputs: new Map(),
     ...overrides,
@@ -143,6 +145,23 @@ describe('skillsInstallerHarness', () => {
     const output = await skillsInstallerHarness.execute(ctx);
 
     expect(output.metadata?.skillsInstalled).toEqual(['check-docs', 'chrome-devtools']);
+  });
+
+  it('should use platform-specific instruction file in check-docs skill', async () => {
+    const ctx = createMockContext({
+      runner: {
+        generate: vi.fn(),
+        analyze: vi.fn(),
+        platform: 'kiro' as const,
+      } as unknown as AIRunner,
+    });
+    await skillsInstallerHarness.execute(ctx);
+
+    const calls = vi.mocked(ctx.fileWriter.write).mock.calls;
+    const checkDocsCall = calls.find((c) => c[0].endsWith(join('check-docs', 'SKILL.md')));
+    expect(checkDocsCall).toBeDefined();
+    expect(checkDocsCall![1]).toContain('KIRO.md');
+    expect(checkDocsCall![1]).not.toContain('Claude Code Docs Section');
   });
 
   it('should not call runner.generate', async () => {

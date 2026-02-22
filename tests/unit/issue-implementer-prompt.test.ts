@@ -27,6 +27,7 @@ const baseDetection: DetectionResult = {
 
 const basePrefs: UserPreferences = {
   ciProvider: 'github-actions',
+  aiPlatform: 'claude',
   strictnessLevel: 'standard',
   selectedHarnesses: ['issue-implementer'],
 };
@@ -39,7 +40,10 @@ describe('buildIssueImplementerPrompt', () => {
 
   it('should use explicit gh pr create syntax for PR creation', () => {
     const result = buildIssueImplementerPrompt(baseDetection, basePrefs);
-    expect(result).toContain('gh pr create --label "agent-pr"');
+    expect(result).toContain('gh pr create');
+    expect(result).toContain('--base');
+    // stderr must NOT be redirected — errors must be visible in CI logs
+    expect(result).not.toContain('2>&1)');
   });
 
   it('should mention agent-pr label for GitLab CI provider', () => {

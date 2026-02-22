@@ -7,7 +7,7 @@ This document defines the architectural layer structure of CodeFactory. These bo
 ### utils
 
 - **Purpose**: Pure utility functions with zero knowledge of the application domain.
-- **Contains**: File system helpers (`fileExists`, `readFileIfExists`, `getDirectoryTree`), Git CLI wrappers (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`), custom Error subclasses (`UserCancelledError`, `ClaudeNotFoundError`, `NotAGitRepoError`).
+- **Contains**: File system helpers (`fileExists`, `readFileIfExists`, `getDirectoryTree`), Git CLI wrappers (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`), custom Error subclasses (`UserCancelledError`, `PlatformCLINotFoundError`, `NotAGitRepoError`).
 - **Allowed dependencies**: none — this is the leaf layer.
 - **Forbidden dependencies**: All other layers. Utils must never import from `ui`, `core`, `commands`, `prompts`, `providers`, or `harnesses`.
 - **Public API**: All exports from `errors.ts`, `fs.ts`, and `git.ts`.
@@ -22,11 +22,11 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ### core
 
-- **Purpose**: The engine — stack detection, Claude SDK integration, configuration persistence, and file operation tracking.
-- **Contains**: `ClaudeRunner` (spawns `claude` CLI, parses stream-JSON, tracks Write/Edit operations), `detector.ts` (two-phase detection: `runHeuristicDetection` and `runFullDetection`), `config.ts` (`loadHarnessConfig`, `saveHarnessConfig`, `HarnessConfig` type), `file-writer.ts` (`FileWriter` class that tracks created vs modified files).
+- **Purpose**: The engine — stack detection, AI runner abstraction, configuration persistence, and file operation tracking.
+- **Contains**: `ai-runner.ts` (`AIRunner` interface, `AIPlatform` type, `INSTRUCTION_FILES` constant, `extractJson()`), `claude-runner.ts` (spawns `claude` CLI, parses stream-JSON, tracks Write/Edit operations), `git-diff-runner.ts` (abstract base for Kiro/Codex runners using git-diff file tracking), `kiro-runner.ts` (AWS Kiro runner), `codex-runner.ts` (OpenAI Codex runner), `runner-factory.ts` (`createRunner()` factory, `validatePlatformCLI()`), `detector.ts` (two-phase detection: `runHeuristicDetection` and `runFullDetection`), `config.ts` (`loadHarnessConfig`, `saveHarnessConfig`, `HarnessConfig` type), `file-writer.ts` (`FileWriter` class that tracks created vs modified files).
 - **Allowed dependencies**: `utils`
 - **Forbidden dependencies**: `ui`, `commands`, `prompts`, `providers`, `harnesses`. Core must never import UI components or harness-specific logic. This prevents circular dependencies and keeps the engine testable without terminal I/O.
-- **Public API**: `ClaudeRunner`, `FileWriter`, `DetectionResult`, `HeuristicResult`, `HarnessConfig`, detection functions, config functions.
+- **Public API**: `AIRunner`, `AIPlatform`, `createRunner`, `validatePlatformCLI`, `ClaudeRunner`, `GitDiffRunner`, `KiroRunner`, `CodexRunner`, `FileWriter`, `DetectionResult`, `HeuristicResult`, `HarnessConfig`, `INSTRUCTION_FILES`, detection functions, config functions.
 
 ### prompts
 
@@ -54,7 +54,7 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ### harnesses
 
-- **Purpose**: The 13 harness modules, each responsible for generating a specific set of artifacts (CI workflows, review-agent config, pre-commit hooks, etc.).
+- **Purpose**: The 16 harness modules, each responsible for generating a specific set of artifacts (CI workflows, review-agent config, pre-commit hooks, etc.).
 - **Contains**: `types.ts` (contracts: `HarnessModule`, `HarnessContext`, `HarnessOutput`, `UserPreferences`), `index.ts` (registry: `getHarnessModules()`, `getHarnessById()`), and one implementation file per harness (e.g., `risk-contract.ts`, `ci-pipeline.ts`, `review-agent.ts`).
 - **Allowed dependencies**: `core`, `prompts`, `providers`, `utils`
 - **Forbidden dependencies**: `ui`, `commands`. Harness modules must not produce terminal output directly — they return `HarnessOutput` objects and let the orchestrator (`commands/init.ts`) handle logging.
@@ -62,15 +62,15 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ## Dependency Matrix
 
-| From \ To | commands | core | harnesses | prompts | providers | ui | utils |
-|---|---|---|---|---|---|---|---|
-| **commands** | - | Y | N | N | N | Y | Y |
-| **core** | N | - | N | N | N | N | Y |
-| **harnesses** | N | Y | - | Y | Y | N | Y |
-| **prompts** | N | Y | N | - | N | N | Y |
-| **providers** | N | Y | N | N | - | N | Y |
-| **ui** | N | N | N | N | N | - | Y |
-| **utils** | N | N | N | N | N | N | - |
+| From \ To     | commands | core | harnesses | prompts | providers | ui  | utils |
+| ------------- | -------- | ---- | --------- | ------- | --------- | --- | ----- |
+| **commands**  | -        | Y    | N         | N       | N         | Y   | Y     |
+| **core**      | N        | -    | N         | N       | N         | N   | Y     |
+| **harnesses** | N        | Y    | -         | Y       | Y         | N   | Y     |
+| **prompts**   | N        | Y    | N         | -       | N         | N   | Y     |
+| **providers** | N        | Y    | N         | N       | -         | N   | Y     |
+| **ui**        | N        | N    | N         | N       | N         | -   | Y     |
+| **utils**     | N        | N    | N         | N       | N         | N   | -     |
 
 **Y** = allowed import. **N** = forbidden.
 
@@ -83,6 +83,7 @@ Note: `commands` does not directly import `harnesses` files. It imports only fro
 The `architectural-linters` harness generates a custom lint script that statically analyzes import statements against the `architecturalBoundaries` definition in `harness.config.json`. This runs as part of the `structural-tests` CI job.
 
 A boundary violation fails the build:
+
 ```
 ERROR: src/core/detector.ts imports from "ui" layer (forbidden).
        core → ui is not in allowedImports: ["utils"]
@@ -95,6 +96,7 @@ Run `npm run lint` before pushing. The ESLint configuration combined with the ar
 ### Exemptions
 
 If a boundary violation is intentionally necessary (rare), annotate the import with a comment explaining why:
+
 ```typescript
 // arch-exempt: logger needed for debug output during detection phase
 import { logger } from '../ui/logger.js';
@@ -111,6 +113,7 @@ Exemptions must be approved by a human reviewer (not just review-agent) and docu
 **Why it's wrong**: Core must remain free of terminal I/O so it can be tested without mocking console output.
 
 **Fix**: Return diagnostic data in the result object. Let `commands/init.ts` handle logging:
+
 ```typescript
 // wrong — core/detector.ts
 import { logger } from '../ui/logger.js';
@@ -128,6 +131,7 @@ logger.debug(`Detected ${heuristics.languages.length} languages`);
 **Why it's wrong**: Harnesses return `HarnessOutput`; the orchestrator handles output display.
 
 **Fix**: Remove the UI import. Use `metadata` in `HarnessOutput` to pass extra info to the orchestrator:
+
 ```typescript
 // wrong — harnesses/ci-pipeline.ts
 import { logger } from '../ui/logger.js';
@@ -149,6 +153,7 @@ return {
 **Why it's wrong**: Prompts produce strings (instructions for Claude), not CI artifacts. Provider logic belongs in `providers/` or the harness module itself.
 
 **Fix**: Keep prompt builders pure — they should reference the CI provider by name string, not by importing provider classes:
+
 ```typescript
 // wrong — prompts/ci-pipeline.ts
 import { GitHubActionsProvider } from '../providers/github-actions.js';

@@ -1,4 +1,5 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 import { buildIssueImplementerPrompt } from '../prompts/issue-implementer.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -13,8 +14,9 @@ export const issueImplementerHarness: HarnessModule = {
   },
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
-    const prompt = buildIssueImplementerPrompt(ctx.detection, ctx.userPreferences);
-    const systemPrompt = buildSystemPrompt();
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const prompt = buildIssueImplementerPrompt(ctx.detection, ctx.userPreferences, instructionFile);
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
 
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);

@@ -1,5 +1,8 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildIssueTriagePrompt } from '../prompts/issue-triage.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -15,9 +18,10 @@ export const issueTriageHarness: HarnessModule = {
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
+    const platform = ctx.runner.platform;
 
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildIssueTriageWorkflowYml(detection);
+    const refWorkflow = buildIssueTriageWorkflowYml(detection, platform);
     const refGuard = buildIssueTriageGuardTs();
     const refPromptMd = buildIssueTriagePromptMd();
 
@@ -46,8 +50,8 @@ ${refGuard}
 ${refPromptMd}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
@@ -81,9 +85,10 @@ function resolveCacheKey(det: DetectionResult): string {
 
 /* eslint-disable no-useless-escape */
 
-function buildIssueTriageWorkflowYml(det: DetectionResult): string {
+function buildIssueTriageWorkflowYml(det: DetectionResult, platform: AIPlatform): string {
   const installCmd = resolveInstallCmd(det);
   const cache = resolveCacheKey(det);
+  const agentAction = CI_AGENT_ACTIONS[platform];
 
   return `name: Issue Triage Agent
 
@@ -246,28 +251,27 @@ jobs:
           SCHEMA=$(cat /tmp/triage-schema.json | tr -d '\\n' | tr -s ' ')
           echo "value=\${SCHEMA}" >> "$GITHUB_OUTPUT"
 
-      - name: Run Claude triage analysis
-        if: steps.guard.outputs.should-triage == 'true'
-        id: claude-triage
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: \${{ steps.build-prompt.outputs.prompt }}
-          claude_args: "--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"
+${buildAgentStepLines(platform, {
+  stepName: 'Run AI triage analysis',
+  stepId: 'ai-triage',
+  promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
+  ifCondition: "steps.guard.outputs.should-triage == 'true'",
+  argsExpr: `"--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"`,
+}).join('\n')}
 
       - name: Parse structured verdict
         if: steps.guard.outputs.should-triage == 'true'
         id: verdict
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          STRUCTURED_OUTPUT: \${{ steps.claude-triage.outputs.structured_output || '' }}
+          STRUCTURED_OUTPUT: \${{ steps.ai-triage.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
         with:
           script: |
             const raw = process.env.STRUCTURED_OUTPUT || '';
             core.info(\`Structured output length: \${raw.length}\`);
 
             if (!raw) {
-              core.warning('No structured output from Claude — structured_output is empty');
+              core.warning('No structured output from AI agent — structured_output is empty');
               core.setOutput('parsed', 'false');
               core.setOutput('raw-text', '');
               return;
@@ -348,10 +352,10 @@ jobs:
           steps.devserver.outputs.available == 'true'
         id: reproduce
         continue-on-error: true
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: |
             You are a bug reproduction agent. Your goal is to reproduce a reported bug using a headless browser.
 
             ## Issue
@@ -378,14 +382,13 @@ jobs:
               "notes": "Brief description of what you observed"
             }
             \`\`\`
-          claude_args: '--max-turns 20'
-
+${agentAction.argsInputKey ? `          ${agentAction.argsInputKey}: '--max-turns 20'` : ''}
       - name: Parse reproduction result
         if: steps.reproduce.outcome == 'success'
         id: repro-result
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          REPRO_OUTPUT: \${{ steps.reproduce.outputs.structured_output || '' }}
+          REPRO_OUTPUT: \${{ steps.reproduce.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
         with:
           script: |
             const raw = process.env.REPRO_OUTPUT || '';
@@ -443,7 +446,7 @@ jobs:
             const commentSections = [\`<!-- issue-triage: #\${issueNumber} -->\`];
 
             if (!parsed) {
-              // Failed to parse — add failure label and show what Claude said
+              // Failed to parse — add failure label and show what the AI agent said
               labelsToAdd.push('triage:failed');
               commentSections.push(
                 '\u26a0\ufe0f Issue Triage — Parse Failure',

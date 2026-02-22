@@ -1,6 +1,6 @@
 import { issueImplementerHarness } from '../../../src/harnesses/issue-implementer.js';
 import type { HarnessContext } from '../../../src/harnesses/types.js';
-import type { ClaudeRunner } from '../../../src/core/claude-runner.js';
+import type { AIRunner } from '../../../src/core/ai-runner.js';
 import type { DetectionResult } from '../../../src/core/detector.js';
 
 vi.mock('../../../src/prompts/issue-implementer.js', () => ({
@@ -37,7 +37,7 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
     repoRoot: '/tmp/test-repo',
     detection,
     runner: {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: [
           '/tmp/test-repo/.github/workflows/issue-implementer.yml',
           '/tmp/test-repo/scripts/issue-implementer-prompt.md',
@@ -46,12 +46,14 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner,
+      platform: 'claude' as const,
+    } as unknown as AIRunner,
     fileWriter: {} as HarnessContext['fileWriter'],
     userPreferences: {
       ciProvider: 'github-actions',
       strictnessLevel: 'standard',
       selectedHarnesses: ['issue-implementer'],
+      aiPlatform: 'claude' as const,
     },
     previousOutputs: new Map(),
     ...overrides,
@@ -121,7 +123,8 @@ describe('issueImplementerHarness', () => {
       runner: {
         generate: vi.fn().mockRejectedValue(new Error('Claude API timeout')),
         analyze: vi.fn(),
-      } as unknown as ClaudeRunner,
+        platform: 'claude' as const,
+      } as unknown as AIRunner,
     });
 
     await expect(issueImplementerHarness.execute(ctx)).rejects.toThrow(
@@ -134,7 +137,8 @@ describe('issueImplementerHarness', () => {
       runner: {
         generate: vi.fn().mockRejectedValue('network failure'),
         analyze: vi.fn(),
-      } as unknown as ClaudeRunner,
+        platform: 'claude' as const,
+      } as unknown as AIRunner,
     });
 
     await expect(issueImplementerHarness.execute(ctx)).rejects.toThrow(

@@ -1,7 +1,6 @@
-import { exec, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 
 import chalk from 'chalk';
 import { z } from 'zod';
@@ -14,13 +13,12 @@ import { borderedInput } from '../ui/bordered-input.js';
 import type { SlashCommand } from '../ui/bordered-input.js';
 import { isGitRepo, getRepoRoot, hasUncommittedChanges } from '../utils/git.js';
 import { readFileIfExists } from '../utils/fs.js';
-import { NotAGitRepoError, ClaudeNotFoundError } from '../utils/errors.js';
+import { NotAGitRepoError } from '../utils/errors.js';
+import { validatePlatformCLI } from '../core/runner-factory.js';
 import { generateBranchName, createWorktree } from '../core/worktree.js';
 import { openInNewTerminal } from '../core/terminal.js';
 import type { PromptEntry } from '../core/prompt-store.js';
 import { PromptStore } from '../core/prompt-store.js';
-
-const execAsync = promisify(exec);
 
 type ReplAction =
   | { type: 'prompt'; name: string }
@@ -207,7 +205,8 @@ async function handleTask(task: string, repoRoot: string, store: PromptStore): P
   const qualityGates = buildQualityGates(harnessCommands);
   const systemPrompt = template
     .replace(/\{\{branchName\}\}/g, () => branchName.trim())
-    .replace(/\{\{qualityGates\}\}/g, () => qualityGates);
+    .replace(/\{\{qualityGates\}\}/g, () => qualityGates)
+    .replace(/\{\{instructionFile\}\}/g, 'CLAUDE.md');
 
   // Write launcher files to worktree
   const cfDir = join(worktree.path, '.codefactory');
@@ -249,11 +248,7 @@ export async function replCommand(): Promise<void> {
     throw new NotAGitRepoError();
   }
 
-  try {
-    await execAsync('which claude');
-  } catch {
-    throw new ClaudeNotFoundError();
-  }
+  validatePlatformCLI('claude');
 
   const repoRoot = await getRepoRoot();
   const store = new PromptStore(repoRoot);

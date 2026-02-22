@@ -1,6 +1,7 @@
 import { riskContractHarness } from '../../../src/harnesses/risk-contract.js';
 import type { HarnessContext } from '../../../src/harnesses/types.js';
-import type { ClaudeRunner, GenerateResult } from '../../../src/core/claude-runner.js';
+import type { AIRunner } from '../../../src/core/ai-runner.js';
+import type { GenerateResult } from '../../../src/core/claude-runner.js';
 import type { DetectionResult } from '../../../src/core/detector.js';
 
 vi.mock('../../../src/prompts/risk-contract.js', () => ({
@@ -37,17 +38,19 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
     repoRoot: '/tmp/test-repo',
     detection,
     runner: {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: ['/tmp/test-repo/harness.config.json'],
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner,
+      platform: 'claude' as const,
+    } as unknown as AIRunner,
     fileWriter: {} as HarnessContext['fileWriter'],
     userPreferences: {
       ciProvider: 'github-actions',
       strictnessLevel: 'standard',
       selectedHarnesses: ['risk-contract'],
+      aiPlatform: 'claude' as const,
     },
     previousOutputs: new Map(),
     ...overrides,
@@ -115,7 +118,8 @@ describe('riskContractHarness', () => {
       runner: {
         generate: vi.fn().mockRejectedValue(new Error('Claude API timeout')),
         analyze: vi.fn(),
-      } as unknown as ClaudeRunner,
+        platform: 'claude' as const,
+      } as unknown as AIRunner,
     });
 
     await expect(riskContractHarness.execute(ctx)).rejects.toThrow(

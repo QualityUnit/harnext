@@ -1,12 +1,14 @@
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 import type { DetectionResult, UserPreferences } from './types.js';
 
 /**
- * Prompt for generating the CLAUDE.md agent instructions file.
+ * Prompt for generating the agent instructions file (CLAUDE.md, KIRO.md, or CODEX.md).
  */
 export function buildClaudeMdPrompt(detection: DetectionResult, prefs: UserPreferences): string {
   const criticalPaths = [...detection.criticalPaths, ...(prefs.customCriticalPaths ?? [])];
+  const instructionFile = INSTRUCTION_FILES[prefs.aiPlatform];
 
-  return `Generate a \`CLAUDE.md\` file for this repository. CLAUDE.md is the primary instruction file that AI coding agents (Claude Code, Cursor, etc.) read before making changes. It must be concise (~100 lines), authoritative, and contain everything an agent needs to work safely in this codebase.
+  return `Generate a \`${instructionFile}\` file for this repository. ${instructionFile} is the primary instruction file that AI coding agents read before making changes. It must be concise (~100 lines), authoritative, and contain everything an agent needs to work safely in this codebase.
 
 ## Detected Stack Context
 
@@ -32,7 +34,7 @@ export function buildClaudeMdPrompt(detection: DetectionResult, prefs: UserPrefe
 
 ${criticalPaths.map((p) => `- \`${p}\``).join('\n') || '- none detected'}
 
-## CLAUDE.md Structure Requirements
+## ${instructionFile} Structure Requirements
 
 Generate the file with exactly these sections in this order:
 
@@ -139,5 +141,5 @@ With this in place, agents can use \`mcp__puppeteer__*\` tools to: navigate to p
 
 ## Output Format
 
-Return the complete markdown content for CLAUDE.md followed by the \`.mcp.json\` content. Separate the two files with a comment line indicating the target file path, e.g. \`# file: .mcp.json\`. Target approximately 100 lines for CLAUDE.md. Be concise — every line should provide actionable information to an AI agent. Do not include meta-commentary or explanations outside the file content.`;
+Return the complete markdown content for ${instructionFile} followed by the \`.mcp.json\` content. Separate the two files with a comment line indicating the target file path, e.g. \`# file: .mcp.json\`. Target approximately 100 lines for ${instructionFile}. Be concise — every line should provide actionable information to an AI agent. Do not include meta-commentary or explanations outside the file content.`;
 }

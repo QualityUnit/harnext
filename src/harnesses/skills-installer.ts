@@ -1,30 +1,21 @@
 import { join } from 'node:path';
 
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 
-const CHECK_DOCS_SKILL = `---
-name: check-docs
-description: Always check project docs and Claude Code documentation before implementing, reviewing, or planning. Load at the start of every coding task to find the right docs section for your work type.
----
+const SKILLS_DIRS: Record<AIPlatform, string> = {
+  claude: '.claude/skills',
+  kiro: '.kiro/extensions',
+  codex: '.codex/tools',
+};
 
-# Check Documentation First
+function buildCheckDocsSkill(platform: AIPlatform): string {
+  const instructionFile = INSTRUCTION_FILES[platform];
 
-**Before starting ANY implementation, review, or planning task, you MUST check the relevant documentation.** This keeps you aligned with current APIs, patterns, and conventions — and prevents you from implementing something that already exists or contradicts established architecture.
-
-## Step 1: Check the Project Docs
-
-Start with the local project documentation:
-
-| File                   | Contents                                                                                                                |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| \`CLAUDE.md\`            | **Read this first.** Critical conventions, build commands, code style, architecture overview, and security constraints. |
-| \`docs/architecture.md\` | System architecture, component diagrams, and data flow.                                                                 |
-| \`docs/conventions.md\`  | Code conventions, naming rules, and patterns to follow.                                                                 |
-| \`docs/layers.md\`       | Architectural layers and dependency rules (what can import what).                                                       |
-| \`docs/harness-gaps.md\` | Known gaps and planned improvements to the harness system.                                                              |
-| \`harness.config.json\`  | Risk tiers, architectural boundaries, and harness module registry.                                                      |
-
-## Step 2: Find the Right Claude Code Docs Section
+  const platformDocsSection =
+    platform === 'claude'
+      ? `## Step 2: Find the Right Claude Code Docs Section
 
 The Claude Code documentation index is at:
 
@@ -66,16 +57,6 @@ Fetch this first to discover all available pages, then navigate to the section m
 | Plugin architecture                    | \`plugins.md\` and \`plugins-reference.md\`                                                          |
 | Understanding settings                 | \`settings.md\`                                                                                    |
 
-## Step 3: Apply What You Found
-
-After reading the relevant docs:
-
-1. **Note any API or pattern changes** since you last worked in this area.
-2. **Check if your task is already covered** by a documented workflow or built-in feature.
-3. **Identify the architectural layer** your change belongs to (see \`docs/layers.md\` and \`harness.config.json\`).
-4. **Verify risk tier** — Tier 3 (critical paths) requires extra test coverage and human review.
-5. **Proceed with implementation/review/planning** using the documented patterns.
-
 ## Quick Reference: Doc Structure
 
 \`\`\`
@@ -111,10 +92,48 @@ code.claude.com/docs/en/
     ├── cli-reference.md
     ├── security.md
     └── troubleshooting.md
-\`\`\`
+\`\`\``
+      : `## Step 2: Check Platform Documentation
 
-> **Tip:** If unsure which doc to check, fetch \`https://code.claude.com/docs/llms.txt\` and scan the descriptions — each page has a one-line summary.
+Consult your AI platform's official documentation for CLI usage, extension mechanisms, and CI/CD integration patterns. Refer to the platform's docs for the latest features and best practices.`;
+
+  return `---
+name: check-docs
+description: Always check project docs before implementing, reviewing, or planning. Load at the start of every coding task to find the right docs section for your work type.
+---
+
+# Check Documentation First
+
+**Before starting ANY implementation, review, or planning task, you MUST check the relevant documentation.** This keeps you aligned with current APIs, patterns, and conventions — and prevents you from implementing something that already exists or contradicts established architecture.
+
+## Step 1: Check the Project Docs
+
+Start with the local project documentation:
+
+| File                   | Contents                                                                                                                |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| \`${instructionFile}\`            | **Read this first.** Critical conventions, build commands, code style, architecture overview, and security constraints. |
+| \`docs/architecture.md\` | System architecture, component diagrams, and data flow.                                                                 |
+| \`docs/conventions.md\`  | Code conventions, naming rules, and patterns to follow.                                                                 |
+| \`docs/layers.md\`       | Architectural layers and dependency rules (what can import what).                                                       |
+| \`docs/harness-gaps.md\` | Known gaps and planned improvements to the harness system.                                                              |
+| \`harness.config.json\`  | Risk tiers, architectural boundaries, and harness module registry.                                                      |
+
+${platformDocsSection}
+
+## Step 3: Apply What You Found
+
+After reading the relevant docs:
+
+1. **Note any API or pattern changes** since you last worked in this area.
+2. **Check if your task is already covered** by a documented workflow or built-in feature.
+3. **Identify the architectural layer** your change belongs to (see \`docs/layers.md\` and \`harness.config.json\`).
+4. **Verify risk tier** — Tier 3 (critical paths) requires extra test coverage and human review.
+5. **Proceed with implementation/review/planning** using the documented patterns.
+
+> **Tip:** Always read \`${instructionFile}\` at the start of every session — it contains the essential conventions and commands for this project.
 `;
+}
 
 const CHROME_DEVTOOLS_SKILL = `---
 name: chrome-devtools
@@ -273,15 +292,23 @@ When you use Chrome DevTools for a triage or planning task, include in your outp
 - For more detail on the chrome integration, see: \`https://code.claude.com/docs/en/chrome.md\`
 `;
 
-const SKILLS: Array<{ name: string; content: string }> = [
-  { name: 'check-docs', content: CHECK_DOCS_SKILL },
-  { name: 'chrome-devtools', content: CHROME_DEVTOOLS_SKILL },
-];
+function getSkills(platform: AIPlatform): Array<{ name: string; content: string }> {
+  const skills: Array<{ name: string; content: string }> = [
+    { name: 'check-docs', content: buildCheckDocsSkill(platform) },
+  ];
+
+  // Chrome DevTools skill is Claude-specific (uses /chrome command, claude --chrome flag)
+  if (platform === 'claude') {
+    skills.push({ name: 'chrome-devtools', content: CHROME_DEVTOOLS_SKILL });
+  }
+
+  return skills;
+}
 
 export const skillsInstallerHarness: HarnessModule = {
   name: 'skills-installer',
   displayName: 'Skills Installer',
-  description: 'Installs Claude Code skills into .claude/skills/, merging with any existing skills',
+  description: 'Installs agent skills/extensions into the platform-specific directory',
   order: 17,
 
   isApplicable(): boolean {
@@ -292,11 +319,13 @@ export const skillsInstallerHarness: HarnessModule = {
     const { repoRoot, fileWriter } = ctx;
     const filesCreated: string[] = [];
     const filesModified: string[] = [];
+    const skillsDir = SKILLS_DIRS[ctx.runner.platform];
 
     const snap = fileWriter.snapshot();
+    const skills = getSkills(ctx.runner.platform);
 
-    for (const skill of SKILLS) {
-      const destPath = join(repoRoot, '.claude', 'skills', skill.name, 'SKILL.md');
+    for (const skill of skills) {
+      const destPath = join(repoRoot, skillsDir, skill.name, 'SKILL.md');
       await fileWriter.write(destPath, skill.content);
     }
 
@@ -308,7 +337,7 @@ export const skillsInstallerHarness: HarnessModule = {
       harnessName: 'skills-installer',
       filesCreated,
       filesModified,
-      metadata: { skillsInstalled: SKILLS.map((s) => s.name) },
+      metadata: { skillsInstalled: skills.map((s) => s.name) },
     };
     ctx.previousOutputs.set('skills-installer', output);
     return output;

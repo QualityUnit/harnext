@@ -1,17 +1,11 @@
-import { spawn } from 'child_process';
-import { z } from 'zod';
+import { spawn } from 'node:child_process';
+import type { z } from 'zod';
 import chalk from 'chalk';
 
-export interface GenerateResult {
-  filesCreated: string[];
-  filesModified: string[];
-}
+import type { AIRunner, AIRunnerOptions, AIPlatform, GenerateResult } from './ai-runner.js';
+import { extractJson } from './ai-runner.js';
 
-export interface ClaudeRunnerOptions {
-  maxTurns?: number;
-  systemPrompt?: string;
-  cwd?: string;
-}
+export type { GenerateResult };
 
 interface StreamMessage {
   type: string;
@@ -39,10 +33,12 @@ interface RunResult {
   filesModified: string[];
 }
 
-export class ClaudeRunner {
-  private readonly options: ClaudeRunnerOptions;
+export class ClaudeRunner implements AIRunner {
+  readonly platform: AIPlatform = 'claude';
+  readonly supportsParallelGeneration = true;
+  private readonly options: AIRunnerOptions;
 
-  constructor(options: ClaudeRunnerOptions = {}) {
+  constructor(options: AIRunnerOptions = {}) {
     this.options = options;
   }
 
@@ -69,9 +65,7 @@ export class ClaudeRunner {
   }
 
   async generate(prompt: string, systemPromptAppend?: string): Promise<GenerateResult> {
-    const systemPrompt = [this.options.systemPrompt, systemPromptAppend]
-      .filter(Boolean)
-      .join('\n');
+    const systemPrompt = [this.options.systemPrompt, systemPromptAppend].filter(Boolean).join('\n');
 
     const result = await this.run(prompt, {
       systemPrompt: systemPrompt || undefined,
@@ -97,9 +91,12 @@ export class ClaudeRunner {
 
     const args = [
       '--print',
-      '--output-format', 'stream-json',
-      '--max-turns', String(config.maxTurns),
-      '--permission-mode', 'bypassPermissions',
+      '--output-format',
+      'stream-json',
+      '--max-turns',
+      String(config.maxTurns),
+      '--permission-mode',
+      'bypassPermissions',
       '--verbose',
     ];
 
@@ -206,7 +203,8 @@ export class ClaudeRunner {
           const filePath = block.input.file_path as string | undefined;
 
           if (block.name === 'Read' || block.name === 'Glob' || block.name === 'Grep') {
-            const target = filePath ?? (block.input.pattern as string) ?? (block.input.path as string) ?? '';
+            const target =
+              filePath ?? (block.input.pattern as string) ?? (block.input.path as string) ?? '';
             console.log(chalk.dim(`  ${block.name}: ${target}`));
           }
 
@@ -217,7 +215,11 @@ export class ClaudeRunner {
             }
           }
 
-          if (block.name === 'Edit' || block.name === 'FileEdit' || block.name === 'FileMultiEdit') {
+          if (
+            block.name === 'Edit' ||
+            block.name === 'FileEdit' ||
+            block.name === 'FileMultiEdit'
+          ) {
             if (filePath) {
               modified.add(filePath);
               console.log(chalk.yellow(`  ✎ Edit: ${filePath}`));
@@ -234,18 +236,4 @@ export class ClaudeRunner {
       }
     }
   }
-}
-
-function extractJson(text: string): string {
-  const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-  if (fenceMatch) {
-    return fenceMatch[1].trim();
-  }
-
-  const jsonMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-  if (jsonMatch) {
-    return jsonMatch[1].trim();
-  }
-
-  return text.trim();
 }

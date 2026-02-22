@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { exec, execSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { logger } from '../ui/logger.js';
@@ -9,7 +9,9 @@ import { confirmPrompt, selectPrompt, multiselectPrompt, inputPrompt } from '../
 import { isGitRepo, getRepoRoot } from '../utils/git.js';
 import { readFileIfExists } from '../utils/fs.js';
 import { NotAGitRepoError } from '../utils/errors.js';
-import { ClaudeRunner } from '../core/claude-runner.js';
+import { AI_PLATFORMS, INSTRUCTION_FILES } from '../core/ai-runner.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { createRunner, validatePlatformCLI } from '../core/runner-factory.js';
 import { FileWriter } from '../core/file-writer.js';
 import { loadHarnessConfig } from '../core/config.js';
 import { runHeuristicDetection } from '../core/detector.js';
@@ -22,11 +24,15 @@ import type {
   UserPreferences,
 } from '../harnesses/types.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface InitOptions {
   skipDetection?: boolean;
   dryRun?: boolean;
+  platform?: string;
+  ciProvider?: string;
+  strictness?: string;
+  yes?: boolean;
 }
 
 // Mapping from harness name to npm script entries
@@ -62,44 +68,67 @@ export async function initCommand(options: InitOptions): Promise<void> {
   );
   console.log();
 
+  const nonInteractive = !!(options.yes || (options.platform && options.ciProvider));
+
   // Check for existing config
   const existingConfig = await loadHarnessConfig(repoRoot);
   if (existingConfig) {
     logger.warn('An existing harness.config.json was found in this repository.');
-    const overwrite = await confirmPrompt(
-      'Do you want to overwrite the existing configuration?',
-      false,
-    );
-    if (!overwrite) {
-      logger.info('Init cancelled. Existing configuration preserved.');
-      return;
+    if (nonInteractive) {
+      logger.info('Overwriting existing configuration (non-interactive mode).');
+    } else {
+      const overwrite = await confirmPrompt(
+        'Do you want to overwrite the existing configuration?',
+        false,
+      );
+      if (!overwrite) {
+        logger.info('Init cancelled. Existing configuration preserved.');
+        return;
+      }
     }
   }
 
   // ── 2. Detection phase ───────────────────────────────────────────────
-  const detection = await withSpinner('Analyzing repository...', () =>
+  let detection = await withSpinner('Analyzing repository...', () =>
     runHeuristicDetection(repoRoot),
   );
 
   // ── 3. User preferences ──────────────────────────────────────────────
   displayDetectionSummary(detection);
 
-  const detectionOk = await confirmPrompt('Does this detection look correct?', true);
-  if (!detectionOk) {
-    await correctDetection(detection);
+  if (!nonInteractive) {
+    const detectionOk = await confirmPrompt('Does this detection look correct?', true);
+    if (!detectionOk) {
+      detection = await correctDetection(detection);
+    }
   }
 
-  const ciProvider = await selectPrompt<UserPreferences['ciProvider']>(
-    'Which CI provider do you use?',
-    [
-      { name: 'GitHub Actions', value: 'github-actions' },
-      { name: 'GitLab CI', value: 'gitlab-ci' },
-      { name: 'Bitbucket Pipelines', value: 'bitbucket' },
-    ],
-  );
+  const ciProvider = nonInteractive
+    ? ((options.ciProvider as UserPreferences['ciProvider']) ?? 'github-actions')
+    : await selectPrompt<UserPreferences['ciProvider']>('Which CI provider do you use?', [
+        { name: 'GitHub Actions', value: 'github-actions' },
+        { name: 'GitLab CI', value: 'gitlab-ci' },
+        { name: 'Bitbucket Pipelines', value: 'bitbucket' },
+      ]);
 
-  // ── GitHub App installation check ────────────────────────────────────
-  if (ciProvider === 'github-actions') {
+  const aiPlatform = nonInteractive
+    ? ((options.platform ?? 'claude') as AIPlatform)
+    : await selectPrompt<AIPlatform>(
+        'Which AI coding agent do you use?',
+        AI_PLATFORMS.map((p) => ({ name: `${p.name} — ${p.description}`, value: p.value })),
+      );
+
+  // Validate CLI availability
+  try {
+    validatePlatformCLI(aiPlatform);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logger.error(msg);
+    return;
+  }
+
+  // ── Platform-specific setup check ────────────────────────────────────
+  if (aiPlatform === 'claude' && ciProvider === 'github-actions') {
     console.log();
     logger.warn('CodeFactory generates CI workflows that use the Claude Code GitHub Action.');
     logger.warn(
@@ -112,23 +141,46 @@ export async function initCommand(options: InitOptions): Promise<void> {
     );
     console.log();
 
-    const hasGitHubApp = await confirmPrompt(
-      'Have you installed the Claude GitHub App on this repository?',
-      false,
-    );
-    if (!hasGitHubApp) {
-      logger.warn(
-        'Please run /install-github-app in Claude Code first, then re-run codefactory init.',
+    if (!nonInteractive) {
+      const hasGitHubApp = await confirmPrompt(
+        'Have you installed the Claude GitHub App on this repository?',
+        false,
       );
-      logger.dim(
-        '  Without the GitHub App, Claude-powered CI workflows (review agent, remediation, etc.) will not function.',
-      );
-      return;
+      if (!hasGitHubApp) {
+        logger.warn(
+          'Please run /install-github-app in Claude Code first, then re-run codefactory init.',
+        );
+        logger.dim(
+          '  Without the GitHub App, Claude-powered CI workflows (review agent, remediation, etc.) will not function.',
+        );
+        return;
+      }
     }
+  } else if (aiPlatform === 'kiro' && ciProvider === 'github-actions') {
+    console.log();
+    logger.info('Kiro CI workflows require OIDC token refresh authentication.');
+    logger.info('One-time setup: run `kiro-cli-chat login` locally, then set these secrets:');
+    logger.info('  KIRO_CLIENT_ID      — from your local OIDC device registration');
+    logger.info('  KIRO_CLIENT_SECRET   — from your local OIDC device registration');
+    logger.info('  KIRO_REFRESH_TOKEN   — from your local OIDC auth token');
+    logger.info('  KIRO_PROFILE_ARN     — your CodeWhisperer profile ARN');
+    logger.info('  KIRO_START_URL       — your IAM Identity Center start URL (optional)');
+    logger.info('Optionally set AWS_REGION as a repository variable (defaults to us-east-1).');
+    console.log();
+  } else if (aiPlatform === 'codex' && ciProvider === 'github-actions') {
+    console.log();
+    logger.info('Codex-powered CI workflows require an OpenAI API key as a GitHub secret.');
+    logger.info('Ensure OPENAI_API_KEY is set in your repo secrets.');
+    console.log();
+  }
+
+  // ── GitHub Actions workflow permissions check ──────────────────────────
+  if (ciProvider === 'github-actions') {
+    await checkGitHubActionsPermissions(repoRoot);
   }
 
   // Build harness selection list
-  const tempRunner = new ClaudeRunner({ cwd: repoRoot });
+  const tempRunner = createRunner(aiPlatform, { cwd: repoRoot });
   const tempCtx: HarnessContext = {
     repoRoot,
     detection,
@@ -136,6 +188,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     fileWriter: new FileWriter(),
     userPreferences: {
       ciProvider,
+      aiPlatform,
       strictnessLevel: 'standard',
       selectedHarnesses: [],
     },
@@ -149,10 +202,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     checked: h.isApplicable(tempCtx),
   }));
 
-  const selectedHarnesses = await multiselectPrompt<string>(
-    'Select harnesses to install:',
-    harnessChoices,
-  );
+  const selectedHarnesses = nonInteractive
+    ? harnessChoices.filter((c) => c.checked).map((c) => c.value)
+    : await multiselectPrompt<string>('Select harnesses to install:', harnessChoices);
 
   if (selectedHarnesses.length === 0) {
     logger.warn('No harnesses selected. Nothing to generate.');
@@ -168,28 +220,33 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   }
 
-  const editPaths = await confirmPrompt('Would you like to add or modify critical paths?', false);
   let customCriticalPaths: string[] | undefined;
-  if (editPaths) {
-    const pathInput = await inputPrompt('Enter additional critical paths (comma-separated):');
-    const extra = pathInput
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    customCriticalPaths = [...detection.criticalPaths, ...extra];
+  if (!nonInteractive) {
+    const editPaths = await confirmPrompt('Would you like to add or modify critical paths?', false);
+    if (editPaths) {
+      const pathInput = await inputPrompt('Enter additional critical paths (comma-separated):');
+      const extra = pathInput
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      customCriticalPaths = [...detection.criticalPaths, ...extra];
+    }
   }
 
-  const strictnessLevel = await selectPrompt<UserPreferences['strictnessLevel']>(
-    'Strictness level for harness rules:',
-    [
-      { name: 'Relaxed - warnings only, no blocking', value: 'relaxed' },
-      { name: 'Standard - block on high-risk, warn on medium', value: 'standard' },
-      { name: 'Strict - block on medium and high-risk', value: 'strict' },
-    ],
-  );
+  const strictnessLevel = nonInteractive
+    ? ((options.strictness ?? 'standard') as UserPreferences['strictnessLevel'])
+    : await selectPrompt<UserPreferences['strictnessLevel']>(
+        'Strictness level for harness rules:',
+        [
+          { name: 'Relaxed - warnings only, no blocking', value: 'relaxed' },
+          { name: 'Standard - block on high-risk, warn on medium', value: 'standard' },
+          { name: 'Strict - block on medium and high-risk', value: 'strict' },
+        ],
+      );
 
   const userPreferences: UserPreferences = {
     ciProvider,
+    aiPlatform,
     strictnessLevel,
     selectedHarnesses,
     customCriticalPaths,
@@ -205,7 +262,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   await ensureGitHubLabels(repoRoot, ciProvider);
 
   // ── 5. Harness execution ─────────────────────────────────────────────
-  const runner = new ClaudeRunner({ cwd: repoRoot });
+  const runner = createRunner(aiPlatform, {
+    cwd: repoRoot,
+    onLogLine: (line) => logger.dim(line),
+  });
   const fileWriter = new FileWriter();
   const previousOutputs = new Map<string, HarnessOutput>();
 
@@ -237,21 +297,43 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     if (harnessesInBatch.length === 0) continue;
 
-    const results = await Promise.allSettled(harnessesInBatch.map((h) => h.execute(ctx)));
+    if (runner.supportsParallelGeneration) {
+      // ClaudeRunner tracks files via stream parsing — safe to run in parallel
+      const results = await Promise.allSettled(harnessesInBatch.map((h) => h.execute(ctx)));
 
-    for (const [i, result] of results.entries()) {
-      if (result.status === 'fulfilled') {
-        const output = result.value;
-        previousOutputs.set(harnessesInBatch[i].name, output);
+      for (const [i, result] of results.entries()) {
+        if (result.status === 'fulfilled') {
+          const output = result.value;
+          previousOutputs.set(harnessesInBatch[i].name, output);
 
-        for (const f of output.filesCreated) {
-          logger.fileCreated(relative(repoRoot, f));
+          for (const f of output.filesCreated) {
+            logger.fileCreated(relative(repoRoot, f));
+          }
+          for (const f of output.filesModified) {
+            logger.fileModified(relative(repoRoot, f));
+          }
+        } else {
+          logger.warn(`Harness ${harnessesInBatch[i].name} failed: ${result.reason}`);
         }
-        for (const f of output.filesModified) {
-          logger.fileModified(relative(repoRoot, f));
+      }
+    } else {
+      // GitDiffRunner-based runners (Kiro, Codex) use shared git state and spawn
+      // CLI processes that conflict when running concurrently — run sequentially
+      for (const harness of harnessesInBatch) {
+        try {
+          const output = await harness.execute(ctx);
+          previousOutputs.set(harness.name, output);
+
+          for (const f of output.filesCreated) {
+            logger.fileCreated(relative(repoRoot, f));
+          }
+          for (const f of output.filesModified) {
+            logger.fileModified(relative(repoRoot, f));
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`Harness ${harness.name} failed: ${message}`);
         }
-      } else {
-        logger.warn(`Harness ${harnessesInBatch[i].name} failed: ${result.reason}`);
       }
     }
   }
@@ -274,7 +356,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   const harnessRegistry = {
     version: '1.0.0',
-    repoRoot,
+    repoRoot: '.',
+    aiPlatform,
     detection: {
       primaryLanguage: detection.primaryLanguage,
       framework: detection.framework,
@@ -348,10 +431,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Offer to commit
   console.log();
-  const shouldCommit = await confirmPrompt(
-    'Would you like to create a git commit with the generated files?',
-    true,
-  );
+  const shouldCommit = nonInteractive
+    ? true
+    : await confirmPrompt('Would you like to create a git commit with the generated files?', true);
 
   if (shouldCommit) {
     try {
@@ -359,10 +441,12 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const relativePaths = allFiles.map((f) => relative(repoRoot, f));
       const uniquePaths = [...new Set(relativePaths)];
 
-      await execAsync(`git add ${uniquePaths.map((p) => `"${p}"`).join(' ')}`, { cwd: repoRoot });
-      await execAsync(`git commit -m "chore: initialize harness engineering with CodeFactory"`, {
-        cwd: repoRoot,
-      });
+      await execFileAsync('git', ['add', ...uniquePaths], { cwd: repoRoot });
+      await execFileAsync(
+        'git',
+        ['commit', '-m', 'chore: initialize harness engineering with CodeFactory'],
+        { cwd: repoRoot },
+      );
       logger.success('Created commit: chore: initialize harness engineering with CodeFactory');
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -372,9 +456,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   // Next steps
+  const instructionFile = INSTRUCTION_FILES[aiPlatform];
+
   console.log();
   logger.header('Next steps');
-  logger.info('1. Review the generated CLAUDE.md and harness.config.json files.');
+  logger.info(`1. Review the generated ${instructionFile} and harness.config.json files.`);
   logger.info('2. Run "npm run harness:smoke" to verify the harness setup works.');
   logger.info('3. Open a PR with these changes and observe the CI harness checks.');
   logger.info('4. Customize risk tiers and policies in harness.config.json as needed.');
@@ -403,8 +489,18 @@ async function ensureGitHubLabels(repoRoot: string, ciProvider: string): Promise
   logger.info('Ensuring GitHub labels exist...');
   for (const label of GITHUB_LABELS) {
     try {
-      execSync(
-        `gh label create "${label.name}" --color "${label.color}" --description "${label.description}" --force`,
+      execFileSync(
+        'gh',
+        [
+          'label',
+          'create',
+          label.name,
+          '--color',
+          label.color,
+          '--description',
+          label.description,
+          '--force',
+        ],
         { cwd: repoRoot, stdio: 'ignore' },
       );
     } catch {
@@ -480,6 +576,32 @@ async function addHarnessScripts(
     await fileWriter.write(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
   } catch {
     logger.warn('Could not update package.json with harness scripts.');
+  }
+}
+
+async function checkGitHubActionsPermissions(repoRoot: string): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        'repos/{owner}/{repo}/actions/permissions/workflow',
+        '--jq',
+        '.can_approve_pull_request_reviews',
+      ],
+      { cwd: repoRoot },
+    );
+    const canCreatePRs = stdout.trim() === 'true';
+    if (!canCreatePRs) {
+      console.log();
+      logger.warn('GitHub Actions is NOT permitted to create pull requests in this repository.');
+      logger.warn('The issue-implementer agent needs this to open PRs automatically.');
+      logger.info('Enable it: Settings → Actions → General → Workflow permissions →');
+      logger.info('  "Allow GitHub Actions to create and approve pull requests"');
+      console.log();
+    }
+  } catch {
+    // gh CLI not available or not authenticated — skip check silently
   }
 }
 

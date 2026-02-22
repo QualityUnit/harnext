@@ -1,8 +1,12 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildGarbageCollectionPrompt } from '../prompts/garbage-collection.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
-const DOC_GARDENING_WORKFLOW = `name: Documentation Gardening
+function buildDocGardeningWorkflow(instructionFile: string, platform: AIPlatform): string {
+  return `name: Documentation Gardening
 
 on:
   schedule:
@@ -38,12 +42,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run documentation gardening agent
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'
-          claude_args: '--max-turns 10'
+${buildAgentStepLines(platform, {
+  stepName: 'Run documentation gardening agent',
+  stepId: 'gardening-agent',
+  promptExpr:
+    "'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'",
+  argsExpr: "'--max-turns 10'",
+}).join('\n')}
 
       - name: Revert non-documentation changes
         id: safety
@@ -93,10 +98,10 @@ jobs:
             - Fixed broken internal markdown links
             - Synchronized documented commands with actual \`package.json\` scripts
             - Removed references to deprecated APIs or deleted modules
-            - Updated \`CLAUDE.md\` / \`docs/\` if project tooling or structure has changed
+            - Updated \`${instructionFile}\` / \`docs/\` if project tooling or structure has changed
 
             ### Files scanned:
-            - \`README.md\`, \`CLAUDE.md\`
+            - \`README.md\`, \`${instructionFile}\`
             - \`docs/architecture.md\`, \`docs/conventions.md\`, \`docs/layers.md\`
 
             **Risk tier**: Tier 1 (documentation only)
@@ -111,15 +116,17 @@ jobs:
             automated
           delete-branch: true
 `;
+}
 
-const DOC_GARDENING_PROMPT = `# Documentation Gardening Task
+function buildDocGardeningPrompt(instructionFile: string): string {
+  return `# Documentation Gardening Task
 
 Scan this repository for stale, outdated, or inaccurate documentation and fix it. Be conservative — only fix issues you are confident about. Leave a \`<!-- TODO: ... -->\` comment for anything ambiguous.
 
 ## Documentation Files to Scan
 
 - \`README.md\` — project overview, harness table, quick start, architecture summary
-- \`CLAUDE.md\` — agent instructions: build commands, code style, architecture, critical paths, security constraints, PR conventions
+- \`${instructionFile}\` — agent instructions: build commands, code style, architecture, critical paths, security constraints, PR conventions
 - \`docs/architecture.md\` — detailed project structure, component diagram, layer descriptions, data flow, ADRs
 - \`docs/conventions.md\` — coding conventions, naming rules, import order, exports, error handling, formatting, testing, git workflow
 - \`docs/layers.md\` — layer boundary definitions, dependency matrix, enforcement, common violations
@@ -136,15 +143,15 @@ Scan this repository for stale, outdated, or inaccurate documentation and fix it
 
 ### 2. Command Accuracy
 
-Read \`package.json\` and compare its \`scripts\` section against documented commands in \`CLAUDE.md\` and \`README.md\`:
+Read \`package.json\` and compare its \`scripts\` section against documented commands in \`${instructionFile}\` and \`README.md\`:
 
 | Expected Script | Expected Command | Source |
 |---|---|---|
-| \`build\` | \`tsup\` | \`CLAUDE.md\`, \`README.md\` |
-| \`dev\` | \`tsup --watch\` | \`CLAUDE.md\` |
-| \`test\` | \`vitest run\` | \`CLAUDE.md\`, \`README.md\` |
-| \`lint\` | \`eslint src/\` | \`CLAUDE.md\`, \`README.md\` |
-| \`typecheck\` | \`tsc --noEmit\` | \`CLAUDE.md\` |
+| \`build\` | \`tsup\` | \`${instructionFile}\`, \`README.md\` |
+| \`dev\` | \`tsup --watch\` | \`${instructionFile}\` |
+| \`test\` | \`vitest run\` | \`${instructionFile}\`, \`README.md\` |
+| \`lint\` | \`eslint src/\` | \`${instructionFile}\`, \`README.md\` |
+| \`typecheck\` | \`tsc --noEmit\` | \`${instructionFile}\` |
 | \`prepare\` | \`husky\` | — |
 
 If any script name, command, or \`npm run\` invocation in the docs no longer matches \`package.json\`, update it. Flag commands documented in markdown that have no corresponding \`package.json\` script.
@@ -160,16 +167,16 @@ Compare \`docs/architecture.md\` against the actual directory structure under \`
 
 If modules have been added, renamed, or removed since the docs were last written, update the architecture docs accordingly.
 
-### 4. CLAUDE.md Accuracy
+### 4. ${instructionFile} Accuracy
 
-Verify each section of \`CLAUDE.md\` against the actual project state:
+Verify each section of \`${instructionFile}\` against the actual project state:
 
 1. **Build & Run Commands** — must match \`package.json\` scripts exactly.
-2. **Code Style Rules** — cross-check against \`.prettierrc\` (single quotes, semicolons, trailing commas, 100-char width, 2-space indent) and \`eslint.config.js\`.
+2. **Code Style Rules** — cross-check against \`.prettierrc\` and \`eslint.config.js\`.
 3. **Architecture Overview** — the directory tree must match actual \`src/\` contents.
 4. **Dependency rule** — the import boundaries table must match \`architecturalBoundaries\` in \`harness.config.json\`.
 5. **Critical Paths** — the listed files must match the Tier 3 paths implied by \`harness.config.json\` risk tiers.
-6. **Security Constraints** — verify claims are still accurate (e.g., Zod validation in \`detector.ts\`, tool whitelisting in \`claude-runner.ts\`).
+6. **Security Constraints** — verify claims are still accurate (e.g., Zod validation in \`detector.ts\`, tool whitelisting in runner modules).
 
 ### 5. Harness Config Consistency
 
@@ -179,7 +186,7 @@ Read \`harness.config.json\` and verify:
 - \`architecturalBoundaries\` layers match the actual \`src/\` subdirectories.
 - \`docsDrift.trackedDocs\` lists all documentation files that exist.
 
-If \`harness.config.json\` has drifted, note the discrepancy as a \`<!-- TODO: ... -->\` comment in \`CLAUDE.md\` — do not modify \`harness.config.json\` directly.
+If \`harness.config.json\` has drifted, note the discrepancy as a \`<!-- TODO: ... -->\` comment in \`${instructionFile}\` — do not modify \`harness.config.json\` directly.
 
 ### 6. Broken Internal Links
 
@@ -224,6 +231,7 @@ After making changes, provide a plain-text summary listing:
 3. **Issues requiring human decision** (left as \`<!-- TODO -->\` comments).
 4. **Sections verified as up-to-date** (no changes needed).
 `;
+}
 
 export const garbageCollectionHarness: HarnessModule = {
   name: 'garbage-collection',
@@ -237,13 +245,15 @@ export const garbageCollectionHarness: HarnessModule = {
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const platform = ctx.runner.platform;
 
-    // 1. Generate reference templates from existing constants
-    const refWorkflow = DOC_GARDENING_WORKFLOW;
-    const refPrompt = DOC_GARDENING_PROMPT;
+    // 1. Generate reference templates from existing builders
+    const refWorkflow = buildDocGardeningWorkflow(instructionFile, platform);
+    const refPrompt = buildDocGardeningPrompt(instructionFile);
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildGarbageCollectionPrompt(detection, userPreferences);
+    const basePrompt = buildGarbageCollectionPrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation
@@ -262,8 +272,8 @@ ${refWorkflow}
 ${refPrompt}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {

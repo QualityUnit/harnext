@@ -1,4 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the remediation loop workflow and agent.
@@ -6,7 +8,9 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildRemediationLoopPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an automated remediation loop system for this ${detection.primaryLanguage} project. This system allows an AI agent to automatically fix issues found by the review agent, push corrective commits, and trigger re-review.
 
 ## Detected Stack Context
@@ -40,7 +44,7 @@ ${
       : '- **Relaxed mode**: Auto-fix all types of issues the agent is confident about.\n- Maximum 10 remediation attempts per PR.'
 }
 - NEVER auto-remediate security findings — those always require human review
-- NEVER modify CI workflow files, harness.config.json, CLAUDE.md, or lock files
+- NEVER modify CI workflow files, harness.config.json, ${instructionFile}, or lock files
 - Track attempt count via PR labels (\`remediation-attempt-1\`, \`remediation-attempt-2\`, etc.)
 
 **Workflow steps**:
@@ -63,11 +67,11 @@ ${
 
 3. **Context gathering**:
    - Parse the review agent's comment to extract issues (file paths, line numbers, descriptions, severities)
-   - Read CLAUDE.md for coding conventions
+   - Read ${instructionFile} for coding conventions
    - Read harness.config.json for project rules
 
 4. **Remediation execution**:
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` (NOT \`ANTHROPIC_API_KEY\`)
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`
    - Pass the remediation prompt via the action's \`prompt\` input
    - The agent fixes ONLY the flagged issues — no refactoring, no improvements
    - After each fix, run validation:
@@ -120,7 +124,7 @@ You are a code remediation agent. Your task is to fix specific review findings o
 
 - CI/CD workflow files (.github/workflows/*, .gitlab-ci.yml, etc.)
 - harness.config.json
-- CLAUDE.md
+- ${instructionFile}
 - Lock files (package-lock.json, yarn.lock, poetry.lock, etc.)
 - Authentication/authorization modules (unless the finding specifically targets them AND they are not in critical paths)
 
@@ -163,6 +167,8 @@ The remediation loop is the most safety-critical part of the harness after the r
 - Pin the Claude model and configuration for reproducibility
 - Never auto-merge remediation commits — they always go through the full review cycle
 - Every remediation action must be logged in PR comments for audit
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

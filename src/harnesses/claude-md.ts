@@ -1,5 +1,6 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 import { buildClaudeMdPrompt } from '../prompts/claude-md.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -111,8 +112,8 @@ function buildCriticalPathsSection(detection: DetectionResult): string {
 
 export const claudeMdHarness: HarnessModule = {
   name: 'claude-md',
-  displayName: 'CLAUDE.md',
-  description: 'Generates CLAUDE.md agent instruction file',
+  displayName: 'Agent Instructions',
+  description: 'Generates agent instruction file (CLAUDE.md, KIRO.md, or CODEX.md)',
   order: 2,
 
   isApplicable(): boolean {
@@ -121,9 +122,11 @@ export const claudeMdHarness: HarnessModule = {
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
+    const aiPlatform = ctx.runner.platform;
+    const instructionFile = INSTRUCTION_FILES[aiPlatform];
 
     // 1. Generate reference content from existing builders
-    const refContent = `# CLAUDE.md
+    const refContent = `# ${instructionFile}
 
 ## Project Overview
 
@@ -170,26 +173,26 @@ Use this as your structural template. Keep the same patterns but customize all
 language setup, install commands, test/lint/build commands, and tooling for the
 detected stack.
 
-### Reference: CLAUDE.md
+### Reference: ${instructionFile}
 \`\`\`markdown
 ${refContent}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
         harnessName: 'claude-md',
         filesCreated: result.filesCreated,
         filesModified: result.filesModified,
-        metadata: { claudeMdPath: 'CLAUDE.md' },
+        metadata: { instructionFile },
       };
       ctx.previousOutputs.set('claude-md', output);
       return output;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`CLAUDE.md generation failed: ${message}`);
+      throw new Error(`${instructionFile} generation failed: ${message}`);
     }
   },
 };

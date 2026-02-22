@@ -1,21 +1,17 @@
 import type { DetectionResult } from '../core/detector.js';
-import type { ClaudeRunner } from '../core/claude-runner.js';
+import type { AIRunner } from '../core/ai-runner.js';
 import type { FileWriter } from '../core/file-writer.js';
+import type { UserPreferences } from '../prompts/types.js';
+
+export type { UserPreferences } from '../prompts/types.js';
 
 export interface HarnessContext {
   repoRoot: string;
   detection: DetectionResult;
-  runner: ClaudeRunner;
+  runner: AIRunner;
   fileWriter: FileWriter;
   userPreferences: UserPreferences;
   previousOutputs: Map<string, HarnessOutput>;
-}
-
-export interface UserPreferences {
-  ciProvider: 'github-actions' | 'gitlab-ci' | 'bitbucket';
-  strictnessLevel: 'relaxed' | 'standard' | 'strict';
-  selectedHarnesses: string[];
-  customCriticalPaths?: string[];
 }
 
 export interface HarnessOutput {

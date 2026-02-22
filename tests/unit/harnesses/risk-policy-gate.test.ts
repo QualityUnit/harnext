@@ -1,6 +1,6 @@
 import { riskPolicyGateHarness } from '../../../src/harnesses/risk-policy-gate.js';
 import type { HarnessContext } from '../../../src/harnesses/types.js';
-import type { ClaudeRunner } from '../../../src/core/claude-runner.js';
+import type { AIRunner } from '../../../src/core/ai-runner.js';
 import type { DetectionResult } from '../../../src/core/detector.js';
 
 vi.mock('../../../src/prompts/risk-policy-gate.js', () => ({
@@ -37,7 +37,7 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
     repoRoot: '/tmp/test-repo',
     detection,
     runner: {
-      generate: vi.fn<ClaudeRunner['generate']>().mockResolvedValue({
+      generate: vi.fn<AIRunner['generate']>().mockResolvedValue({
         filesCreated: [
           '/tmp/test-repo/.github/workflows/risk-policy-gate.yml',
           '/tmp/test-repo/scripts/risk-policy-gate.ts',
@@ -45,12 +45,14 @@ function createMockContext(overrides?: Partial<HarnessContext>): HarnessContext 
         filesModified: [],
       }),
       analyze: vi.fn(),
-    } as unknown as ClaudeRunner,
+      platform: 'claude' as const,
+    } as unknown as AIRunner,
     fileWriter: {} as HarnessContext['fileWriter'],
     userPreferences: {
       ciProvider: 'github-actions',
       strictnessLevel: 'standard',
       selectedHarnesses: ['risk-policy-gate'],
+      aiPlatform: 'claude' as const,
     },
     previousOutputs: new Map(),
     ...overrides,
@@ -126,7 +128,8 @@ describe('riskPolicyGateHarness', () => {
       runner: {
         generate: vi.fn().mockRejectedValue(new Error('Network error')),
         analyze: vi.fn(),
-      } as unknown as ClaudeRunner,
+        platform: 'claude' as const,
+      } as unknown as AIRunner,
     });
 
     await expect(riskPolicyGateHarness.execute(ctx)).rejects.toThrow(

@@ -1,4 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the documentation garbage collection (doc-gardening) system.
@@ -6,7 +8,9 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildGarbageCollectionPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate a documentation garbage collection (doc-gardening) system for this ${detection.primaryLanguage} project. This system runs periodically to detect stale, outdated, or inaccurate documentation and creates PRs to fix it.
 
 ## Detected Stack Context
@@ -49,11 +53,10 @@ jobs:
       - name: Set up environment
         # Set up Node.js/Python/etc. as needed for the project
       - name: Run documentation gardening agent
-        uses: anthropics/claude-code-action@v1
+        uses: ${agentAction.action}
         with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'
-          claude_args: '--max-turns 10'
+          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
+          ${agentAction.promptInputKey}: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--max-turns 10'` : ''}
       - name: Create PR if changes detected
         uses: peter-evans/create-pull-request@v6
         with:
@@ -68,7 +71,7 @@ jobs:
             - Fixed broken internal markdown links
             - Synchronized documented commands with actual package.json/pyproject.toml scripts
             - Removed references to deprecated APIs or deleted modules
-            - Updated CLAUDE.md if project tooling has changed
+            - Updated ${instructionFile} if project tooling has changed
 
             Please review changes carefully before merging.
           branch: docs/weekly-gardening
@@ -104,7 +107,7 @@ Scan this repository for stale, outdated, or inaccurate documentation and fix it
 
 ### 2. Outdated Commands
 - Read the project's build configuration (package.json scripts, pyproject.toml, Makefile, etc.)
-- Compare documented commands in CLAUDE.md, README.md, and docs/*.md against actual available commands
+- Compare documented commands in ${instructionFile}, README.md, and docs/*.md against actual available commands
 - Update any commands that have changed
 - Flag commands that exist in docs but not in the project configuration
 
@@ -113,10 +116,10 @@ Scan this repository for stale, outdated, or inaccurate documentation and fix it
 - Identify components/modules that have been added, renamed, or removed since the docs were last updated
 - Update component descriptions, dependency diagrams, and layer definitions
 
-### 4. CLAUDE.md Accuracy
-- Verify that CLAUDE.md build/test/lint commands match the project's actual scripts
+### 4. ${instructionFile} Accuracy
+- Verify that ${instructionFile} build/test/lint commands match the project's actual scripts
 - Check that listed architectural layers match the real directory structure
-- Ensure critical paths listed in CLAUDE.md match harness.config.json
+- Ensure critical paths listed in ${instructionFile} match harness.config.json
 - Validate code style rules against the actual linter/formatter configuration
 
 ### 5. Broken Links
@@ -155,8 +158,10 @@ After making changes, provide a summary listing:
 - If many issues are found, prefer creating a single focused PR over multiple
 - The prompt must be specific enough to avoid false positives and unnecessary churn
 - Include a manual workflow_dispatch trigger for on-demand gardening
-- The workflow must use \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token\` for authentication (NOT \`ANTHROPIC_API_KEY\`)
+- The workflow must use \`${agentAction.action}\` with \`${agentAction.secretInputKey}\` for authentication
 - The workflow must include \`id-token: write\` in its permissions for the Claude Code Action OAuth flow
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

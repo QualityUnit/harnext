@@ -1,4 +1,5 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 import { buildCiPipelinePrompt } from '../prompts/ci-pipeline.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -22,13 +23,14 @@ export const ciPipelineHarness: HarnessModule = {
     const nodeVersion = '22';
 
     // 1. Generate reference templates from existing builders
-    const refCiWorkflow = buildCiWorkflow(testCmd, lintCmd, buildCmd, nodeVersion);
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+    const refCiWorkflow = buildCiWorkflow(testCmd, lintCmd, buildCmd, nodeVersion, instructionFile);
     const refStructuralTests = buildStructuralTestsWorkflow();
-    const refHarnessSmoke = buildHarnessSmokeWorkflow();
+    const refHarnessSmoke = buildHarnessSmokeWorkflow(instructionFile);
     const refStructuralScript = buildStructuralTestsScript();
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildCiPipelinePrompt(detection, userPreferences);
+    const basePrompt = buildCiPipelinePrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation
@@ -57,8 +59,8 @@ ${refHarnessSmoke}
 ${refStructuralScript}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
@@ -83,6 +85,7 @@ function buildCiWorkflow(
   lintCmd: string,
   buildCmd: string,
   nodeVersion: string,
+  instructionFile: string,
 ): string {
   const lines = [
     'name: CI',
@@ -302,13 +305,13 @@ function buildCiWorkflow(
     "            console.log('✔ harness.config.json schema valid');",
     '          "',
     '',
-    '      - name: Check CLAUDE.md',
+    `      - name: Check ${instructionFile}`,
     '        run: |',
-    '          if [[ ! -s CLAUDE.md ]]; then',
-    '            echo "::error::CLAUDE.md is missing or empty"',
+    `          if [[ ! -s ${instructionFile} ]]; then`,
+    `            echo "::error::${instructionFile} is missing or empty"`,
     '            exit 1',
     '          fi',
-    '          echo "✔ CLAUDE.md present ($(wc -l < CLAUDE.md) lines)"',
+    `          echo "✔ ${instructionFile} present ($(wc -l < ${instructionFile}) lines)"`,
     '',
     '      - name: Check critical files',
     '        run: |',
@@ -430,7 +433,7 @@ function buildStructuralTestsWorkflow(): string {
   return lines.join('\n') + '\n';
 }
 
-function buildHarnessSmokeWorkflow(): string {
+function buildHarnessSmokeWorkflow(instructionFile: string): string {
   const lines = [
     'name: Harness Smoke Tests',
     '',
@@ -518,13 +521,13 @@ function buildHarnessSmokeWorkflow(): string {
     '            if (failures > 0) process.exit(1);',
     '          "',
     '',
-    '      - name: Check CLAUDE.md',
+    `      - name: Check ${instructionFile}`,
     '        run: |',
-    '          if [[ ! -s CLAUDE.md ]]; then',
-    '            echo "::error::CLAUDE.md is missing or empty"',
+    `          if [[ ! -s ${instructionFile} ]]; then`,
+    `            echo "::error::${instructionFile} is missing or empty"`,
     '            exit 1',
     '          fi',
-    '          echo "✔ CLAUDE.md present ($(wc -l < CLAUDE.md) lines)"',
+    `          echo "✔ ${instructionFile} present ($(wc -l < ${instructionFile}) lines)"`,
     '',
     '      - name: Check critical project files',
     '        run: |',

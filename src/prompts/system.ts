@@ -1,7 +1,18 @@
+import type { AIPlatform } from '../core/ai-runner.js';
+
+const PLATFORM_NOTES: Record<AIPlatform, string> = {
+  claude: '',
+  kiro: '\n\n## Platform Note\n\nThis project uses AWS Kiro as its AI coding agent. Generate artifacts compatible with the Kiro CLI and its extension conventions (`.kiro/` directory).',
+  codex:
+    '\n\n## Platform Note\n\nThis project uses OpenAI Codex as its AI coding agent. Generate artifacts compatible with the Codex CLI and its tool conventions (`.codex/` directory).',
+};
+
 /**
- * Shared system prompt establishing Claude's role as a harness engineering expert.
+ * Shared system prompt establishing the AI agent's role as a harness engineering expert.
  */
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(platform: AIPlatform): string {
+  const platformNote = PLATFORM_NOTES[platform];
+
   return `You are an expert harness engineer specializing in automated code quality, CI/CD pipelines, and developer experience infrastructure. Your role is to analyze repositories and generate production-grade harness engineering artifacts.
 
 ## Core Principles
@@ -57,5 +68,5 @@ When a project uses ESM ("type": "module" in package.json), always use \`npx tsx
 
 - Use the same Node.js version across all generated workflows (default: 22)
 - Use the same action SHAs across all workflows — do not mix pinned SHAs and version tags
-- Structural test jobs must always run \`bash scripts/structural-tests.sh\`, never \`npm test\` (they serve different purposes)`;
+- Structural test jobs must always run \`bash scripts/structural-tests.sh\`, never \`npm test\` (they serve different purposes)${platformNote}`;
 }

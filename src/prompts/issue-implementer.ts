@@ -1,4 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
+import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the issue-implementer agent workflow and supporting scripts.
@@ -6,7 +8,9 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildIssueImplementerPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
+  const agentAction = CI_AGENT_ACTIONS[prefs.aiPlatform];
   return `Generate an issue-implementer agent system for this ${detection.primaryLanguage} project. When a new issue is opened (or labeled with a trigger label), the system spawns a Claude Code agent that reads the issue, creates a worktree branch, implements the change, and opens a pull request.
 
 ## Detected Stack Context
@@ -66,7 +70,7 @@ on:
 
 When triggered via \`workflow_dispatch\` (issue mode):
 - \`github.event.issue\` and \`context.issue\` are NOT available
-- The workflow must fetch issue data via \`gh issue view <number> --json number,title,body,labels,user\`
+- The workflow must fetch issue data via \`gh issue view <number> --json number,title,body,labels,author\`
 - All downstream steps must derive issue references from the guard output (not from context)
 - \`github.event.repository.default_branch\` is not available — use a fallback: \`github.event.repository.default_branch || 'main'\``
     : prefs.ciProvider === 'gitlab-ci'
@@ -85,8 +89,10 @@ When triggered via \`workflow_dispatch\` (issue mode):
 1. **Fetch issue data** (workflow_dispatch only):
    - When \`github.event_name == 'workflow_dispatch'\`, fetch the issue via:
      \`\`\`bash
-     gh issue view "\${{ inputs.issue_number }}" --json number,title,body,labels,user
+     gh issue view "\${{ inputs.issue_number }}" --json number,title,body,labels,author \\
+       | jq '{number, title, body, labels, user: {login: .author.login}}'
      \`\`\`
+   - Note: \`gh\` CLI uses \`author\`, not \`user\` — remap to match \`github.event.issue\` shape
    - Store the result as a step output for the guard and prompt-building steps
 
 2. **Gate check** (via guard script):
@@ -116,21 +122,19 @@ When triggered via \`workflow_dispatch\` (issue mode):
 5. **Build implementation prompt**:
    - Read the implementer prompt from \`.codefactory/prompts/issue-implementer.md\`
    - Parse \`ISSUE_JSON\` (from fetched data or event payload) to extract issue fields
-   - Combine: prompt template + issue details + CLAUDE.md conventions + harness config + baseline state
+   - Combine: prompt template + issue details + ${instructionFile} conventions + harness config + baseline state
    - For workflow_dispatch: use \`(issue.user || {}).login || 'unknown'\` for safe author access
 
 6. **Agent execution**:
-   - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` (NOT \`ANTHROPIC_API_KEY\`)
-   - Pass the built prompt via the action's \`prompt\` input
-   - The agent reads CLAUDE.md and harness.config.json for project conventions
-   - Set \`--max-turns 100 --allowedTools "Edit,Write,Read,Glob,Grep,Bash"\` in \`claude_args\` (claude-code-action does NOT enable write tools by default — without \`--allowedTools\`, all Edit/Write/Bash calls will be permission-denied)
-   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by other workflows using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.
+   - Invoke the AI agent using \`${agentAction.action}\` with \`${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}\`
+   - Pass the built prompt via the action's \`${agentAction.promptInputKey}\` input
+   - The agent reads ${instructionFile} and harness.config.json for project conventions${agentAction.argsInputKey ? `\n   - Set \`--max-turns 100 --allowedTools "Edit,Write,Read,Glob,Grep,Bash"\` in \`${agentAction.argsInputKey}\`` : ''}${prefs.aiPlatform === 'claude' ? `\n   - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by other workflows using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.` : ''}
    - Set a timeout of ${prefs.strictnessLevel === 'strict' ? '30' : prefs.strictnessLevel === 'standard' ? '45' : '60'} minutes
 
 7. **Post-implementation checks**:
    - Check for file changes (both modified and new files)
    - If no changes, log notice and skip PR creation
-   - Verify no protected files were modified: \`.github/workflows/*\`, \`harness.config.json\`, \`CLAUDE.md\`, lock files
+   - Verify no protected files were modified: \`.github/workflows/*\`, \`harness.config.json\`, \`${instructionFile}\`, lock files
    - If protected files were touched, revert them via \`git checkout -- <file>\`
 
 8. **Quality gates** (regression-only):
@@ -138,12 +142,57 @@ When triggered via \`workflow_dispatch\` (issue mode):
    - Compare against baseline — only FAIL on regressions (a check that was passing but now fails)
    - If a check was already failing at baseline, a continued failure is NOT a regression
 
-9. **PR creation**:
+9. **PR creation** (CRITICAL — use the exact pattern below):
    - Stage all changes, commit: \`feat: implement #<issue-number> — <issue-title>\`
    - Push the branch
-   - Create a pull request: \`gh pr create --label "agent-pr" --title "feat: <issue-title>" --body "..."\`
-     - Body must include: implementation summary, quality gates results table, \`Closes #<issue-number>\`, and \`<!-- issue-implementer: #<issue-number> -->\`
-   - Comment on the issue: "PR created: <pr-url>"
+   - Create a pull request using the robust pattern below (NEVER use \`2>&1\` which hides errors)
+   - Body must include: implementation summary, quality gates results table, \`Closes #<issue-number>\`, and \`<!-- issue-implementer: #<issue-number> -->\`
+   - **Split PR creation and issue comment into separate steps** so a \`gh pr create\` failure is visible in logs and does not prevent the failure handler from running
+
+   Use this exact YAML pattern for the Create PR step:
+   \`\`\`yaml
+   - name: Create PR
+     id: create-pr
+     env:
+       GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+       BRANCH: \${{ steps.guard.outputs.branch }}
+       ISSUE_NUMBER: \${{ steps.guard.outputs.issue-number }}
+       ISSUE_TITLE: \${{ steps.guard.outputs.issue-title }}
+       LINT: \${{ steps.gates.outputs.lint }}
+       TYPE_CHECK: \${{ steps.gates.outputs.type-check }}
+       TEST: \${{ steps.gates.outputs.test }}
+       BUILD: \${{ steps.gates.outputs.build }}
+       FILE_COUNT: \${{ steps.changes.outputs.file-count }}
+     run: |
+       git config user.name "github-actions[bot]"
+       git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+       git add -A
+       git commit -m "feat: implement #\${ISSUE_NUMBER} — \${ISSUE_TITLE}" || true
+       git push origin "\${BRANCH}"
+
+       LINT_STATUS=$([[ "$LINT" == "true" ]] && echo "PASS" || echo "FAIL")
+       TYPE_STATUS=$([[ "$TYPE_CHECK" == "true" ]] && echo "PASS" || echo "FAIL")
+       TEST_STATUS=$([[ "$TEST" == "true" ]] && echo "PASS" || echo "FAIL")
+       BUILD_STATUS=$([[ "$BUILD" == "true" ]] && echo "PASS" || echo "FAIL")
+
+       BODY=$(printf '<!-- issue-implementer: #%s -->\\n\\n## Summary\\n\\nAutomated implementation for #%s — %s\\n\\n## Quality Gates\\n\\n| Check | Status |\\n|-------|--------|\\n| Lint | %s |\\n| Type Check | %s |\\n| Tests | %s |\\n| Build | %s |\\n\\n**Files changed**: %s\\n\\nCloses #%s' \\
+         "$ISSUE_NUMBER" "$ISSUE_NUMBER" "$ISSUE_TITLE" \\
+         "$LINT_STATUS" "$TYPE_STATUS" "$TEST_STATUS" "$BUILD_STATUS" \\
+         "$FILE_COUNT" "$ISSUE_NUMBER")
+
+       echo "Creating PR for branch \${BRANCH}..."
+       PR_URL=$(gh pr create \\
+         --title "feat: \${ISSUE_TITLE}" \\
+         --body "$BODY" \\
+         --label "agent-pr" \\
+         --head "\${BRANCH}" \\
+         --base "\${DEFAULT_BRANCH:-main}")
+
+       echo "pr-url=\${PR_URL}" >> "$GITHUB_OUTPUT"
+       echo "PR created: \${PR_URL}"
+   \`\`\`
+
+   **Key points**: stderr is NOT redirected — errors appear in the workflow log. The body is built with \`printf\` (not heredocs which break YAML block scalars). The \`--base\` flag is always explicit.
 
 10. **Escalation (failure handler)**:
    - If any step fails and the guard approved implementation:
@@ -217,7 +266,7 @@ Similarly, the agent must NOT run git commands (commit, push) — the CI workflo
 
 ## Safety Constraints
 
-- The agent must NEVER modify CI workflow files, harness.config.json, CLAUDE.md, or lock files
+- The agent must NEVER modify CI workflow files, harness.config.json, ${instructionFile}, or lock files
 - All commits must be clearly attributed to the implementer bot
 - The agent operates on a dedicated branch — never pushes to main/default branch
 - Set a hard timeout to prevent runaway execution
@@ -233,6 +282,8 @@ Similarly, the agent must NOT run git commands (commit, push) — the CI workflo
 - Include proper error handling and clear logging at each step
 - Set appropriate timeout-minutes for the workflow
 - Use concurrency groups to prevent parallel runs on the same issue
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

@@ -1,5 +1,8 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
+import type { AIPlatform } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildIssuePlannerPrompt } from '../prompts/issue-planner.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -17,13 +20,16 @@ export const issuePlannerHarness: HarnessModule = {
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
 
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
+
     // 1. Generate reference templates from existing builders
-    const refWorkflow = buildIssuePlannerWorkflowYml(detection);
+    const platform = ctx.runner.platform;
+    const refWorkflow = buildIssuePlannerWorkflowYml(detection, instructionFile, platform);
     const refGuard = buildIssuePlannerGuardTs();
-    const refPromptMd = buildIssuePlannerPromptMd();
+    const refPromptMd = buildIssuePlannerPromptMd(instructionFile);
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildIssuePlannerPrompt(detection, userPreferences);
+    const basePrompt = buildIssuePlannerPrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation
@@ -47,8 +53,8 @@ ${refGuard}
 ${refPromptMd}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
@@ -82,9 +88,14 @@ function resolveCacheKey(det: DetectionResult): string {
 
 /* eslint-disable no-useless-escape */
 
-function buildIssuePlannerWorkflowYml(det: DetectionResult): string {
+function buildIssuePlannerWorkflowYml(
+  det: DetectionResult,
+  instructionFile: string,
+  platform: AIPlatform,
+): string {
   const installCmd = resolveInstallCmd(det);
   const cache = resolveCacheKey(det);
+  const agentAction = CI_AGENT_ACTIONS[platform];
 
   return `name: Issue Planner Agent
 
@@ -225,7 +236,7 @@ jobs:
             const template = process.env.PLANNER_TEMPLATE || '';
 
             let conventions = '';
-            try { conventions = fs.readFileSync('CLAUDE.md', 'utf-8').slice(0, 6000); } catch {}
+            try { conventions = fs.readFileSync('${instructionFile}', 'utf-8').slice(0, 6000); } catch {}
 
             let config = '';
             try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}
@@ -243,9 +254,9 @@ jobs:
               '',
               issue.body || '*(empty body)*',
               '',
-              '## Project Conventions (from CLAUDE.md)',
+              '## Project Conventions (from ${instructionFile})',
               '',
-              conventions || 'No CLAUDE.md found.',
+              conventions || 'No ${instructionFile} found.',
               '',
               '## Harness Configuration',
               '',
@@ -257,56 +268,56 @@ jobs:
             core.setOutput('prompt', prompt);
             core.info(\`Planning prompt built (\${prompt.length} chars)\`);
 
-      - name: Run Claude planning analysis
-        if: steps.guard.outputs.should-plan == 'true'
-        id: claude-plan
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: \${{ steps.build-prompt.outputs.prompt }}
-          claude_args: '--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"'
-          allowed_bots: 'github-actions'
+${buildAgentStepLines(platform, {
+  stepName: 'Run AI planning analysis',
+  stepId: 'ai-plan',
+  promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
+  ifCondition: "steps.guard.outputs.should-plan == 'true'",
+  argsExpr: '\'--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"\'',
+  allowedBots: 'github-actions',
+}).join('\n')}
 
-      - name: Extract plan from execution file
+      - name: Extract plan output
         if: steps.guard.outputs.should-plan == 'true'
         id: extract-plan
         env:
-          EXECUTION_FILE: \${{ steps.claude-plan.outputs.execution_file }}
+          ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.ai-plan.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.ai-plan.outputs.${agentAction.textOutputKey} }}`}
         run: |
-          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
+${
+  agentAction.executionFileOutputKey
+    ? `          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then
+            echo "found=false" >> "\\$GITHUB_OUTPUT"
             echo "::warning::No execution file available"
             exit 0
           fi
 
           echo "Execution file: \${EXECUTION_FILE} ($(wc -c < "$EXECUTION_FILE") bytes)"
 
-          # The execution file is a JSON array (not JSONL) from Claude Code SDK.
-          # It contains a "result" turn at the end with the final response text.
           PLAN_TEXT=$(jq -r '
             [.[] | select(.type == "result")] | last | .result // ""
           ' "$EXECUTION_FILE" 2>/dev/null || echo "")
 
-          # Fallback: if result turn is empty, get last assistant text
           if [[ -z "$PLAN_TEXT" || "$PLAN_TEXT" == "null" ]]; then
             PLAN_TEXT=$(jq -r '
               [.[] | select(.type == "assistant") |
                .message.content[] | select(.type == "text") | .text
               ] | last // ""
             ' "$EXECUTION_FILE" 2>/dev/null || echo "")
-          fi
+          fi`
+    : `          PLAN_TEXT="\\$FINAL_MESSAGE"`
+}
 
           if [[ -z "$PLAN_TEXT" || "$PLAN_TEXT" == "null" ]]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Could not extract plan text from execution file"
+            echo "found=false" >> "\\$GITHUB_OUTPUT"
+            echo "::warning::Could not extract plan text"
           else
             PLAN_TEXT="\${PLAN_TEXT:0:60000}"
             {
               echo "plan<<PLAN_EOF"
               echo "$PLAN_TEXT"
               echo "PLAN_EOF"
-            } >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
+            } >> "\\$GITHUB_OUTPUT"
+            echo "found=true" >> "\\$GITHUB_OUTPUT"
             echo "\u2714 Extracted plan ($(echo "$PLAN_TEXT" | wc -c) chars)"
           fi
 
@@ -683,14 +694,14 @@ if (process.argv.includes('--self-test')) {
 `;
 }
 
-function buildIssuePlannerPromptMd(): string {
+function buildIssuePlannerPromptMd(instructionFile: string): string {
   return `# Issue Planner Agent Instructions
 
 You are a planning agent. Your task is to analyze a GitHub issue and produce a structured implementation plan. You do NOT write code \u2014 you produce a plan that the implementation agent will follow.
 
 ## Rules
 
-1. **Read first**: Before planning, read CLAUDE.md for project conventions and harness.config.json for architectural boundaries.
+1. **Read first**: Before planning, read ${instructionFile} for project conventions and harness.config.json for architectural boundaries.
 2. **Understand the issue**: Parse the issue title and body to understand what needs to be built. Identify acceptance criteria if present.
 3. **Read-only analysis**: You MUST NOT modify any files. Use only Read, Glob, Grep, and Bash (for read-only commands like \`ls\`, \`git log\`) to explore the codebase. Do NOT call Write, Edit, NotebookEdit, or any file-modifying tools.
 4. **No plan mode**: Do NOT call \`EnterPlanMode\` or \`ExitPlanMode\`. You are running in CI with no human to approve plans. Output your plan directly.

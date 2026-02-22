@@ -1,9 +1,11 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
 
 import { buildPrTemplatesPrompt } from '../prompts/pr-templates.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
-const PULL_REQUEST_TEMPLATE = `## Summary
+function buildPullRequestTemplate(instructionFile: string): string {
+  return `## Summary
 <!-- Brief description of what this PR does and why. Link to the issue if applicable. -->
 
 ## Risk Tier
@@ -52,7 +54,7 @@ const PULL_REQUEST_TEMPLATE = `## Summary
 - [ ] No imports from \`commands\` or \`harnesses\` inside \`core\`
 
 ## Review Checklist
-- [ ] Code follows project conventions (\`docs/conventions.md\`, \`CLAUDE.md\`)
+- [ ] Code follows project conventions (\`docs/conventions.md\`, \`${instructionFile}\`)
 - [ ] ESM imports use \`.js\` extensions for local files
 - [ ] \`import type\` used for type-only imports
 - [ ] No secrets, API keys, or \`.env\` files committed
@@ -60,8 +62,10 @@ const PULL_REQUEST_TEMPLATE = `## Summary
 - [ ] Documentation updated if public API changed
 - [ ] Risk tier accurately reflects scope of changes
 `;
+}
 
-const AGENT_PR_TEMPLATE = `## Agent-Generated PR
+function buildAgentPrTemplate(instructionFile: string): string {
+  return `## Agent-Generated PR
 
 **Agent**: <!-- agent name and version (e.g., Claude Code v1.0, remediation-bot) -->
 **Trigger**: <!-- what triggered this PR: review remediation, feature request, scheduled task -->
@@ -101,7 +105,7 @@ const AGENT_PR_TEMPLATE = `## Agent-Generated PR
 <!-- Layer boundary check results (see docs/layers.md, harness.config.json -> architecturalBoundaries). -->
 - [ ] No circular imports
 - [ ] Import rules respected
-- [ ] No protected files modified (\`.github/workflows/\`, \`harness.config.json\`, \`CLAUDE.md\`, lockfiles)
+- [ ] No protected files modified (\`.github/workflows/\`, \`harness.config.json\`, \`${instructionFile}\`, lockfiles)
 
 ## Review Agent Status
 - [ ] Review agent has analyzed this PR
@@ -122,6 +126,7 @@ const AGENT_PR_TEMPLATE = `## Agent-Generated PR
 - **Findings skipped**: <!-- count, with brief reasons -->
 - **Validation after fix**: <!-- all passed / partial — specify which failed -->
 `;
+}
 
 export const prTemplatesHarness: HarnessModule = {
   name: 'pr-templates',
@@ -135,10 +140,11 @@ export const prTemplatesHarness: HarnessModule = {
 
   async execute(ctx: HarnessContext): Promise<HarnessOutput> {
     const { detection, userPreferences } = ctx;
+    const instructionFile = INSTRUCTION_FILES[ctx.runner.platform];
 
-    // 1. Reference templates from existing string constants
-    const refDefaultTemplate = PULL_REQUEST_TEMPLATE;
-    const refAgentTemplate = AGENT_PR_TEMPLATE;
+    // 1. Build reference templates for detected platform
+    const refDefaultTemplate = buildPullRequestTemplate(instructionFile);
+    const refAgentTemplate = buildAgentPrTemplate(instructionFile);
 
     // 2. Build the prompt with reference context
     const basePrompt = buildPrTemplatesPrompt(detection, userPreferences);
@@ -160,8 +166,8 @@ ${refDefaultTemplate}
 ${refAgentTemplate}
 \`\`\``;
 
-    // 3. Call Claude runner
-    const systemPrompt = buildSystemPrompt();
+    // 3. Call AI runner
+    const systemPrompt = buildSystemPrompt(ctx.runner.platform);
     try {
       const result = await ctx.runner.generate(prompt, systemPrompt);
       const output: HarnessOutput = {
