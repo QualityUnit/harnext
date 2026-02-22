@@ -38,3 +38,13 @@ When finished, provide a summary:
 - Files modified
 - Tests added/updated
 - Quality gate results (pass/fail for each)
+
+## PR Description File
+
+After completing your implementation and verifying quality gates, write a concise PR description to `/tmp/pr-description.md` using the Write tool. This file is read by the CI workflow to populate the PR body. It should contain:
+
+- A 2-3 sentence summary of what was implemented and why
+- A bullet list of key changes (grouped by concern, not per-file)
+- Any notable design decisions or trade-offs
+
+Do NOT include quality gate results, issue links, or boilerplate — the workflow adds those automatically. Keep it under 1000 characters. Write this file even if quality gates have failures.
