@@ -1,11 +1,11 @@
 import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { AIPlatform } from '../core/ai-runner.js';
-import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { INSTRUCTION_FILES } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildGarbageCollectionPrompt } from '../prompts/garbage-collection.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
 function buildDocGardeningWorkflow(instructionFile: string, platform: AIPlatform): string {
-  const agentAction = CI_AGENT_ACTIONS[platform];
   return `name: Documentation Gardening
 
 on:
@@ -42,11 +42,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run documentation gardening agent
-        uses: ${agentAction.action}
-        with:
-          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
-          ${agentAction.promptInputKey}: 'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--max-turns 10'` : ''}
+${buildAgentStepLines(platform, {
+  stepName: 'Run documentation gardening agent',
+  stepId: 'gardening-agent',
+  promptExpr:
+    "'Read and follow the instructions in scripts/doc-gardening-prompt.md to perform documentation gardening on this repository.'",
+  argsExpr: "'--max-turns 10'",
+}).join('\n')}
 
       - name: Revert non-documentation changes
         id: safety

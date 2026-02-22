@@ -73,10 +73,10 @@ export const CI_AGENT_ACTIONS: Record<AIPlatform, CIAgentAction> = {
   kiro: {
     action: 'clouatre-labs/setup-kiro-action@v1',
     secretName: 'AWS_ROLE_ARN',
-    secretInputKey: '',
-    promptInputKey: '',
+    secretInputKey: 'aws_role_arn',
+    promptInputKey: 'prompt',
     argsInputKey: null,
-    textOutputKey: '',
+    textOutputKey: 'output',
     structuredOutputKey: null,
     executionFileOutputKey: null,
     needsSetupSteps: true,

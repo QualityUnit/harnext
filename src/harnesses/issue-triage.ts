@@ -2,6 +2,7 @@ import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
 import type { AIPlatform } from '../core/ai-runner.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildIssueTriagePrompt } from '../prompts/issue-triage.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -250,13 +251,13 @@ jobs:
           SCHEMA=$(cat /tmp/triage-schema.json | tr -d '\\n' | tr -s ' ')
           echo "value=\${SCHEMA}" >> "$GITHUB_OUTPUT"
 
-      - name: Run AI triage analysis
-        if: steps.guard.outputs.should-triage == 'true'
-        id: claude-triage
-        uses: ${agentAction.action}
-        with:
-          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
-          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: "--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"` : ''}
+${buildAgentStepLines(platform, {
+  stepName: 'Run AI triage analysis',
+  stepId: 'claude-triage',
+  promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
+  ifCondition: "steps.guard.outputs.should-triage == 'true'",
+  argsExpr: `"--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"`,
+}).join('\n')}
 
       - name: Parse structured verdict
         if: steps.guard.outputs.should-triage == 'true'
@@ -387,7 +388,7 @@ ${agentAction.argsInputKey ? `          ${agentAction.argsInputKey}: '--max-turn
         id: repro-result
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          REPRO_OUTPUT: \${{ steps.reproduce.outputs.structured_output || '' }}
+          REPRO_OUTPUT: \${{ steps.reproduce.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
         with:
           script: |
             const raw = process.env.REPRO_OUTPUT || '';

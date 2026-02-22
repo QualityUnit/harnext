@@ -2,6 +2,7 @@ import type { HarnessModule, HarnessContext, HarnessOutput } from './types.js';
 import type { DetectionResult } from '../core/detector.js';
 import type { AIPlatform } from '../core/ai-runner.js';
 import { INSTRUCTION_FILES, CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { buildAgentStepLines } from '../core/ci-agent-steps.js';
 import { buildIssuePlannerPrompt } from '../prompts/issue-planner.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 
@@ -267,54 +268,56 @@ jobs:
             core.setOutput('prompt', prompt);
             core.info(\`Planning prompt built (\${prompt.length} chars)\`);
 
-      - name: Run AI planning analysis
-        if: steps.guard.outputs.should-plan == 'true'
-        id: claude-plan
-        uses: ${agentAction.action}
-        with:
-          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}
-          ${agentAction.promptInputKey}: \${{ steps.build-prompt.outputs.prompt }}${agentAction.argsInputKey ? `\n          ${agentAction.argsInputKey}: '--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"'` : ''}${platform === 'claude' ? `\n          allowed_bots: 'github-actions'` : ''}
+${buildAgentStepLines(platform, {
+  stepName: 'Run AI planning analysis',
+  stepId: 'claude-plan',
+  promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
+  ifCondition: "steps.guard.outputs.should-plan == 'true'",
+  argsExpr: '\'--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"\'',
+  allowedBots: 'github-actions',
+}).join('\n')}
 
-      - name: Extract plan from execution file
+      - name: Extract plan output
         if: steps.guard.outputs.should-plan == 'true'
         id: extract-plan
         env:
           ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.claude-plan.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.claude-plan.outputs.${agentAction.textOutputKey} }}`}
         run: |
-          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
+${
+  agentAction.executionFileOutputKey
+    ? `          if [[ -z "$EXECUTION_FILE" || ! -f "$EXECUTION_FILE" ]]; then
+            echo "found=false" >> "\\$GITHUB_OUTPUT"
             echo "::warning::No execution file available"
             exit 0
           fi
 
           echo "Execution file: \${EXECUTION_FILE} ($(wc -c < "$EXECUTION_FILE") bytes)"
 
-          # The execution file is a JSON array (not JSONL) from Claude Code SDK.
-          # It contains a "result" turn at the end with the final response text.
           PLAN_TEXT=$(jq -r '
             [.[] | select(.type == "result")] | last | .result // ""
           ' "$EXECUTION_FILE" 2>/dev/null || echo "")
 
-          # Fallback: if result turn is empty, get last assistant text
           if [[ -z "$PLAN_TEXT" || "$PLAN_TEXT" == "null" ]]; then
             PLAN_TEXT=$(jq -r '
               [.[] | select(.type == "assistant") |
                .message.content[] | select(.type == "text") | .text
               ] | last // ""
             ' "$EXECUTION_FILE" 2>/dev/null || echo "")
-          fi
+          fi`
+    : `          PLAN_TEXT="\\$FINAL_MESSAGE"`
+}
 
           if [[ -z "$PLAN_TEXT" || "$PLAN_TEXT" == "null" ]]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Could not extract plan text from execution file"
+            echo "found=false" >> "\\$GITHUB_OUTPUT"
+            echo "::warning::Could not extract plan text"
           else
             PLAN_TEXT="\${PLAN_TEXT:0:60000}"
             {
               echo "plan<<PLAN_EOF"
               echo "$PLAN_TEXT"
               echo "PLAN_EOF"
-            } >> "$GITHUB_OUTPUT"
-            echo "found=true" >> "$GITHUB_OUTPUT"
+            } >> "\\$GITHUB_OUTPUT"
+            echo "found=true" >> "\\$GITHUB_OUTPUT"
             echo "\u2714 Extracted plan ($(echo "$PLAN_TEXT" | wc -c) chars)"
           fi
 
