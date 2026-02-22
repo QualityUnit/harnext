@@ -19,6 +19,21 @@ Setting up harness engineering for AI coding agents -- as described by [OpenAI's
 
 Doing this by hand for every repo is slow, error-prone, and inconsistent.
 
+## Why CodeFactory
+
+AI coding agents are powerful, but without guardrails they produce inconsistent code, skip tests, break architectural boundaries, and introduce regressions nobody catches until production. CodeFactory solves this by generating the entire safety infrastructure in minutes instead of weeks.
+
+**What you get:**
+
+- **Autonomous issue-to-PR pipeline.** Open an issue, and CodeFactory's generated workflows triage it, plan the implementation, write the code, open a PR, review it, and fix review feedback -- all without human intervention. You approve the final merge.
+- **Risk-aware CI that adapts to what changed.** A typo in a README runs only lint. A change to your core engine triggers lint, type-check, tests, build, architectural validation, and mandatory human approval. No more one-size-fits-all pipelines.
+- **AI code review on every PR.** An automated review agent reads your conventions, checks architectural boundaries, and posts structured verdicts. When it finds issues on agent-generated PRs, it dispatches a remediation agent to fix them automatically.
+- **Architectural boundary enforcement.** Import rules between your layers are defined in config, validated in CI, and checked by the review agent. Violations fail the build before they reach main.
+- **Self-healing documentation.** A weekly gardening workflow scans your docs for stale references, broken links, and outdated commands, then opens a PR with fixes.
+- **Everything is version-controlled.** All agent prompts, guard scripts, and configuration live in your repo. Your team can customize agent behavior by editing committed files -- no external dashboards or vendor lock-in.
+
+**The bottom line:** CodeFactory turns any repository into a self-operating development environment where AI agents work within defined safety boundaries. You ship faster because agents handle the routine work, and you ship safer because every change passes through risk-tiered quality gates before it reaches your users.
+
 ## Installation
 
 ### Quick install (recommended)
