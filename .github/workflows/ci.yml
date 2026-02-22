@@ -15,6 +15,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  checks: write
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
@@ -290,3 +291,81 @@ jobs:
           echo "A maintainer must approve the 'tier3-approval' environment to proceed."
           echo ""
           echo "Changed tier-3 files are listed in the Risk Policy Gate summary."
+
+  # ============================================================================
+  # Report Checks — creates check runs on the PR head SHA for workflow_dispatch.
+  # When CI is triggered via workflow_dispatch (by the implementer agent),
+  # GitHub associates results with the default branch, not the PR. This job
+  # explicitly creates check runs on the PR's head SHA so they appear on the PR.
+  # ============================================================================
+  report-checks:
+    name: Report PR Checks
+    needs:
+      [risk-gate, lint, type-check, test, build, structural-tests, harness-smoke, manual-approval]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create check runs on PR head SHA
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
+        env:
+          HEAD_SHA: ${{ needs.risk-gate.outputs.sha }}
+          RISK_GATE_RESULT: ${{ needs.risk-gate.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          TYPE_CHECK_RESULT: ${{ needs.type-check.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          STRUCTURAL_TESTS_RESULT: ${{ needs.structural-tests.result }}
+          HARNESS_SMOKE_RESULT: ${{ needs.harness-smoke.result }}
+          MANUAL_APPROVAL_RESULT: ${{ needs.manual-approval.result }}
+        with:
+          script: |
+            const sha = process.env.HEAD_SHA;
+            if (!sha) {
+              core.warning('No head SHA available — cannot create check runs.');
+              return;
+            }
+
+            // Map GitHub Actions job result to Checks API conclusion
+            function mapConclusion(result) {
+              switch (result) {
+                case 'success': return 'success';
+                case 'failure': return 'failure';
+                case 'cancelled': return 'cancelled';
+                case 'skipped': return 'neutral';
+                default: return 'neutral';
+              }
+            }
+
+            const jobs = [
+              { name: 'CI / Risk Policy Gate', result: process.env.RISK_GATE_RESULT },
+              { name: 'CI / Lint', result: process.env.LINT_RESULT },
+              { name: 'CI / Type Check', result: process.env.TYPE_CHECK_RESULT },
+              { name: 'CI / Test', result: process.env.TEST_RESULT },
+              { name: 'CI / Build', result: process.env.BUILD_RESULT },
+              { name: 'CI / Structural Tests', result: process.env.STRUCTURAL_TESTS_RESULT },
+              { name: 'CI / Harness Smoke', result: process.env.HARNESS_SMOKE_RESULT },
+              { name: 'CI / Manual Approval (Tier 3)', result: process.env.MANUAL_APPROVAL_RESULT },
+            ];
+
+            for (const job of jobs) {
+              const conclusion = mapConclusion(job.result);
+              const summary = job.result === 'skipped'
+                ? 'Skipped — not required for this risk tier.'
+                : `Completed with result: ${job.result}`;
+
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: job.name,
+                head_sha: sha,
+                status: 'completed',
+                conclusion,
+                output: {
+                  title: job.name,
+                  summary,
+                },
+              });
+
+              core.info(`Created check run: ${job.name} → ${conclusion}`);
+            }

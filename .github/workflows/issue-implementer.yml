@@ -454,9 +454,8 @@ jobs:
         run: |
           echo "Dispatching all CI pipelines for PR #${PR_NUMBER}..."
           gh workflow run ci.yml --repo "$REPO" --field pr_number="${PR_NUMBER}"
-          gh workflow run risk-policy-gate.yml --repo "$REPO" --field pr_number="${PR_NUMBER}"
           gh workflow run code-review-agent.yml --repo "$REPO" --field pr_number="${PR_NUMBER}"
-          echo "✔ Dispatched CI + risk gate + review agent for re-review"
+          echo "✔ Dispatched CI + review agent for re-review"
 
       - name: Review-fix failure handler
         if: failure() && steps.mode.outputs.mode == 'review-fix' && steps.rf-guard.outputs.should-fix == 'true'
@@ -956,9 +955,8 @@ jobs:
         run: |
           echo "Dispatching all CI pipelines for PR #${PR_NUM}..."
           gh workflow run ci.yml --repo "$REPO" --field pr_number="${PR_NUM}"
-          gh workflow run risk-policy-gate.yml --repo "$REPO" --field pr_number="${PR_NUM}"
           gh workflow run code-review-agent.yml --repo "$REPO" --field pr_number="${PR_NUM}"
-          echo "✔ Dispatched CI + risk gate + review agent for PR #${PR_NUM}"
+          echo "✔ Dispatched CI + review agent for PR #${PR_NUM}"
 
       - name: Failure handler
         if: failure() && steps.mode.outputs.mode == 'issue' && steps.guard.outputs.should-implement == 'true'
