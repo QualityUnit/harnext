@@ -142,12 +142,57 @@ When triggered via \`workflow_dispatch\` (issue mode):
    - Compare against baseline — only FAIL on regressions (a check that was passing but now fails)
    - If a check was already failing at baseline, a continued failure is NOT a regression
 
-9. **PR creation**:
+9. **PR creation** (CRITICAL — use the exact pattern below):
    - Stage all changes, commit: \`feat: implement #<issue-number> — <issue-title>\`
    - Push the branch
-   - Create a pull request: \`gh pr create --label "agent-pr" --title "feat: <issue-title>" --body "..."\`
-     - Body must include: implementation summary, quality gates results table, \`Closes #<issue-number>\`, and \`<!-- issue-implementer: #<issue-number> -->\`
-   - Comment on the issue: "PR created: <pr-url>"
+   - Create a pull request using the robust pattern below (NEVER use \`2>&1\` which hides errors)
+   - Body must include: implementation summary, quality gates results table, \`Closes #<issue-number>\`, and \`<!-- issue-implementer: #<issue-number> -->\`
+   - **Split PR creation and issue comment into separate steps** so a \`gh pr create\` failure is visible in logs and does not prevent the failure handler from running
+
+   Use this exact YAML pattern for the Create PR step:
+   \`\`\`yaml
+   - name: Create PR
+     id: create-pr
+     env:
+       GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+       BRANCH: \${{ steps.guard.outputs.branch }}
+       ISSUE_NUMBER: \${{ steps.guard.outputs.issue-number }}
+       ISSUE_TITLE: \${{ steps.guard.outputs.issue-title }}
+       LINT: \${{ steps.gates.outputs.lint }}
+       TYPE_CHECK: \${{ steps.gates.outputs.type-check }}
+       TEST: \${{ steps.gates.outputs.test }}
+       BUILD: \${{ steps.gates.outputs.build }}
+       FILE_COUNT: \${{ steps.changes.outputs.file-count }}
+     run: |
+       git config user.name "github-actions[bot]"
+       git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+       git add -A
+       git commit -m "feat: implement #\${ISSUE_NUMBER} — \${ISSUE_TITLE}" || true
+       git push origin "\${BRANCH}"
+
+       LINT_STATUS=$([[ "$LINT" == "true" ]] && echo "PASS" || echo "FAIL")
+       TYPE_STATUS=$([[ "$TYPE_CHECK" == "true" ]] && echo "PASS" || echo "FAIL")
+       TEST_STATUS=$([[ "$TEST" == "true" ]] && echo "PASS" || echo "FAIL")
+       BUILD_STATUS=$([[ "$BUILD" == "true" ]] && echo "PASS" || echo "FAIL")
+
+       BODY=$(printf '<!-- issue-implementer: #%s -->\\n\\n## Summary\\n\\nAutomated implementation for #%s — %s\\n\\n## Quality Gates\\n\\n| Check | Status |\\n|-------|--------|\\n| Lint | %s |\\n| Type Check | %s |\\n| Tests | %s |\\n| Build | %s |\\n\\n**Files changed**: %s\\n\\nCloses #%s' \\
+         "$ISSUE_NUMBER" "$ISSUE_NUMBER" "$ISSUE_TITLE" \\
+         "$LINT_STATUS" "$TYPE_STATUS" "$TEST_STATUS" "$BUILD_STATUS" \\
+         "$FILE_COUNT" "$ISSUE_NUMBER")
+
+       echo "Creating PR for branch \${BRANCH}..."
+       PR_URL=$(gh pr create \\
+         --title "feat: \${ISSUE_TITLE}" \\
+         --body "$BODY" \\
+         --label "agent-pr" \\
+         --head "\${BRANCH}" \\
+         --base "\${DEFAULT_BRANCH:-main}")
+
+       echo "pr-url=\${PR_URL}" >> "$GITHUB_OUTPUT"
+       echo "PR created: \${PR_URL}"
+   \`\`\`
+
+   **Key points**: stderr is NOT redirected — errors appear in the workflow log. The body is built with \`printf\` (not heredocs which break YAML block scalars). The \`--base\` flag is always explicit.
 
 10. **Escalation (failure handler)**:
    - If any step fails and the guard approved implementation:

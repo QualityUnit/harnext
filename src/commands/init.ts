@@ -174,6 +174,11 @@ export async function initCommand(options: InitOptions): Promise<void> {
     console.log();
   }
 
+  // ── GitHub Actions workflow permissions check ──────────────────────────
+  if (ciProvider === 'github-actions') {
+    await checkGitHubActionsPermissions(repoRoot);
+  }
+
   // Build harness selection list
   const tempRunner = createRunner(aiPlatform, { cwd: repoRoot });
   const tempCtx: HarnessContext = {
@@ -571,6 +576,32 @@ async function addHarnessScripts(
     await fileWriter.write(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
   } catch {
     logger.warn('Could not update package.json with harness scripts.');
+  }
+}
+
+async function checkGitHubActionsPermissions(repoRoot: string): Promise<void> {
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'api',
+        'repos/{owner}/{repo}/actions/permissions/workflow',
+        '--jq',
+        '.can_approve_pull_request_reviews',
+      ],
+      { cwd: repoRoot },
+    );
+    const canCreatePRs = stdout.trim() === 'true';
+    if (!canCreatePRs) {
+      console.log();
+      logger.warn('GitHub Actions is NOT permitted to create pull requests in this repository.');
+      logger.warn('The issue-implementer agent needs this to open PRs automatically.');
+      logger.info('Enable it: Settings → Actions → General → Workflow permissions →');
+      logger.info('  "Allow GitHub Actions to create and approve pull requests"');
+      console.log();
+    }
+  } catch {
+    // gh CLI not available or not authenticated — skip check silently
   }
 }
 
