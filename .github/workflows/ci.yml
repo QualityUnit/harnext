@@ -310,14 +310,6 @@ jobs:
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
           HEAD_SHA: ${{ needs.risk-gate.outputs.sha }}
-          RISK_GATE_RESULT: ${{ needs.risk-gate.result }}
-          LINT_RESULT: ${{ needs.lint.result }}
-          TYPE_CHECK_RESULT: ${{ needs.type-check.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          STRUCTURAL_TESTS_RESULT: ${{ needs.structural-tests.result }}
-          HARNESS_SMOKE_RESULT: ${{ needs.harness-smoke.result }}
-          MANUAL_APPROVAL_RESULT: ${{ needs.manual-approval.result }}
         with:
           script: |
             const sha = process.env.HEAD_SHA;
@@ -326,46 +318,37 @@ jobs:
               return;
             }
 
-            // Map GitHub Actions job result to Checks API conclusion
-            function mapConclusion(result) {
-              switch (result) {
-                case 'success': return 'success';
-                case 'failure': return 'failure';
-                case 'cancelled': return 'cancelled';
-                case 'skipped': return 'neutral';
-                default: return 'neutral';
-              }
-            }
+            // Dynamically discover all jobs in this workflow run via API
+            const { data: { jobs } } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
 
-            const jobs = [
-              { name: 'CI / Risk Policy Gate', result: process.env.RISK_GATE_RESULT },
-              { name: 'CI / Lint', result: process.env.LINT_RESULT },
-              { name: 'CI / Type Check', result: process.env.TYPE_CHECK_RESULT },
-              { name: 'CI / Test', result: process.env.TEST_RESULT },
-              { name: 'CI / Build', result: process.env.BUILD_RESULT },
-              { name: 'CI / Structural Tests', result: process.env.STRUCTURAL_TESTS_RESULT },
-              { name: 'CI / Harness Smoke', result: process.env.HARNESS_SMOKE_RESULT },
-              { name: 'CI / Manual Approval (Tier 3)', result: process.env.MANUAL_APPROVAL_RESULT },
-            ];
+            // Report every job except this one
+            const selfName = 'Report PR Checks';
+            const ciJobs = jobs.filter(j => j.name !== selfName);
 
-            for (const job of jobs) {
-              const conclusion = mapConclusion(job.result);
-              const summary = job.result === 'skipped'
+            for (const job of ciJobs) {
+              let conclusion = job.conclusion || 'neutral';
+              if (conclusion === 'skipped') conclusion = 'neutral';
+
+              const summary = job.conclusion === 'skipped'
                 ? 'Skipped — not required for this risk tier.'
-                : `Completed with result: ${job.result}`;
+                : `Completed with result: ${job.conclusion}`;
 
               await github.rest.checks.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                name: job.name,
+                name: `CI / ${job.name}`,
                 head_sha: sha,
                 status: 'completed',
                 conclusion,
                 output: {
-                  title: job.name,
+                  title: `CI / ${job.name}`,
                   summary,
                 },
               });
 
-              core.info(`Created check run: ${job.name} → ${conclusion}`);
+              core.info(`Created check run: CI / ${job.name} → ${conclusion}`);
             }
