@@ -161,9 +161,27 @@ describe('getKiroCISafetyRules', () => {
     expect(rules).toContain('continue-on-error: true');
     expect(rules).toContain('setup-kiro-action');
     expect(rules).toContain('Shell Expansion Safety');
-    expect(rules).toContain('YAML Block Scalar');
+    expect(rules).toContain('NEVER Use Heredocs');
     expect(rules).toContain('--json author');
     expect(rules).toContain('GITHUB_TOKEN Event Chaining');
+  });
+
+  it('should include verbatim Kiro auth YAML reference', () => {
+    const rules = getKiroCISafetyRules();
+    expect(rules).toContain('kiro-cli-chat whoami');
+    expect(rules).toContain('auth_kv');
+    expect(rules).toContain('kirocli:odic:token');
+    expect(rules).toContain('kirocli:odic:device-registration');
+    expect(rules).toContain('profile.Migrated');
+    expect(rules).toContain('oidc.${AWS_REGION}.amazonaws.com/token');
+    expect(rules).toContain('kiro-cli-chat chat --no-interactive --trust-all-tools');
+  });
+
+  it('should include printf as correct pattern for multi-line strings', () => {
+    const rules = getKiroCISafetyRules();
+    expect(rules).toContain('printf');
+    expect(rules).toContain('CORRECT');
+    expect(rules).toContain('WRONG');
   });
 });
 

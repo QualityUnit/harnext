@@ -305,40 +305,118 @@ export function getKiroCISafetyRules(): string {
   return `
 ## Kiro CI — Mandatory Safety Rules
 
-These rules apply to ALL generated GitHub Actions workflow YAML when the target AI platform is Kiro.
+These rules apply to ALL generated GitHub Actions workflow YAML when the target AI platform is Kiro. Violating ANY rule produces broken workflows. Follow them EXACTLY.
 
-### 1. Kiro Agent Invocation Pattern (4-step auth)
+### 1. Kiro Agent — Use These Steps VERBATIM
 
-\`clouatre-labs/setup-kiro-action@v1\` is ONLY a binary installer — it does NOT accept \`prompt\`, \`aws_role_arn\`, or any agent inputs. Do NOT use it as a \`uses:\` step with action inputs. Instead, Kiro requires a 4-step authentication and invocation pattern:
+\`clouatre-labs/setup-kiro-action@v1\` is ONLY a binary installer — it does NOT accept \`prompt\`, \`aws_role_arn\`, or any agent inputs. Always use the \`@v1\` tag (never a SHA pin). Copy these 4 steps EXACTLY (adjust only the \`if:\` condition):
 
-1. **Configure AWS credentials** — \`aws-actions/configure-aws-credentials@v4\` with \`continue-on-error: true\`
-2. **Setup Kiro CLI** — \`clouatre-labs/setup-kiro-action@v1\` (binary installer only, inputs: \`enable-sigv4\`, \`aws-region\`)
-3. **Authenticate Kiro CLI** — OIDC token refresh via curl + SQLite injection into \`~/.local/share/kiro-cli/data.sqlite3\`
-4. **Run agent** — \`kiro-cli-chat chat --no-interactive --trust-all-tools "$PROMPT"\` as a \`run:\` step
+\`\`\`yaml
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        continue-on-error: true
+        with:
+          role-to-assume: \${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: \${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: \${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: \${{ vars.AWS_REGION || 'us-east-1' }}
 
-The Kiro auth step uses these secrets: \`KIRO_CLIENT_ID\`, \`KIRO_CLIENT_SECRET\`, \`KIRO_REFRESH_TOKEN\`, \`KIRO_PROFILE_ARN\`, \`KIRO_START_URL\` (optional), and the variable \`AWS_REGION\` (defaults to \`us-east-1\`).
+      - name: Setup Kiro CLI
+        uses: clouatre-labs/setup-kiro-action@v1
+        with:
+          enable-sigv4: 'true'
 
-### 2. Shell Expansion Safety
+      - name: Authenticate Kiro CLI
+        env:
+          KIRO_CLIENT_ID: \${{ secrets.KIRO_CLIENT_ID }}
+          KIRO_CLIENT_SECRET: \${{ secrets.KIRO_CLIENT_SECRET }}
+          KIRO_REFRESH_TOKEN: \${{ secrets.KIRO_REFRESH_TOKEN }}
+          KIRO_PROFILE_ARN: \${{ secrets.KIRO_PROFILE_ARN }}
+          KIRO_START_URL: \${{ secrets.KIRO_START_URL }}
+          AWS_REGION: \${{ vars.AWS_REGION || 'us-east-1' }}
+        run: |
+          TOKEN_RESPONSE=$(curl -s -X POST "https://oidc.\${AWS_REGION}.amazonaws.com/token" \\
+            -H "Content-Type: application/x-www-form-urlencoded" \\
+            -d "grantType=refresh_token" \\
+            -d "clientId=\${KIRO_CLIENT_ID}" \\
+            -d "clientSecret=\${KIRO_CLIENT_SECRET}" \\
+            -d "refreshToken=\${KIRO_REFRESH_TOKEN}")
+          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken')
+          ID_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.idToken')
+          NEW_REFRESH=$(echo "$TOKEN_RESPONSE" | jq -r '.refreshToken // env.KIRO_REFRESH_TOKEN')
+          EXPIRES_IN=$(echo "$TOKEN_RESPONSE" | jq -r '.expiresIn // 3600')
+          EXPIRES_AT=$(( $(date +%s) + EXPIRES_IN ))
+          DB_DIR="$HOME/.local/share/kiro-cli"
+          mkdir -p "$DB_DIR"
+          DB="$DB_DIR/data.sqlite3"
+          sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS auth_kv (key TEXT PRIMARY KEY, value TEXT);"
+          sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);"
+          OIDC_TOKEN=$(jq -n \\
+            --arg at "$ACCESS_TOKEN" --arg rt "$NEW_REFRESH" --arg it "$ID_TOKEN" \\
+            --argjson ea "$EXPIRES_AT" \\
+            '{accessToken:$at,refreshToken:$rt,idToken:$it,expiresAt:$ea,tokenType:"Bearer"}')
+          DEVICE_REG=$(jq -n \\
+            --arg ci "$KIRO_CLIENT_ID" --arg cs "$KIRO_CLIENT_SECRET" \\
+            --argjson ea "$(( $(date +%s) + 86400 ))" \\
+            '{clientId:$ci,clientSecret:$cs,expiresAt:$ea,scopes:["codewhisperer:conversations","codewhisperer:transformations","codewhisperer:taskassist","codewhisperer:completions"]}')
+          sqlite3 "$DB" "INSERT OR REPLACE INTO auth_kv (key,value) VALUES ('kirocli:odic:token', '$OIDC_TOKEN');"
+          sqlite3 "$DB" "INSERT OR REPLACE INTO auth_kv (key,value) VALUES ('kirocli:odic:device-registration', '$DEVICE_REG');"
+          sqlite3 "$DB" "INSERT OR REPLACE INTO state (key,value) VALUES ('api.codewhisperer.profile', '\${KIRO_PROFILE_ARN}');"
+          sqlite3 "$DB" "INSERT OR REPLACE INTO state (key,value) VALUES ('profile.Migrated', 'true');"
+          kiro-cli-chat whoami
 
-NEVER inline \`\${{ toJSON(github.event.issue) }}\` or other expressions containing user-generated content directly inside \`run: |\` blocks. Backticks and parentheses in issue titles/bodies will break bash. Instead, pass them via \`env:\` block:
+      - name: Run agent
+        run: kiro-cli-chat chat --no-interactive --trust-all-tools "$PROMPT"
+        env:
+          PROMPT: <the-prompt-expression>
+\`\`\`
 
-**WRONG:**
+### 2. Shell Expansion Safety — ALWAYS Use env: Blocks
+
+NEVER put \`\${{ }}\` expressions directly inside \`run: |\` blocks. ALL GitHub Actions expressions in \`run:\` blocks MUST be passed via \`env:\` blocks. This prevents bash breakage from special characters in user content.
+
+**WRONG (will break):**
 \`\`\`yaml
 run: |
-  export ISSUE_JSON='\${{ toJSON(github.event.issue) }}'
+  ISSUE_DATA="\${{ toJSON(github.event.issue) }}"
+  if [[ -n "\${{ inputs.pr_number }}" ]]; then
+\`\`\`
+
+**CORRECT:**
+\`\`\`yaml
+env:
+  ISSUE_DATA: \${{ toJSON(github.event.issue) }}
+  PR_NUMBER: \${{ inputs.pr_number }}
+run: |
+  echo "$ISSUE_DATA" | jq .
+  if [[ -n "$PR_NUMBER" ]]; then
+\`\`\`
+
+### 3. NEVER Use Heredocs in run: | Blocks
+
+Bash heredocs (\`cat <<EOF\`, \`cat <<'EOF'\`) inside YAML \`run: |\` block scalars WILL break YAML parsing because the heredoc content starts at column 1, terminating the block scalar. ALWAYS use \`printf\` instead:
+
+**WRONG (breaks YAML):**
+\`\`\`yaml
+run: |
+  BODY=$(cat <<'EOF'
+  ## Title
+  Some content
+  EOF
+  )
 \`\`\`
 
 **CORRECT:**
 \`\`\`yaml
 run: |
-  echo "$ISSUE_JSON" | jq .
-env:
-  ISSUE_JSON: \${{ toJSON(github.event.issue) }}
+  BODY=$(printf '## Title\\nSome content')
 \`\`\`
 
-### 3. YAML Block Scalar Indentation
-
-In \`run: |\` blocks, ALL content lines must be indented relative to the YAML key. Lines starting at column 1 (like \`|-------|\`, \`## Heading\`, \`Branch: ...\`) break YAML block scalar parsing. For complex multi-line content (PR bodies, comment bodies with tables), use \`actions/github-script@v7\` or \`printf\` instead of inline heredocs.
+For multi-line strings with many variables, use printf with positional args:
+\`\`\`yaml
+run: |
+  BODY=$(printf 'Implements #%s\\n\\n| Check | Status |\\n|-------|--------|\\n| Lint | %s |' "$ISSUE_NUMBER" "$LINT_STATUS")
+\`\`\`
 
 ### 4. AWS Credentials — continue-on-error
 
