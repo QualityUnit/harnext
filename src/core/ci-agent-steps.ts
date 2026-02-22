@@ -90,7 +90,9 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
     lines.push('        continue-on-error: true');
   }
   lines.push('        run: |');
-  lines.push(`          kiro-cli-chat --no-interactive --trust-all-tools ${config.promptExpr}`);
+  lines.push(
+    `          kiro-cli-chat chat --no-interactive --trust-all-tools ${config.promptExpr}`,
+  );
 
   return lines;
 }
