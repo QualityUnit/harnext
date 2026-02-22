@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/yasha-dev1/codefactory/main/scripts
 ### npm
 
 ```bash
-npm install -g codefactory
+npm install -g codefactory-cli
 ```
 
 ### Manual
