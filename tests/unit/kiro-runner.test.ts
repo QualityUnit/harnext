@@ -70,13 +70,9 @@ describe('KiroRunner', () => {
         expect.arrayContaining([
           'chat',
           '--no-interactive',
-          '--max-turns',
-          '5',
           '--trust-tools',
-          'read,glob,grep,shell',
-          '--system-prompt',
-          expect.any(String),
-          'Test prompt',
+          'fs_read,fs_list,fs_search,execute_command',
+          expect.stringContaining('Test prompt'),
         ]),
         expect.objectContaining({
           stdio: ['inherit', 'pipe', 'inherit'],

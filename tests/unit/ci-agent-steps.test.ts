@@ -37,7 +37,7 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain('aws-actions/configure-aws-credentials@v4');
     expect(yaml).toContain('Setup Kiro CLI');
     expect(yaml).toContain('clouatre-labs/setup-kiro-action@v1');
-    expect(yaml).toContain('kiro-cli-chat chat --no-interactive');
+    expect(yaml).toContain('kiro-cli chat --no-interactive --trust-all-tools');
   });
 
   it('should include claude_args for Claude when argsExpr is provided', () => {
