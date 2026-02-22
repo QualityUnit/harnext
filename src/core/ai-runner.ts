@@ -77,7 +77,7 @@ export const CI_AGENT_ACTIONS: Record<AIPlatform, CIAgentAction> = {
     promptInputKey: 'prompt',
     argsInputKey: null,
     textOutputKey: 'output',
-    structuredOutputKey: null,
+    structuredOutputKey: 'structured_output',
     executionFileOutputKey: null,
     needsSetupSteps: true,
   },

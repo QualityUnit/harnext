@@ -183,6 +183,7 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push('          kiro-cli-chat whoami');
 
   // Step 4: Run Kiro CLI (binary is kiro-cli-chat, installed by setup action)
+  // Capture output, strip ANSI escape codes, and extract JSON for structured_output.
   lines.push(`      - name: ${config.stepName}`);
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
@@ -191,10 +192,26 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   if (config.continueOnError) {
     lines.push('        continue-on-error: true');
   }
+  lines.push('        env:');
+  lines.push(`          KIRO_PROMPT: ${config.promptExpr}`);
   lines.push('        run: |');
   lines.push(
-    `          kiro-cli-chat chat --no-interactive --trust-all-tools ${config.promptExpr}`,
+    '          RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true',
   );
+  lines.push("          CLEAN=$(printf '%s' \"$RAW\" | sed 's/\\x1b\\[[0-9;]*m//g')");
+  lines.push('          echo "$CLEAN"');
+  lines.push(
+    "          JSON_LINE=$(printf '%s' \"$CLEAN\" | grep -Eo '\\{[^}]+\\}' | tail -1 || true)",
+  );
+  lines.push(
+    '          if [[ -n "$JSON_LINE" ]] && echo "$JSON_LINE" | jq . >/dev/null 2>&1; then',
+  );
+  lines.push('            {');
+  lines.push('              echo "structured_output<<KIRO_JSON_EOF"');
+  lines.push('              echo "$JSON_LINE"');
+  lines.push('              echo "KIRO_JSON_EOF"');
+  lines.push('            } >> "$GITHUB_OUTPUT"');
+  lines.push('          fi');
 
   return lines;
 }
@@ -404,9 +421,21 @@ These rules apply to ALL generated GitHub Actions workflow YAML when the target 
           kiro-cli-chat whoami
 
       - name: Run agent
-        run: kiro-cli-chat chat --no-interactive --trust-all-tools "$PROMPT"
+        id: agent
         env:
-          PROMPT: <the-prompt-expression>
+          KIRO_PROMPT: <the-prompt-expression>
+        run: |
+          RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true
+          CLEAN=$(printf '%s' "$RAW" | sed 's/\\x1b\\[[0-9;]*m//g')
+          echo "$CLEAN"
+          JSON_LINE=$(printf '%s' "$CLEAN" | grep -Eo '\\{[^}]+\\}' | tail -1 || true)
+          if [[ -n "$JSON_LINE" ]] && echo "$JSON_LINE" | jq . >/dev/null 2>&1; then
+            {
+              echo "structured_output<<KIRO_JSON_EOF"
+              echo "$JSON_LINE"
+              echo "KIRO_JSON_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
 \`\`\`
 
 ### 2. Shell Expansion Safety — ALWAYS Use env: Blocks

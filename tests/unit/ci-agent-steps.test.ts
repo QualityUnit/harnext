@@ -54,6 +54,12 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain('auth_kv');
     expect(yaml).toContain('kiro-cli-chat whoami');
     expect(yaml).toContain('kiro-cli-chat chat --no-interactive --trust-all-tools');
+    // Verify ANSI stripping and structured output capture
+    expect(yaml).toContain('KIRO_PROMPT');
+    expect(yaml).toContain('sed');
+    expect(yaml).toContain('x1b');
+    expect(yaml).toContain('structured_output');
+    expect(yaml).toContain('KIRO_JSON_EOF');
   });
 
   it('should include claude_args for Claude when argsExpr is provided', () => {
