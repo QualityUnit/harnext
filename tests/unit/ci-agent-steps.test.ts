@@ -166,7 +166,7 @@ describe('getKiroCISafetyRules', () => {
     expect(rules).toContain('GITHUB_TOKEN Event Chaining');
   });
 
-  it('should include verbatim Kiro auth YAML reference', () => {
+  it('should include verbatim Kiro auth YAML reference with Python migration', () => {
     const rules = getKiroCISafetyRules();
     expect(rules).toContain('kiro-cli-chat whoami');
     expect(rules).toContain('auth_kv');
@@ -175,6 +175,12 @@ describe('getKiroCISafetyRules', () => {
     expect(rules).toContain('profile.Migrated');
     expect(rules).toContain('oidc.${AWS_REGION}.amazonaws.com/token');
     expect(rules).toContain('kiro-cli-chat chat --no-interactive --trust-all-tools');
+    // Must use Python-based migration (not bare sqlite3) to avoid kiro-cli migration conflicts
+    expect(rules).toContain('python3');
+    expect(rules).toContain('CREATE TABLE IF NOT EXISTS migrations');
+    expect(rules).toContain('value BLOB');
+    expect(rules).toContain('INSERT OR IGNORE INTO migrations');
+    expect(rules).toContain('conversations_v2');
   });
 
   it('should include printf as correct pattern for multi-line strings', () => {

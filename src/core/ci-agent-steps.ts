@@ -332,37 +332,75 @@ These rules apply to ALL generated GitHub Actions workflow YAML when the target 
           KIRO_CLIENT_SECRET: \${{ secrets.KIRO_CLIENT_SECRET }}
           KIRO_REFRESH_TOKEN: \${{ secrets.KIRO_REFRESH_TOKEN }}
           KIRO_PROFILE_ARN: \${{ secrets.KIRO_PROFILE_ARN }}
-          KIRO_START_URL: \${{ secrets.KIRO_START_URL }}
+          KIRO_START_URL: \${{ secrets.KIRO_START_URL || '' }}
           AWS_REGION: \${{ vars.AWS_REGION || 'us-east-1' }}
         run: |
-          TOKEN_RESPONSE=$(curl -s -X POST "https://oidc.\${AWS_REGION}.amazonaws.com/token" \\
-            -H "Content-Type: application/x-www-form-urlencoded" \\
-            -d "grantType=refresh_token" \\
-            -d "clientId=\${KIRO_CLIENT_ID}" \\
-            -d "clientSecret=\${KIRO_CLIENT_SECRET}" \\
-            -d "refreshToken=\${KIRO_REFRESH_TOKEN}")
-          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.accessToken')
-          ID_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.idToken')
-          NEW_REFRESH=$(echo "$TOKEN_RESPONSE" | jq -r '.refreshToken // env.KIRO_REFRESH_TOKEN')
-          EXPIRES_IN=$(echo "$TOKEN_RESPONSE" | jq -r '.expiresIn // 3600')
-          EXPIRES_AT=$(( $(date +%s) + EXPIRES_IN ))
-          DB_DIR="$HOME/.local/share/kiro-cli"
-          mkdir -p "$DB_DIR"
-          DB="$DB_DIR/data.sqlite3"
-          sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS auth_kv (key TEXT PRIMARY KEY, value TEXT);"
-          sqlite3 "$DB" "CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);"
-          OIDC_TOKEN=$(jq -n \\
-            --arg at "$ACCESS_TOKEN" --arg rt "$NEW_REFRESH" --arg it "$ID_TOKEN" \\
-            --argjson ea "$EXPIRES_AT" \\
-            '{accessToken:$at,refreshToken:$rt,idToken:$it,expiresAt:$ea,tokenType:"Bearer"}')
-          DEVICE_REG=$(jq -n \\
-            --arg ci "$KIRO_CLIENT_ID" --arg cs "$KIRO_CLIENT_SECRET" \\
-            --argjson ea "$(( $(date +%s) + 86400 ))" \\
-            '{clientId:$ci,clientSecret:$cs,expiresAt:$ea,scopes:["codewhisperer:conversations","codewhisperer:transformations","codewhisperer:taskassist","codewhisperer:completions"]}')
-          sqlite3 "$DB" "INSERT OR REPLACE INTO auth_kv (key,value) VALUES ('kirocli:odic:token', '$OIDC_TOKEN');"
-          sqlite3 "$DB" "INSERT OR REPLACE INTO auth_kv (key,value) VALUES ('kirocli:odic:device-registration', '$DEVICE_REG');"
-          sqlite3 "$DB" "INSERT OR REPLACE INTO state (key,value) VALUES ('api.codewhisperer.profile', '\${KIRO_PROFILE_ARN}');"
-          sqlite3 "$DB" "INSERT OR REPLACE INTO state (key,value) VALUES ('profile.Migrated', 'true');"
+          RESPONSE=$(curl -s -X POST \\
+            "https://oidc.\${AWS_REGION}.amazonaws.com/token" \\
+            -H "Content-Type: application/json" \\
+            -d "{
+              \\"grantType\\": \\"refresh_token\\",
+              \\"clientId\\": \\"\${KIRO_CLIENT_ID}\\",
+              \\"clientSecret\\": \\"\${KIRO_CLIENT_SECRET}\\",
+              \\"refreshToken\\": \\"\${KIRO_REFRESH_TOKEN}\\"
+            }")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.accessToken // empty')
+          NEW_REFRESH=$(echo "$RESPONSE" | jq -r '.refreshToken // empty')
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            echo "::error::Kiro OIDC token refresh failed"
+            echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::\${ACCESS_TOKEN}"
+          echo "::add-mask::\${NEW_REFRESH}"
+          mkdir -p ~/.local/share/kiro-cli
+          EXPIRES_AT=$(date -u -d "+3600 seconds" +"%Y-%m-%dT%H:%M:%S.%6NZ")
+          CLIENT_EXPIRES=$(date -u -d "+90 days" +"%Y-%m-%dT%H:%M:%S.000Z")
+          python3 -c "
+          import sqlite3, json, sys, os, time
+          db = os.path.expanduser('~/.local/share/kiro-cli/data.sqlite3')
+          conn = sqlite3.connect(db)
+          c = conn.cursor()
+          c.executescript('''
+            CREATE TABLE IF NOT EXISTS migrations (
+              id INTEGER PRIMARY KEY, version INTEGER NOT NULL,
+              migration_time INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS auth_kv (
+              key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS state (
+              key TEXT PRIMARY KEY, value BLOB);
+            CREATE TABLE IF NOT EXISTS history (
+              id INTEGER PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS conversations (
+              key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS conversations_v2 (
+              key TEXT NOT NULL, conversation_id TEXT NOT NULL,
+              value TEXT NOT NULL, created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (key, conversation_id));
+          ''')
+          now = int(time.time())
+          for i in range(9):
+            c.execute('INSERT OR IGNORE INTO migrations VALUES (?,?,?)', (i+1,i,now))
+          token = json.dumps({'access_token': sys.argv[1], 'expires_at': sys.argv[2],
+            'refresh_token': sys.argv[3], 'region': sys.argv[6],
+            'start_url': sys.argv[7] or '', 'oauth_flow': 'Pkce',
+            'scopes': ['codewhisperer:completions','codewhisperer:analysis','codewhisperer:conversations']})
+          reg = json.dumps({'client_id': sys.argv[4], 'client_secret': sys.argv[5],
+            'client_secret_expires_at': sys.argv[8], 'region': sys.argv[6],
+            'oauth_flow': 'Pkce', 'scopes': ['codewhisperer:completions',
+            'codewhisperer:analysis','codewhisperer:conversations']})
+          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:token', token))
+          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:device-registration', reg))
+          if sys.argv[9]:
+            profile = json.dumps({'arn': sys.argv[9], 'profile_name': sys.argv[9].split('/')[-1]})
+            c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('api.codewhisperer.profile', profile))
+          c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('profile.Migrated', '1'))
+          conn.commit()
+          conn.close()
+          " "$ACCESS_TOKEN" "$EXPIRES_AT" "$NEW_REFRESH" \\
+            "$KIRO_CLIENT_ID" "$KIRO_CLIENT_SECRET" "$AWS_REGION" \\
+            "$KIRO_START_URL" "$CLIENT_EXPIRES" "$KIRO_PROFILE_ARN"
           kiro-cli-chat whoami
 
       - name: Run agent
