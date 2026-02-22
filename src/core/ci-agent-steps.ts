@@ -70,7 +70,11 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push('          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}');
   lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
-  // Step 2: Install Kiro CLI with SIGV4 auth
+  // Step 2: Install Kiro CLI
+  // NOTE: setup-kiro-action sets AMAZON_Q_SIGV4=true, but as of Feb 2026 Kiro CLI
+  // does NOT support SIGV4 headless auth (feature was not ported from Amazon Q CLI).
+  // See: https://github.com/aws/amazon-q-developer-cli/issues/1051
+  // Auth currently requires a pre-existing browser-based login session.
   lines.push('      - name: Setup Kiro CLI');
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
@@ -89,9 +93,6 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   if (config.continueOnError) {
     lines.push('        continue-on-error: true');
   }
-  // Override AMAZON_Q_SIGV4 to '1' — setup-kiro-action sets 'true' but the binary expects '1'
-  lines.push('        env:');
-  lines.push("          AMAZON_Q_SIGV4: '1'");
   lines.push('        run: |');
   lines.push(
     `          kiro-cli-chat chat --no-interactive --trust-all-tools ${config.promptExpr}`,

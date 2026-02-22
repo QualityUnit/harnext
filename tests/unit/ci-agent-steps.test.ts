@@ -43,7 +43,7 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain('Setup Kiro CLI');
     expect(yaml).toContain('clouatre-labs/setup-kiro-action@v1');
     expect(yaml).toContain("enable-sigv4: 'true'");
-    expect(yaml).toContain("AMAZON_Q_SIGV4: '1'");
+    expect(yaml).not.toContain('AMAZON_Q_SIGV4');
     expect(yaml).toContain('kiro-cli-chat chat --no-interactive --trust-all-tools');
   });
 
