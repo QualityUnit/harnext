@@ -30,7 +30,7 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain("prompt: 'Do something'");
   });
 
-  it('should produce 3 steps for Kiro (AWS auth + setup + run)', () => {
+  it('should produce 4 steps for Kiro (AWS auth + setup + OIDC inject + run)', () => {
     const lines = buildAgentStepLines('kiro', baseConfig);
     const yaml = lines.join('\n');
     expect(yaml).toContain('Configure AWS credentials');
@@ -44,6 +44,13 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain('clouatre-labs/setup-kiro-action@v1');
     expect(yaml).toContain("enable-sigv4: 'true'");
     expect(yaml).not.toContain('AMAZON_Q_SIGV4');
+    expect(yaml).toContain('Authenticate Kiro CLI');
+    expect(yaml).toContain('KIRO_CLIENT_ID');
+    expect(yaml).toContain('KIRO_REFRESH_TOKEN');
+    expect(yaml).toContain('KIRO_PROFILE_ARN');
+    expect(yaml).toContain('oidc.');
+    expect(yaml).toContain('auth_kv');
+    expect(yaml).toContain('kiro-cli-chat whoami');
     expect(yaml).toContain('kiro-cli-chat chat --no-interactive --trust-all-tools');
   });
 

@@ -158,11 +158,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   } else if (aiPlatform === 'kiro' && ciProvider === 'github-actions') {
     console.log();
-    logger.warn('Kiro CLI does not yet support headless CI authentication.');
-    logger.warn('SIGV4 auth (AMAZON_Q_SIGV4) is not implemented in the current Kiro CLI.');
-    logger.warn('See: https://github.com/aws/amazon-q-developer-cli/issues/1051');
-    logger.info('Generated workflows use AWS OIDC + setup-kiro-action, but will fail');
-    logger.info('until Kiro adds headless auth support. Monitor the issue above for updates.');
+    logger.info('Kiro CI workflows require OIDC token refresh authentication.');
+    logger.info('One-time setup: run `kiro-cli-chat login` locally, then set these secrets:');
+    logger.info('  KIRO_CLIENT_ID      — from your local OIDC device registration');
+    logger.info('  KIRO_CLIENT_SECRET   — from your local OIDC device registration');
+    logger.info('  KIRO_REFRESH_TOKEN   — from your local OIDC auth token');
+    logger.info('  KIRO_PROFILE_ARN     — your CodeWhisperer profile ARN');
+    logger.info('  KIRO_START_URL       — your IAM Identity Center start URL (optional)');
     logger.info('Optionally set AWS_REGION as a repository variable (defaults to us-east-1).');
     console.log();
   } else if (aiPlatform === 'codex' && ciProvider === 'github-actions') {

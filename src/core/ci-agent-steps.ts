@@ -71,10 +71,6 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
   // Step 2: Install Kiro CLI
-  // NOTE: setup-kiro-action sets AMAZON_Q_SIGV4=true, but as of Feb 2026 Kiro CLI
-  // does NOT support SIGV4 headless auth (feature was not ported from Amazon Q CLI).
-  // See: https://github.com/aws/amazon-q-developer-cli/issues/1051
-  // Auth currently requires a pre-existing browser-based login session.
   lines.push('      - name: Setup Kiro CLI');
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
@@ -84,7 +80,106 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push("          enable-sigv4: 'true'");
   lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
-  // Step 3: Run Kiro CLI (binary is kiro-cli-chat, installed by setup action)
+  // Step 3: Authenticate Kiro CLI via OIDC token refresh + SQLite injection
+  // Kiro CLI does not support headless auth natively — this workaround refreshes
+  // a pre-existing OIDC session and injects it into the CLI's SQLite auth store.
+  lines.push('      - name: Authenticate Kiro CLI');
+  if (config.ifCondition) {
+    lines.push(`        if: ${config.ifCondition}`);
+  }
+  lines.push('        env:');
+  lines.push('          KIRO_CLIENT_ID: ${{ secrets.KIRO_CLIENT_ID }}');
+  lines.push('          KIRO_CLIENT_SECRET: ${{ secrets.KIRO_CLIENT_SECRET }}');
+  lines.push('          KIRO_REFRESH_TOKEN: ${{ secrets.KIRO_REFRESH_TOKEN }}');
+  lines.push('          KIRO_PROFILE_ARN: ${{ secrets.KIRO_PROFILE_ARN }}');
+  lines.push("          KIRO_OIDC_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}");
+  lines.push("          KIRO_START_URL: ${{ secrets.KIRO_START_URL || '' }}");
+  lines.push('        run: |');
+  lines.push('          RESPONSE=$(curl -s -X POST \\');
+  lines.push('            "https://oidc.${KIRO_OIDC_REGION}.amazonaws.com/token" \\');
+  lines.push('            -H "Content-Type: application/json" \\');
+  lines.push('            -d "{');
+  lines.push('              \\"grantType\\": \\"refresh_token\\",');
+  lines.push('              \\"clientId\\": \\"${KIRO_CLIENT_ID}\\",');
+  lines.push('              \\"clientSecret\\": \\"${KIRO_CLIENT_SECRET}\\",');
+  lines.push('              \\"refreshToken\\": \\"${KIRO_REFRESH_TOKEN}\\"');
+  lines.push('            }")');
+  lines.push('          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r \'.accessToken // empty\')');
+  lines.push('          NEW_REFRESH=$(echo "$RESPONSE" | jq -r \'.refreshToken // empty\')');
+  lines.push('          if [[ -z "$ACCESS_TOKEN" ]]; then');
+  lines.push('            echo "::error::Kiro OIDC token refresh failed"');
+  lines.push('            echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"');
+  lines.push('            exit 1');
+  lines.push('          fi');
+  lines.push('          echo "::add-mask::${ACCESS_TOKEN}"');
+  lines.push('          echo "::add-mask::${NEW_REFRESH}"');
+  lines.push('          mkdir -p ~/.local/share/kiro-cli');
+  lines.push('          EXPIRES_AT=$(date -u -d "+3600 seconds" +"%Y-%m-%dT%H:%M:%S.%6NZ")');
+  lines.push('          CLIENT_EXPIRES=$(date -u -d "+90 days" +"%Y-%m-%dT%H:%M:%S.000Z")');
+  lines.push('          python3 -c "');
+  lines.push('          import sqlite3, json, sys, os, time');
+  lines.push("          db = os.path.expanduser('~/.local/share/kiro-cli/data.sqlite3')");
+  lines.push('          conn = sqlite3.connect(db)');
+  lines.push('          c = conn.cursor()');
+  lines.push("          c.executescript('''");
+  lines.push('            CREATE TABLE IF NOT EXISTS migrations (');
+  lines.push('              id INTEGER PRIMARY KEY, version INTEGER NOT NULL,');
+  lines.push('              migration_time INTEGER NOT NULL);');
+  lines.push('            CREATE TABLE IF NOT EXISTS auth_kv (');
+  lines.push('              key TEXT PRIMARY KEY, value TEXT);');
+  lines.push('            CREATE TABLE IF NOT EXISTS state (');
+  lines.push('              key TEXT PRIMARY KEY, value BLOB);');
+  lines.push('            CREATE TABLE IF NOT EXISTS history (');
+  lines.push('              id INTEGER PRIMARY KEY);');
+  lines.push('            CREATE TABLE IF NOT EXISTS conversations (');
+  lines.push('              key TEXT PRIMARY KEY, value TEXT);');
+  lines.push('            CREATE TABLE IF NOT EXISTS conversations_v2 (');
+  lines.push('              key TEXT NOT NULL, conversation_id TEXT NOT NULL,');
+  lines.push('              value TEXT NOT NULL, created_at INTEGER NOT NULL,');
+  lines.push('              updated_at INTEGER NOT NULL,');
+  lines.push('              PRIMARY KEY (key, conversation_id));');
+  lines.push("          ''')");
+  lines.push('          now = int(time.time())');
+  lines.push('          for i in range(9):');
+  lines.push(
+    "            c.execute('INSERT OR IGNORE INTO migrations VALUES (?,?,?)', (i+1,i,now))",
+  );
+  lines.push(
+    "          token = json.dumps({'access_token': sys.argv[1], 'expires_at': sys.argv[2],",
+  );
+  lines.push("            'refresh_token': sys.argv[3], 'region': sys.argv[6],");
+  lines.push("            'start_url': sys.argv[7] or '', 'oauth_flow': 'Pkce',");
+  lines.push(
+    "            'scopes': ['codewhisperer:completions','codewhisperer:analysis','codewhisperer:conversations']})",
+  );
+  lines.push("          reg = json.dumps({'client_id': sys.argv[4], 'client_secret': sys.argv[5],");
+  lines.push("            'client_secret_expires_at': sys.argv[8], 'region': sys.argv[6],");
+  lines.push("            'oauth_flow': 'Pkce', 'scopes': ['codewhisperer:completions',");
+  lines.push("            'codewhisperer:analysis','codewhisperer:conversations']})");
+  lines.push(
+    "          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:token', token))",
+  );
+  lines.push(
+    "          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:device-registration', reg))",
+  );
+  lines.push('          if sys.argv[9]:');
+  lines.push(
+    "            profile = json.dumps({'arn': sys.argv[9], 'profile_name': sys.argv[9].split('/')[-1]})",
+  );
+  lines.push(
+    "            c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('api.codewhisperer.profile', profile))",
+  );
+  lines.push(
+    "          c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('profile.Migrated', '1'))",
+  );
+  lines.push('          conn.commit()');
+  lines.push('          conn.close()');
+  lines.push('          " "$ACCESS_TOKEN" "$EXPIRES_AT" "$NEW_REFRESH" \\');
+  lines.push('            "$KIRO_CLIENT_ID" "$KIRO_CLIENT_SECRET" "$KIRO_OIDC_REGION" \\');
+  lines.push('            "$KIRO_START_URL" "$CLIENT_EXPIRES" "$KIRO_PROFILE_ARN"');
+  lines.push('          kiro-cli-chat whoami');
+
+  // Step 4: Run Kiro CLI (binary is kiro-cli-chat, installed by setup action)
   lines.push(`      - name: ${config.stepName}`);
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
