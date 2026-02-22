@@ -60,6 +60,10 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain('x1b');
     expect(yaml).toContain('structured_output');
     expect(yaml).toContain('KIRO_JSON_EOF');
+    // Must use Python-based JSON extraction (not grep) to handle multi-line Kiro output
+    expect(yaml).toContain('python3 -c');
+    expect(yaml).toContain('json.loads');
+    expect(yaml).not.toContain('grep -Eo');
   });
 
   it('should include claude_args for Claude when argsExpr is provided', () => {
@@ -187,6 +191,10 @@ describe('getKiroCISafetyRules', () => {
     expect(rules).toContain('value BLOB');
     expect(rules).toContain('INSERT OR IGNORE INTO migrations');
     expect(rules).toContain('conversations_v2');
+    // Must use Python-based JSON extraction (not grep) to handle multi-line Kiro output
+    expect(rules).toContain('json.loads');
+    expect(rules).toContain('json.dumps');
+    expect(rules).not.toContain('grep -Eo');
   });
 
   it('should include printf as correct pattern for multi-line strings', () => {

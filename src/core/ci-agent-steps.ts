@@ -198,11 +198,24 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push(
     '          RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true',
   );
-  lines.push("          CLEAN=$(printf '%s' \"$RAW\" | sed 's/\\x1b\\[[0-9;]*m//g')");
+  lines.push("          CLEAN=$(printf '%s\\n' \"$RAW\" | sed 's/\\x1b\\[[0-9;]*m//g')");
   lines.push('          echo "$CLEAN"');
-  lines.push(
-    "          JSON_LINE=$(printf '%s' \"$CLEAN\" | grep -Eo '\\{[^}]+\\}' | tail -1 || true)",
-  );
+  lines.push('          JSON_LINE=$(printf \'%s\\n\' "$CLEAN" | python3 -c "');
+  lines.push('          import sys,json');
+  lines.push('          t=sys.stdin.read()');
+  lines.push("          e=t.rfind('}')");
+  lines.push('          if e>=0:');
+  lines.push('            d=0');
+  lines.push('            for i in range(e,-1,-1):');
+  lines.push('              c=t[i]');
+  lines.push("              if c=='}':d+=1");
+  lines.push("              elif c=='{':d-=1");
+  lines.push('              if d==0:');
+  lines.push('                try:');
+  lines.push('                  o=json.loads(t[i:e+1]);print(json.dumps(o))');
+  lines.push('                except:pass');
+  lines.push('                break');
+  lines.push('          " 2>/dev/null || true)');
   lines.push(
     '          if [[ -n "$JSON_LINE" ]] && echo "$JSON_LINE" | jq . >/dev/null 2>&1; then',
   );
@@ -426,9 +439,24 @@ These rules apply to ALL generated GitHub Actions workflow YAML when the target 
           KIRO_PROMPT: <the-prompt-expression>
         run: |
           RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true
-          CLEAN=$(printf '%s' "$RAW" | sed 's/\\x1b\\[[0-9;]*m//g')
+          CLEAN=$(printf '%s\\n' "$RAW" | sed 's/\\x1b\\[[0-9;]*m//g')
           echo "$CLEAN"
-          JSON_LINE=$(printf '%s' "$CLEAN" | grep -Eo '\\{[^}]+\\}' | tail -1 || true)
+          JSON_LINE=$(printf '%s\\n' "$CLEAN" | python3 -c "
+          import sys,json
+          t=sys.stdin.read()
+          e=t.rfind('}')
+          if e>=0:
+            d=0
+            for i in range(e,-1,-1):
+              c=t[i]
+              if c=='}':d+=1
+              elif c=='{':d-=1
+              if d==0:
+                try:
+                  o=json.loads(t[i:e+1]);print(json.dumps(o))
+                except:pass
+                break
+          " 2>/dev/null || true)
           if [[ -n "$JSON_LINE" ]] && echo "$JSON_LINE" | jq . >/dev/null 2>&1; then
             {
               echo "structured_output<<KIRO_JSON_EOF"
