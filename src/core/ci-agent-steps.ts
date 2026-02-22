@@ -89,6 +89,9 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   if (config.continueOnError) {
     lines.push('        continue-on-error: true');
   }
+  // Override AMAZON_Q_SIGV4 to '1' — setup-kiro-action sets 'true' but the binary expects '1'
+  lines.push('        env:');
+  lines.push("          AMAZON_Q_SIGV4: '1'");
   lines.push('        run: |');
   lines.push(
     `          kiro-cli-chat chat --no-interactive --trust-all-tools ${config.promptExpr}`,
