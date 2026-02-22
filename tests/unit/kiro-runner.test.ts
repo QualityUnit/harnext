@@ -39,6 +39,10 @@ describe('KiroRunner', () => {
     expect(runner.platform).toBe('kiro');
   });
 
+  it('should not support parallel generation (git-diff based)', () => {
+    expect(runner.supportsParallelGeneration).toBe(false);
+  });
+
   describe('analyze()', () => {
     it('should parse JSON from CLI output', async () => {
       const expectedData = { name: 'test-project', language: 'typescript' };

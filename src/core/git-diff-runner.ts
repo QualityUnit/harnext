@@ -18,6 +18,7 @@ interface RunResult {
  */
 export abstract class GitDiffRunner implements AIRunner {
   abstract readonly platform: AIPlatform;
+  readonly supportsParallelGeneration = false;
   protected readonly options: AIRunnerOptions;
 
   protected abstract readonly binary: string;

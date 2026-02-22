@@ -22,6 +22,10 @@ describe('ClaudeRunner', () => {
     expect(runner.platform).toBe('claude');
   });
 
+  it('should support parallel generation', () => {
+    expect(runner.supportsParallelGeneration).toBe(true);
+  });
+
   describe('analyze()', () => {
     it('should parse JSON from result message', async () => {
       const expectedData = { name: 'test-project', language: 'typescript' };

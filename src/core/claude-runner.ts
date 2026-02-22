@@ -35,6 +35,7 @@ interface RunResult {
 
 export class ClaudeRunner implements AIRunner {
   readonly platform: AIPlatform = 'claude';
+  readonly supportsParallelGeneration = true;
   private readonly options: AIRunnerOptions;
 
   constructor(options: AIRunnerOptions = {}) {

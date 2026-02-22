@@ -292,21 +292,43 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
     if (harnessesInBatch.length === 0) continue;
 
-    const results = await Promise.allSettled(harnessesInBatch.map((h) => h.execute(ctx)));
+    if (runner.supportsParallelGeneration) {
+      // ClaudeRunner tracks files via stream parsing — safe to run in parallel
+      const results = await Promise.allSettled(harnessesInBatch.map((h) => h.execute(ctx)));
 
-    for (const [i, result] of results.entries()) {
-      if (result.status === 'fulfilled') {
-        const output = result.value;
-        previousOutputs.set(harnessesInBatch[i].name, output);
+      for (const [i, result] of results.entries()) {
+        if (result.status === 'fulfilled') {
+          const output = result.value;
+          previousOutputs.set(harnessesInBatch[i].name, output);
 
-        for (const f of output.filesCreated) {
-          logger.fileCreated(relative(repoRoot, f));
+          for (const f of output.filesCreated) {
+            logger.fileCreated(relative(repoRoot, f));
+          }
+          for (const f of output.filesModified) {
+            logger.fileModified(relative(repoRoot, f));
+          }
+        } else {
+          logger.warn(`Harness ${harnessesInBatch[i].name} failed: ${result.reason}`);
         }
-        for (const f of output.filesModified) {
-          logger.fileModified(relative(repoRoot, f));
+      }
+    } else {
+      // GitDiffRunner-based runners (Kiro, Codex) use shared git state and spawn
+      // CLI processes that conflict when running concurrently — run sequentially
+      for (const harness of harnessesInBatch) {
+        try {
+          const output = await harness.execute(ctx);
+          previousOutputs.set(harness.name, output);
+
+          for (const f of output.filesCreated) {
+            logger.fileCreated(relative(repoRoot, f));
+          }
+          for (const f of output.filesModified) {
+            logger.fileModified(relative(repoRoot, f));
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn(`Harness ${harness.name} failed: ${message}`);
         }
-      } else {
-        logger.warn(`Harness ${harnessesInBatch[i].name} failed: ${result.reason}`);
       }
     }
   }

@@ -16,6 +16,14 @@ export interface GenerateResult {
 
 export interface AIRunner {
   readonly platform: AIPlatform;
+  /**
+   * Whether this runner supports multiple concurrent generate() calls safely.
+   *
+   * ClaudeRunner tracks files via stream parsing (per-call), so parallel is safe.
+   * GitDiffRunner-based runners (Kiro, Codex) use shared git state + spawn CLI
+   * processes that can conflict on working directory, state DBs, and API limits.
+   */
+  readonly supportsParallelGeneration: boolean;
   analyze<T>(prompt: string, schema: z.ZodType<T>): Promise<T>;
   generate(prompt: string, systemPromptAppend?: string): Promise<GenerateResult>;
 }
