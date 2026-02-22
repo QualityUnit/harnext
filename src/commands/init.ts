@@ -29,6 +29,10 @@ const execFileAsync = promisify(execFile);
 export interface InitOptions {
   skipDetection?: boolean;
   dryRun?: boolean;
+  platform?: string;
+  ciProvider?: string;
+  strictness?: string;
+  yes?: boolean;
 }
 
 // Mapping from harness name to npm script entries
@@ -64,17 +68,23 @@ export async function initCommand(options: InitOptions): Promise<void> {
   );
   console.log();
 
+  const nonInteractive = !!(options.yes || (options.platform && options.ciProvider));
+
   // Check for existing config
   const existingConfig = await loadHarnessConfig(repoRoot);
   if (existingConfig) {
     logger.warn('An existing harness.config.json was found in this repository.');
-    const overwrite = await confirmPrompt(
-      'Do you want to overwrite the existing configuration?',
-      false,
-    );
-    if (!overwrite) {
-      logger.info('Init cancelled. Existing configuration preserved.');
-      return;
+    if (nonInteractive) {
+      logger.info('Overwriting existing configuration (non-interactive mode).');
+    } else {
+      const overwrite = await confirmPrompt(
+        'Do you want to overwrite the existing configuration?',
+        false,
+      );
+      if (!overwrite) {
+        logger.info('Init cancelled. Existing configuration preserved.');
+        return;
+      }
     }
   }
 
@@ -86,24 +96,27 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // ── 3. User preferences ──────────────────────────────────────────────
   displayDetectionSummary(detection);
 
-  const detectionOk = await confirmPrompt('Does this detection look correct?', true);
-  if (!detectionOk) {
-    detection = await correctDetection(detection);
+  if (!nonInteractive) {
+    const detectionOk = await confirmPrompt('Does this detection look correct?', true);
+    if (!detectionOk) {
+      detection = await correctDetection(detection);
+    }
   }
 
-  const ciProvider = await selectPrompt<UserPreferences['ciProvider']>(
-    'Which CI provider do you use?',
-    [
-      { name: 'GitHub Actions', value: 'github-actions' },
-      { name: 'GitLab CI', value: 'gitlab-ci' },
-      { name: 'Bitbucket Pipelines', value: 'bitbucket' },
-    ],
-  );
+  const ciProvider = nonInteractive
+    ? ((options.ciProvider as UserPreferences['ciProvider']) ?? 'github-actions')
+    : await selectPrompt<UserPreferences['ciProvider']>('Which CI provider do you use?', [
+        { name: 'GitHub Actions', value: 'github-actions' },
+        { name: 'GitLab CI', value: 'gitlab-ci' },
+        { name: 'Bitbucket Pipelines', value: 'bitbucket' },
+      ]);
 
-  const aiPlatform = await selectPrompt<AIPlatform>(
-    'Which AI coding agent do you use?',
-    AI_PLATFORMS.map((p) => ({ name: `${p.name} — ${p.description}`, value: p.value })),
-  );
+  const aiPlatform = nonInteractive
+    ? ((options.platform ?? 'claude') as AIPlatform)
+    : await selectPrompt<AIPlatform>(
+        'Which AI coding agent do you use?',
+        AI_PLATFORMS.map((p) => ({ name: `${p.name} — ${p.description}`, value: p.value })),
+      );
 
   // Validate CLI availability
   try {
@@ -128,18 +141,20 @@ export async function initCommand(options: InitOptions): Promise<void> {
     );
     console.log();
 
-    const hasGitHubApp = await confirmPrompt(
-      'Have you installed the Claude GitHub App on this repository?',
-      false,
-    );
-    if (!hasGitHubApp) {
-      logger.warn(
-        'Please run /install-github-app in Claude Code first, then re-run codefactory init.',
+    if (!nonInteractive) {
+      const hasGitHubApp = await confirmPrompt(
+        'Have you installed the Claude GitHub App on this repository?',
+        false,
       );
-      logger.dim(
-        '  Without the GitHub App, Claude-powered CI workflows (review agent, remediation, etc.) will not function.',
-      );
-      return;
+      if (!hasGitHubApp) {
+        logger.warn(
+          'Please run /install-github-app in Claude Code first, then re-run codefactory init.',
+        );
+        logger.dim(
+          '  Without the GitHub App, Claude-powered CI workflows (review agent, remediation, etc.) will not function.',
+        );
+        return;
+      }
     }
   } else if (aiPlatform === 'kiro' && ciProvider === 'github-actions') {
     console.log();
@@ -176,10 +191,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
     checked: h.isApplicable(tempCtx),
   }));
 
-  const selectedHarnesses = await multiselectPrompt<string>(
-    'Select harnesses to install:',
-    harnessChoices,
-  );
+  const selectedHarnesses = nonInteractive
+    ? harnessChoices.filter((c) => c.checked).map((c) => c.value)
+    : await multiselectPrompt<string>('Select harnesses to install:', harnessChoices);
 
   if (selectedHarnesses.length === 0) {
     logger.warn('No harnesses selected. Nothing to generate.');
@@ -195,25 +209,29 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   }
 
-  const editPaths = await confirmPrompt('Would you like to add or modify critical paths?', false);
   let customCriticalPaths: string[] | undefined;
-  if (editPaths) {
-    const pathInput = await inputPrompt('Enter additional critical paths (comma-separated):');
-    const extra = pathInput
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    customCriticalPaths = [...detection.criticalPaths, ...extra];
+  if (!nonInteractive) {
+    const editPaths = await confirmPrompt('Would you like to add or modify critical paths?', false);
+    if (editPaths) {
+      const pathInput = await inputPrompt('Enter additional critical paths (comma-separated):');
+      const extra = pathInput
+        .split(',')
+        .map((p) => p.trim())
+        .filter(Boolean);
+      customCriticalPaths = [...detection.criticalPaths, ...extra];
+    }
   }
 
-  const strictnessLevel = await selectPrompt<UserPreferences['strictnessLevel']>(
-    'Strictness level for harness rules:',
-    [
-      { name: 'Relaxed - warnings only, no blocking', value: 'relaxed' },
-      { name: 'Standard - block on high-risk, warn on medium', value: 'standard' },
-      { name: 'Strict - block on medium and high-risk', value: 'strict' },
-    ],
-  );
+  const strictnessLevel = nonInteractive
+    ? ((options.strictness ?? 'standard') as UserPreferences['strictnessLevel'])
+    : await selectPrompt<UserPreferences['strictnessLevel']>(
+        'Strictness level for harness rules:',
+        [
+          { name: 'Relaxed - warnings only, no blocking', value: 'relaxed' },
+          { name: 'Standard - block on high-risk, warn on medium', value: 'standard' },
+          { name: 'Strict - block on medium and high-risk', value: 'strict' },
+        ],
+      );
 
   const userPreferences: UserPreferences = {
     ciProvider,
@@ -380,10 +398,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Offer to commit
   console.log();
-  const shouldCommit = await confirmPrompt(
-    'Would you like to create a git commit with the generated files?',
-    true,
-  );
+  const shouldCommit = nonInteractive
+    ? true
+    : await confirmPrompt('Would you like to create a git commit with the generated files?', true);
 
   if (shouldCommit) {
     try {
