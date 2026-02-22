@@ -1,6 +1,6 @@
 {
   "name": "codefactory-cli",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "CLI tool that automates harness engineering setup for AI coding agents",
   "type": "module",
   "bin": {
