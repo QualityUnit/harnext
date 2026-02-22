@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeFactory — How It Works</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0b0f;
+    --surface: #111318;
+    --border: #1e2028;
+    --border-bright: #2a2d3a;
+    --accent: #f0e040;
+    --accent2: #40e0c8;
+    --accent3: #e040a0;
+    --text: #e8eaf0;
+    --text-dim: #6b7080;
+    --text-mid: #9aa0b8;
+    --green: #40e060;
+    --orange: #f07040;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .page {
+    position: relative;
+    z-index: 1;
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 60px 40px 80px;
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .header {
+    text-align: center;
+    margin-bottom: 72px;
+    animation: fadeDown 0.7s ease both;
+  }
+
+  .badge {
+    display: inline-block;
+    background: rgba(240,224,64,0.1);
+    border: 1px solid rgba(240,224,64,0.3);
+    color: var(--accent);
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.15em;
+    padding: 5px 14px;
+    border-radius: 2px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    font-size: clamp(36px, 6vw, 72px);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin-bottom: 16px;
+  }
+
+  h1 span { color: var(--accent); }
+
+  .tagline {
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+  }
+
+  /* ── Section titles ──────────────────────────────── */
+  .section-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* ── Boxes / Cards ───────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px 24px;
+    position: relative;
+  }
+
+  .card-title {
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+
+  .card-desc {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text-mid);
+    line-height: 1.6;
+  }
+
+  /* accent corners */
+  .card-accent::before {
+    content: '';
+    position: absolute;
+    top: -1px; left: -1px;
+    width: 24px; height: 24px;
+    border-top: 2px solid var(--accent);
+    border-left: 2px solid var(--accent);
+    border-radius: 4px 0 0 0;
+  }
+
+  /* ── INIT flow ───────────────────────────────────── */
+  .init-section { margin-bottom: 64px; }
+
+  .init-flow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .init-step {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 24px 20px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  .init-step:first-child { border-radius: 4px 0 0 4px; }
+  .init-step:last-child { border-radius: 0 4px 4px 0; }
+  .init-step:not(:last-child) { border-right: none; }
+  .init-step:hover { border-color: var(--border-bright); z-index: 1; }
+
+  .step-num {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+    margin-bottom: 10px;
+    display: block;
+  }
+
+  .step-icon {
+    font-size: 22px;
+    margin-bottom: 10px;
+    display: block;
+  }
+
+  .step-title {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 6px;
+  }
+
+  .step-desc {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+    line-height: 1.6;
+  }
+
+  .arrow-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 2;
+  }
+
+  .arrow-connector::before {
+    content: '\2192';
+    font-size: 18px;
+    color: var(--accent);
+    background: var(--bg);
+    padding: 2px 4px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    position: absolute;
+    left: -10px;
+  }
+
+  /* ── CORE layout: 3 columns ──────────────────────── */
+  .core-grid {
+    display: grid;
+    grid-template-columns: 280px 1fr 280px;
+    gap: 24px;
+    margin-bottom: 64px;
+    align-items: start;
+  }
+
+  /* ── Left column: harnesses ─────────────────────── */
+  .harness-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .harness-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    cursor: default;
+    transition: all 0.15s;
+  }
+  .harness-item:hover {
+    border-color: var(--border-bright);
+    background: #14161e;
+  }
+
+  .harness-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .harness-name {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+  }
+  .harness-num {
+    margin-left: auto;
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+  }
+
+  /* ── Center: main lifecycle diagram ─────────────── */
+  .lifecycle {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  .lc-block {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 20px;
+    text-align: center;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  .lc-block:hover { border-color: var(--border-bright); }
+
+  .lc-block.highlight-yellow { border-color: rgba(240,224,64,0.4); }
+  .lc-block.highlight-cyan   { border-color: rgba(64,224,200,0.4); }
+  .lc-block.highlight-pink   { border-color: rgba(224,64,160,0.4); }
+  .lc-block.highlight-green  { border-color: rgba(64,224,96,0.3); }
+
+  .lc-title {
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+
+  .lc-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+  }
+
+  .lc-arrow {
+    width: 1px;
+    height: 24px;
+    background: linear-gradient(to bottom, var(--border-bright), transparent);
+    margin: 0 auto;
+    position: relative;
+  }
+  .lc-arrow::after {
+    content: '\25BC';
+    position: absolute;
+    bottom: -2px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 8px;
+    color: var(--text-dim);
+  }
+
+  .lc-fork {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin: 6px 0;
+  }
+
+  .fork-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 8px;
+    text-align: center;
+  }
+
+  .fork-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    display: block;
+    margin-bottom: 4px;
+  }
+
+  .fork-name {
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .verdict-row {
+    display: flex;
+    gap: 6px;
+    width: 100%;
+    margin: 6px 0;
+  }
+
+  .verdict-block {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px 8px;
+    text-align: center;
+  }
+
+  .verdict-block.approve { border-color: rgba(64,224,96,0.4); }
+  .verdict-block.changes { border-color: rgba(240,112,64,0.4); }
+  .verdict-block.escalate { border-color: rgba(224,64,160,0.4); }
+
+  .verdict-name {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .verdict-block.approve .verdict-name { color: var(--green); }
+  .verdict-block.changes .verdict-name { color: var(--orange); }
+  .verdict-block.escalate .verdict-name { color: var(--accent3); }
+
+  .verdict-sub {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 3px;
+  }
+
+  /* ── Right column: safety system ────────────────── */
+  .safety-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .safety-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 14px 16px;
+  }
+
+  .safety-title {
+    font-weight: 700;
+    font-size: 12px;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .safety-icon { font-size: 14px; }
+
+  .safety-desc {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+    line-height: 1.5;
+  }
+
+  .tier-pills {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+
+  .pill {
+    font-family: 'Space Mono', monospace;
+    font-size: 9px;
+    padding: 3px 8px;
+    border-radius: 2px;
+    border: 1px solid;
+  }
+  .pill-t1 { border-color: rgba(64,224,96,0.5); color: var(--green); background: rgba(64,224,96,0.05); }
+  .pill-t2 { border-color: rgba(240,224,64,0.5); color: var(--accent); background: rgba(240,224,64,0.05); }
+  .pill-t3 { border-color: rgba(224,64,160,0.5); color: var(--accent3); background: rgba(224,64,160,0.05); }
+
+  /* ── Scheduled section ───────────────────────────── */
+  .scheduled-section {
+    margin-bottom: 64px;
+  }
+
+  .scheduled-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .sched-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px 20px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .sched-time {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--accent2);
+    background: rgba(64,224,200,0.08);
+    border: 1px solid rgba(64,224,200,0.2);
+    padding: 4px 8px;
+    border-radius: 2px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .sched-name {
+    font-weight: 700;
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+
+  .sched-desc {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+  }
+
+  /* ── Control plane section ───────────────────────── */
+  .control-section {
+    margin-bottom: 64px;
+  }
+
+  .control-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+
+  .file-group {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 18px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .file-group::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+  }
+  .file-group.fg-yellow::before { background: var(--accent); }
+  .file-group.fg-cyan::before { background: var(--accent2); }
+  .file-group.fg-pink::before { background: var(--accent3); }
+
+  .fg-title {
+    font-weight: 700;
+    font-size: 12px;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .file-entry {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-mid);
+    padding: 5px 8px;
+    background: var(--bg);
+    border-radius: 2px;
+    border: 1px solid var(--border);
+  }
+
+  .file-entry span {
+    color: var(--text-dim);
+    display: block;
+    font-size: 9px;
+    margin-top: 2px;
+  }
+
+  /* ── AI Providers ───────────────────────────────── */
+  .providers-section {
+    margin-bottom: 64px;
+  }
+
+  .providers-row {
+    display: flex;
+    gap: 12px;
+  }
+
+  .provider-card {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px;
+    text-align: center;
+    transition: border-color 0.2s;
+  }
+  .provider-card:hover { border-color: var(--border-bright); }
+
+  .provider-icon { font-size: 28px; margin-bottom: 10px; }
+  .provider-name { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+  .provider-file {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    background: rgba(240,224,64,0.08);
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 2px;
+    border: 1px solid rgba(240,224,64,0.2);
+    margin-bottom: 8px;
+  }
+  .provider-cli {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  /* ── Footer ──────────────────────────────────────── */
+  .footer {
+    text-align: center;
+    padding-top: 40px;
+    border-top: 1px solid var(--border);
+  }
+
+  .install-block {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 24px;
+    display: inline-block;
+    font-family: 'Space Mono', monospace;
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 16px;
+    position: relative;
+  }
+
+  .install-block::before {
+    content: '$';
+    color: var(--accent);
+    margin-right: 10px;
+  }
+
+  .footer-tagline {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  /* ── Animations ──────────────────────────────────── */
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate { animation: fadeDown 0.6s ease both; }
+  .d1 { animation-delay: 0.1s; }
+  .d2 { animation-delay: 0.2s; }
+  .d3 { animation-delay: 0.3s; }
+  .d4 { animation-delay: 0.4s; }
+  .d5 { animation-delay: 0.5s; }
+
+  /* ── Small dots accent ───────────────────────────── */
+  .dot-accent {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+
+  .connector-line {
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-bright), transparent);
+    margin: 8px 0;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── HEADER ─────────────────────────────────────── -->
+  <div class="header">
+    <div class="badge">Architecture Overview · v0.2.4</div>
+    <h1>Code<span>Factory</span></h1>
+    <p class="tagline">// Humans steer. Agents execute. //</p>
+  </div>
+
+  <!-- ── INIT FLOW ──────────────────────────────────── -->
+  <div class="init-section animate d1">
+    <div class="section-label">01 — Getting Started</div>
+    <div class="init-flow">
+      <div class="init-step">
+        <span class="step-num">STEP 01</span>
+        <span class="step-icon">📂</span>
+        <div class="step-title">Run codefactory init</div>
+        <div class="step-desc">Install globally via npm or curl, then run in any repo root</div>
+      </div>
+      <div class="arrow-connector"></div>
+      <div class="init-step">
+        <span class="step-num">STEP 02</span>
+        <span class="step-icon">🔍</span>
+        <div class="step-title">Stack Detection</div>
+        <div class="step-desc">Heuristics + AI analysis detects language, framework, CI provider, toolchain</div>
+      </div>
+      <div class="arrow-connector"></div>
+      <div class="init-step">
+        <span class="step-num">STEP 03</span>
+        <span class="step-icon">⚙️</span>
+        <div class="step-title">Configure Harnesses</div>
+        <div class="step-desc">Choose AI provider, strictness level, select which of 16 harnesses to enable</div>
+      </div>
+      <div class="arrow-connector"></div>
+      <div class="init-step">
+        <span class="step-num">STEP 04</span>
+        <span class="step-icon">🏭</span>
+        <div class="step-title">Generate Artifacts</div>
+        <div class="step-desc">14 GitHub Actions workflows, prompts, guards, risk config — all tailored to your stack</div>
+      </div>
+      <div class="arrow-connector"></div>
+      <div class="init-step" style="border: 1px solid rgba(240,224,64,0.3); background: rgba(240,224,64,0.04);">
+        <span class="step-num" style="color: var(--accent2);">READY</span>
+        <span class="step-icon">🚀</span>
+        <div class="step-title">Self-Operating Repo</div>
+        <div class="step-desc">AI agents handle triage, planning, implementation, review, and fixes automatically</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CORE DIAGRAM: 3 COLUMNS ───────────────────── -->
+  <div class="core-grid animate d2">
+
+    <!-- LEFT: 16 Harnesses -->
+    <div>
+      <div class="section-label">16 Harnesses Generated</div>
+      <div class="harness-list">
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent);"></div>
+          <span class="harness-name">Risk Contract</span>
+          <span class="harness-num">01</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent);"></div>
+          <span class="harness-name">Agent Instructions</span>
+          <span class="harness-num">02</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent2);"></div>
+          <span class="harness-name">Documentation Structure</span>
+          <span class="harness-num">03</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent2);"></div>
+          <span class="harness-name">Pre-commit Hooks</span>
+          <span class="harness-num">04</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent3);"></div>
+          <span class="harness-name">Risk Policy Gate</span>
+          <span class="harness-num">05</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent3);"></div>
+          <span class="harness-name">CI Pipeline</span>
+          <span class="harness-num">06</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--orange);"></div>
+          <span class="harness-name">Review Agent</span>
+          <span class="harness-num">07</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--orange);"></div>
+          <span class="harness-name">Remediation Loop</span>
+          <span class="harness-num">08</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--text-dim);"></div>
+          <span class="harness-name">Browser Evidence Capture</span>
+          <span class="harness-num">09</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--text-dim);"></div>
+          <span class="harness-name">PR Templates</span>
+          <span class="harness-num">10</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent3);"></div>
+          <span class="harness-name">Architectural Linters</span>
+          <span class="harness-num">11</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent2);"></div>
+          <span class="harness-name">Doc Garbage Collection</span>
+          <span class="harness-num">12</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent2);"></div>
+          <span class="harness-name">Incident-to-Harness Loop</span>
+          <span class="harness-num">13</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent);"></div>
+          <span class="harness-name">Issue Triage</span>
+          <span class="harness-num">14</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent);"></div>
+          <span class="harness-name">Issue Planner</span>
+          <span class="harness-num">15</span>
+        </div>
+        <div class="harness-item">
+          <div class="harness-dot" style="background: var(--accent);"></div>
+          <span class="harness-name">Issue Implementer</span>
+          <span class="harness-num">16</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER: Full lifecycle -->
+    <div>
+      <div class="section-label">End-to-End Lifecycle</div>
+      <div class="lifecycle">
+
+        <div class="lc-block highlight-yellow">
+          <div class="lc-title">🐛 Issue Opened</div>
+          <div class="lc-sub">Any developer creates an issue</div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block">
+          <div class="lc-title">🔎 issue-triage.yml</div>
+          <div class="lc-sub">Evaluates quality, confidence, complexity via AI</div>
+          <div class="lc-fork" style="margin-top:10px;">
+            <div class="fork-item">
+              <span class="fork-label">not actionable</span>
+              <span class="fork-name" style="color:var(--text-dim); font-size:10px;">needs-more-info</span>
+            </div>
+            <div class="fork-item" style="border-color: rgba(224,64,160,0.3);">
+              <span class="fork-label">too complex</span>
+              <span class="fork-name" style="color:var(--accent3); font-size:10px;">human-review</span>
+            </div>
+            <div class="fork-item" style="border-color: rgba(240,224,64,0.3);">
+              <span class="fork-label">actionable ≥0.7</span>
+              <span class="fork-name" style="color:var(--accent); font-size:10px;">agent:plan ✓</span>
+            </div>
+          </div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block highlight-cyan">
+          <div class="lc-title">📐 issue-planner.yml</div>
+          <div class="lc-sub">AI reads entire codebase, posts structured implementation plan</div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block highlight-cyan">
+          <div class="lc-title">🤖 issue-implementer.yml</div>
+          <div class="lc-sub">Creates branch → Implements changes → Runs quality gates → Opens PR</div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block" style="border-color: var(--border-bright);">
+          <div class="lc-title">🔀 PR Pipeline</div>
+          <div class="lc-fork" style="margin-top: 8px;">
+            <div class="fork-item" style="border-color: rgba(240,224,64,0.2);">
+              <span class="fork-label">risk-gate</span>
+              <span class="fork-name" style="font-size:10px;">ci.yml</span>
+            </div>
+            <div class="fork-item" style="border-color: rgba(64,224,200,0.2);">
+              <span class="fork-label">quality checks</span>
+              <span class="fork-name" style="font-size:10px;">lint/test/build</span>
+            </div>
+            <div class="fork-item" style="border-color: rgba(224,64,160,0.2);">
+              <span class="fork-label">ai review</span>
+              <span class="fork-name" style="font-size:10px;">review-agent</span>
+            </div>
+          </div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block">
+          <div class="lc-title">⚖️ Review Verdict</div>
+          <div class="verdict-row" style="margin-top: 8px;">
+            <div class="verdict-block approve">
+              <div class="verdict-name">APPROVE</div>
+              <div class="verdict-sub">Ready to merge</div>
+            </div>
+            <div class="verdict-block changes">
+              <div class="verdict-name">REQUEST CHANGES</div>
+              <div class="verdict-sub">Auto fix-loop ×3</div>
+            </div>
+            <div class="verdict-block escalate">
+              <div class="verdict-name">ESCALATE</div>
+              <div class="verdict-sub">needs-judgment</div>
+            </div>
+          </div>
+        </div>
+        <div class="lc-arrow"></div>
+
+        <div class="lc-block highlight-green">
+          <div class="lc-title">✅ Human Approves Merge</div>
+          <div class="lc-sub">You review the final PR and merge — that's the only step you do</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- RIGHT: Safety system -->
+    <div>
+      <div class="section-label">Safety System</div>
+      <div class="safety-stack">
+
+        <div class="safety-block" style="border-color: rgba(240,224,64,0.3);">
+          <div class="safety-title">
+            <span class="safety-icon">🎯</span> Risk Tiers
+          </div>
+          <div class="safety-desc">Every changed file is classified before CI runs</div>
+          <div class="tier-pills">
+            <div class="pill pill-t1">T1 — docs only → lint</div>
+            <div class="pill pill-t2">T2 — src/tests → full suite</div>
+            <div class="pill pill-t3">T3 — core engine → human approval</div>
+          </div>
+        </div>
+
+        <div class="safety-block">
+          <div class="safety-title">
+            <span class="safety-icon">🔒</span> SHA Discipline
+          </div>
+          <div class="safety-desc">All CI jobs pin to the exact commit SHA from risk-gate. No drift, no race conditions.</div>
+        </div>
+
+        <div class="safety-block">
+          <div class="safety-title">
+            <span class="safety-icon">🏛️</span> Architectural Linter
+          </div>
+          <div class="safety-desc">Import boundaries enforced in CI. Violations fail the build before reaching main.</div>
+        </div>
+
+        <div class="safety-block">
+          <div class="safety-title">
+            <span class="safety-icon">🛡️</span> Protected Files
+          </div>
+          <div class="safety-desc">Agents can NEVER modify workflows, harness config, or lockfiles. Auto-reverted even if written.</div>
+        </div>
+
+        <div class="safety-block">
+          <div class="safety-title">
+            <span class="safety-icon">🔄</span> Remediation Loop
+          </div>
+          <div class="safety-desc">If review finds issues on agent-PRs, a remediation agent auto-fixes them. Max 3 cycles before escalation.</div>
+        </div>
+
+        <div class="safety-block">
+          <div class="safety-title">
+            <span class="safety-icon">🔁</span> Quality Gate
+          </div>
+          <div class="safety-desc">lint → typecheck → tests → build → structural-tests. Each must pass or changes are reverted automatically.</div>
+        </div>
+
+        <div class="safety-block" style="border-color: rgba(64,224,200,0.2);">
+          <div class="safety-title">
+            <span class="safety-icon">💬</span> @claude Trigger
+          </div>
+          <div class="safety-desc">Mention @claude in any issue or PR comment to invoke AI ad-hoc on that thread.</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── AI PROVIDERS ───────────────────────────────── -->
+  <div class="providers-section animate d3">
+    <div class="section-label">02 — AI Providers</div>
+    <div class="providers-row">
+      <div class="provider-card" style="border-color: rgba(240,224,64,0.3);">
+        <div class="provider-icon">🤖</div>
+        <div class="provider-name">Claude Code</div>
+        <div class="provider-file">CLAUDE.md</div>
+        <div class="provider-cli">binary: claude</div>
+      </div>
+      <div class="provider-card">
+        <div class="provider-icon">☁️</div>
+        <div class="provider-name">AWS Kiro</div>
+        <div class="provider-file">KIRO.md</div>
+        <div class="provider-cli">binary: kiro-cli</div>
+      </div>
+      <div class="provider-card">
+        <div class="provider-icon">⚡</div>
+        <div class="provider-name">OpenAI Codex</div>
+        <div class="provider-file">CODEX.md</div>
+        <div class="provider-cli">binary: codex</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── CONTROL PLANE ──────────────────────────────── -->
+  <div class="control-section animate d4">
+    <div class="section-label">03 — Control Plane (all version-controlled)</div>
+    <div class="control-grid">
+
+      <div class="file-group fg-yellow">
+        <div class="fg-title">⚙️ Configuration</div>
+        <div class="file-list">
+          <div class="file-entry">harness.config.json<span>Risk tiers, critical paths, boundaries</span></div>
+          <div class="file-entry">CLAUDE.md / KIRO.md / CODEX.md<span>Agent conventions — the control plane document</span></div>
+        </div>
+      </div>
+
+      <div class="file-group fg-cyan">
+        <div class="fg-title">📝 Agent Prompt Templates</div>
+        <div class="file-list">
+          <div class="file-entry">.codefactory/prompts/agent-system.md<span>Base system prompt</span></div>
+          <div class="file-entry">.codefactory/prompts/issue-triage.md<span>Triage criteria</span></div>
+          <div class="file-entry">.codefactory/prompts/issue-planner.md<span>Planning instructions</span></div>
+          <div class="file-entry">.codefactory/prompts/issue-implementer.md<span>Implementation rules</span></div>
+        </div>
+      </div>
+
+      <div class="file-group fg-pink">
+        <div class="fg-title">🛡️ Guard Scripts</div>
+        <div class="file-list">
+          <div class="file-entry">scripts/risk-policy-gate.sh<span>Tier classification logic</span></div>
+          <div class="file-entry">scripts/issue-triage-guard.ts<span>Prevents re-triage loops</span></div>
+          <div class="file-entry">scripts/remediation-guard.ts<span>Evaluates remediation safety</span></div>
+          <div class="file-entry">scripts/structural-tests.sh<span>Import boundary validation</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── SCHEDULED JOBS ─────────────────────────────── -->
+  <div class="scheduled-section animate d4">
+    <div class="section-label">04 — Scheduled Background Jobs</div>
+    <div class="scheduled-grid">
+      <div class="sched-card">
+        <div class="sched-time">MON 9AM UTC</div>
+        <div>
+          <div class="sched-name">doc-gardening.yml</div>
+          <div class="sched-desc">Scans all docs for stale references, broken links, outdated commands → auto-opens PR with fixes</div>
+        </div>
+      </div>
+      <div class="sched-card">
+        <div class="sched-time">FRI 10AM UTC</div>
+        <div>
+          <div class="sched-name">weekly-metrics.yml</div>
+          <div class="sched-desc">Reports MTTH, SLO compliance by priority (P0–P3), overdue gap counts, monthly close rate</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FOOTER ─────────────────────────────────────── -->
+  <div class="footer animate d5">
+    <div class="install-block">curl -fsSL https://raw.githubusercontent.com/yasha-dev1/codefactory/main/scripts/install.sh | bash</div>
+    <p class="footer-tagline">— or — npm install -g codefactory-cli — then — codefactory init</p>
+    <br><br>
+    <p class="footer-tagline" style="color: var(--text-dim);">MIT License · github.com/yasha-dev1/codefactory</p>
+  </div>
+
+</div>
+</body>
+</html>
