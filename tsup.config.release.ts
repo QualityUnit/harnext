@@ -5,6 +5,8 @@ import { defineConfig } from 'tsup';
 // Read runtime dependency names from package.json to bundle them into the
 // standalone release binary.
 const pkg = JSON.parse(readFileSync('package.json', 'utf-8')) as {
+  version?: string;
+  description?: string;
   dependencies?: Record<string, string>;
 };
 const runtimeDeps = Object.keys(pkg.dependencies ?? {});
@@ -19,6 +21,10 @@ export default defineConfig({
   sourcemap: false,
   dts: false,
   noExternal: runtimeDeps,
+  define: {
+    __CODEFACTORY_VERSION__: JSON.stringify(pkg.version ?? '0.0.0'),
+    __CODEFACTORY_DESCRIPTION__: JSON.stringify(pkg.description ?? ''),
+  },
   banner: {
     // Shebang + createRequire shim: CJS packages bundled into ESM (e.g.
     // commander) call require('events') etc. In ESM there is no require
