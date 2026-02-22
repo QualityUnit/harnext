@@ -26,3 +26,36 @@ describe('getPackageInfo', () => {
     expect(info.description).toBe(expected.description);
   });
 });
+
+describe('getPackageInfo with build-time constants', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('should return the injected version when __CODEFACTORY_VERSION__ is defined', () => {
+    vi.stubGlobal('__CODEFACTORY_VERSION__', '1.2.3');
+    vi.stubGlobal('__CODEFACTORY_DESCRIPTION__', 'Injected description');
+
+    const info = getPackageInfo();
+    expect(info.version).toBe('1.2.3');
+    expect(info.description).toBe('Injected description');
+  });
+
+  it('should return empty description when only __CODEFACTORY_VERSION__ is defined', () => {
+    vi.stubGlobal('__CODEFACTORY_VERSION__', '1.2.3');
+    // __CODEFACTORY_DESCRIPTION__ remains undefined
+
+    const info = getPackageInfo();
+    expect(info.version).toBe('1.2.3');
+    expect(info.description).toBe('');
+  });
+
+  it('should fall through to directory-walk when __CODEFACTORY_VERSION__ is empty string', () => {
+    vi.stubGlobal('__CODEFACTORY_VERSION__', '');
+
+    const info = getPackageInfo();
+    // Falls through to directory-walk, which finds the real package.json
+    expect(info.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(info.version).not.toBe('0.0.0');
+  });
+});
