@@ -1,5 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the remediation loop workflow and agent.
@@ -166,6 +167,8 @@ The remediation loop is the most safety-critical part of the harness after the r
 - Pin the Claude model and configuration for reproducibility
 - Never auto-merge remediation commits — they always go through the full review cycle
 - Every remediation action must be logged in PR comments for audit
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

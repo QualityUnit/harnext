@@ -1,5 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the documentation garbage collection (doc-gardening) system.
@@ -159,6 +160,8 @@ After making changes, provide a summary listing:
 - Include a manual workflow_dispatch trigger for on-demand gardening
 - The workflow must use \`${agentAction.action}\` with \`${agentAction.secretInputKey}\` for authentication
 - The workflow must include \`id-token: write\` in its permissions for the Claude Code Action OAuth flow
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

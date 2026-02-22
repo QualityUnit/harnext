@@ -2,6 +2,7 @@ import {
   buildAgentStepLines,
   buildExtractOutputLines,
   getPlatformPermissions,
+  getKiroCISafetyRules,
 } from '../../src/core/ci-agent-steps.js';
 import type { AgentStepConfig } from '../../src/core/ci-agent-steps.js';
 
@@ -35,6 +36,7 @@ describe('buildAgentStepLines', () => {
     const yaml = lines.join('\n');
     expect(yaml).toContain('Configure AWS credentials');
     expect(yaml).not.toContain('Configure AWS credentials (OIDC)');
+    expect(yaml).toContain('continue-on-error: true');
     expect(yaml).toContain('aws-actions/configure-aws-credentials@v4');
     expect(yaml).toContain('role-to-assume: ${{ secrets.AWS_ROLE_ARN }}');
     expect(yaml).toContain('aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}');
@@ -150,6 +152,18 @@ describe('buildExtractOutputLines', () => {
     const yaml = lines.join('\n');
     expect(yaml).toContain('steps.my-review-step.outputs');
     expect(yaml).toContain('id: my-extract');
+  });
+});
+
+describe('getKiroCISafetyRules', () => {
+  it('should include all 6 safety rules', () => {
+    const rules = getKiroCISafetyRules();
+    expect(rules).toContain('continue-on-error: true');
+    expect(rules).toContain('setup-kiro-action');
+    expect(rules).toContain('Shell Expansion Safety');
+    expect(rules).toContain('YAML Block Scalar');
+    expect(rules).toContain('--json author');
+    expect(rules).toContain('GITHUB_TOKEN Event Chaining');
   });
 });
 

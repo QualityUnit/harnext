@@ -59,10 +59,13 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   const lines: string[] = [];
 
   // Step 1: Configure AWS credentials (supports OIDC and static keys)
+  // continue-on-error: true because OIDC role may not be configured — the OIDC
+  // token refresh in step 3 handles auth independently of AWS credentials.
   lines.push('      - name: Configure AWS credentials');
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
   }
+  lines.push('        continue-on-error: true');
   lines.push('        uses: aws-actions/configure-aws-credentials@v4');
   lines.push('        with:');
   lines.push('          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}');
@@ -289,6 +292,65 @@ export function buildExtractOutputLines(
   }
 
   return lines;
+}
+
+/**
+ * Return Kiro-specific CI safety rules for inclusion in AI-generation prompts.
+ *
+ * These rules prevent the most common failures observed during E2E testing:
+ * shell expansion of user content, YAML block scalar breakage, and misuse
+ * of the setup-kiro-action as a full agent action.
+ */
+export function getKiroCISafetyRules(): string {
+  return `
+## Kiro CI — Mandatory Safety Rules
+
+These rules apply to ALL generated GitHub Actions workflow YAML when the target AI platform is Kiro.
+
+### 1. Kiro Agent Invocation Pattern (4-step auth)
+
+\`clouatre-labs/setup-kiro-action@v1\` is ONLY a binary installer — it does NOT accept \`prompt\`, \`aws_role_arn\`, or any agent inputs. Do NOT use it as a \`uses:\` step with action inputs. Instead, Kiro requires a 4-step authentication and invocation pattern:
+
+1. **Configure AWS credentials** — \`aws-actions/configure-aws-credentials@v4\` with \`continue-on-error: true\`
+2. **Setup Kiro CLI** — \`clouatre-labs/setup-kiro-action@v1\` (binary installer only, inputs: \`enable-sigv4\`, \`aws-region\`)
+3. **Authenticate Kiro CLI** — OIDC token refresh via curl + SQLite injection into \`~/.local/share/kiro-cli/data.sqlite3\`
+4. **Run agent** — \`kiro-cli-chat chat --no-interactive --trust-all-tools "$PROMPT"\` as a \`run:\` step
+
+The Kiro auth step uses these secrets: \`KIRO_CLIENT_ID\`, \`KIRO_CLIENT_SECRET\`, \`KIRO_REFRESH_TOKEN\`, \`KIRO_PROFILE_ARN\`, \`KIRO_START_URL\` (optional), and the variable \`AWS_REGION\` (defaults to \`us-east-1\`).
+
+### 2. Shell Expansion Safety
+
+NEVER inline \`\${{ toJSON(github.event.issue) }}\` or other expressions containing user-generated content directly inside \`run: |\` blocks. Backticks and parentheses in issue titles/bodies will break bash. Instead, pass them via \`env:\` block:
+
+**WRONG:**
+\`\`\`yaml
+run: |
+  export ISSUE_JSON='\${{ toJSON(github.event.issue) }}'
+\`\`\`
+
+**CORRECT:**
+\`\`\`yaml
+run: |
+  echo "$ISSUE_JSON" | jq .
+env:
+  ISSUE_JSON: \${{ toJSON(github.event.issue) }}
+\`\`\`
+
+### 3. YAML Block Scalar Indentation
+
+In \`run: |\` blocks, ALL content lines must be indented relative to the YAML key. Lines starting at column 1 (like \`|-------|\`, \`## Heading\`, \`Branch: ...\`) break YAML block scalar parsing. For complex multi-line content (PR bodies, comment bodies with tables), use \`actions/github-script@v7\` or \`printf\` instead of inline heredocs.
+
+### 4. AWS Credentials — continue-on-error
+
+Always set \`continue-on-error: true\` on the "Configure AWS credentials" step. The OIDC token refresh in the "Authenticate Kiro CLI" step handles auth independently — the AWS credentials step is optional (only needed if using IAM role assumption on top of OIDC).
+
+### 5. GitHub CLI — use \`--json author\` not \`--json user\`
+
+When fetching issue data via \`gh issue view\`, use \`--json number,title,body,labels,author\` (not \`user\`). The \`user\` field does not exist in \`gh\` CLI output. Remap \`author\` to match the \`github.event.issue\` shape: \`jq '{number, title, body, labels, user: {login: .author.login}}'\`.
+
+### 6. GITHUB_TOKEN Event Chaining
+
+Labels added or PRs created using the default \`GITHUB_TOKEN\` do NOT trigger subsequent \`labeled\` or \`pull_request\` workflow events. When one workflow needs to chain to another (triage→planner, planner→implementer, review→implementer), use explicit \`gh workflow run\` dispatch.`;
 }
 
 /**

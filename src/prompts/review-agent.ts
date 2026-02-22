@@ -1,5 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the review agent workflow and supporting scripts.
@@ -195,6 +196,8 @@ The available action outputs are: ${agentAction.executionFileOutputKey ? `\`${ag
 - Include proper error handling and clear logging at each step
 - Set appropriate timeout-minutes (15 for review, 5 for rerun/auto-resolve)
 - Use concurrency groups to prevent parallel runs on the same PR
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

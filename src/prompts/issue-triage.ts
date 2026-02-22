@@ -1,5 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the issue-triage agent workflow and supporting scripts.
@@ -205,6 +206,8 @@ The script:
 - Include proper error handling and clear logging at each step
 - Set appropriate timeout-minutes for the workflow (10 minutes for triage)
 - Use concurrency groups to prevent parallel runs on the same issue
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 

@@ -1,5 +1,6 @@
 import type { DetectionResult, UserPreferences } from './types.js';
 import { CI_AGENT_ACTIONS } from '../core/ai-runner.js';
+import { getKiroCISafetyRules } from '../core/ci-agent-steps.js';
 
 /**
  * Prompt for generating the issue-planner agent workflow and supporting scripts.
@@ -61,7 +62,7 @@ on:
 
 When triggered via \`workflow_dispatch\`:
 - \`github.event.issue\` and \`context.issue\` are NOT available
-- The workflow must fetch issue data via \`gh issue view <number> --json number,title,body,labels,user\`
+- The workflow must fetch issue data via \`gh issue view <number> --json number,title,body,labels,author\`
 - All downstream steps must derive issue references from the guard output (not from context)
 - \`github.event.repository.default_branch\` is not available — use a fallback`
     : prefs.ciProvider === 'gitlab-ci'
@@ -82,7 +83,8 @@ When triggered via \`workflow_dispatch\`:
      \`\`\`bash
      gh issue view "\${{ inputs.issue_number }}" --json number,title,body,labels,author
      \`\`\`
-   - Remap \`author\` to \`user\` to match \`github.event.issue\` shape
+   - Remap \`author\` to \`user\` via jq: \`| jq '{number, title, body, labels, user: {login: .author.login}}'\`
+   - Note: \`gh\` CLI uses \`author\`, not \`user\` — remap to match \`github.event.issue\` shape
    - Store the result as a step output for the guard and prompt-building steps
 
 2. **Gate check** (via guard script):
@@ -173,6 +175,8 @@ The generated \`.codefactory/prompts/issue-planner.md\` MUST instruct the agent 
 - Pin all action versions to specific SHAs or major versions for security
 - Include proper error handling and clear logging at each step
 - Use concurrency groups to prevent parallel runs on the same issue
+
+${prefs.aiPlatform === 'kiro' ? getKiroCISafetyRules() : ''}
 
 ## Output Format
 
