@@ -158,8 +158,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
     }
   } else if (aiPlatform === 'kiro' && ciProvider === 'github-actions') {
     console.log();
-    logger.info('Kiro-powered CI workflows require AWS OIDC authentication via GitHub secrets.');
-    logger.info('Ensure AWS_ROLE_ARN is set as a repository secret for OIDC authentication.');
+    logger.info('Kiro CI workflows support two AWS authentication methods:');
+    logger.info('  Option A (OIDC): Set AWS_ROLE_ARN secret + configure an IAM OIDC provider');
+    logger.info('  Option B (Keys): Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY secrets');
+    logger.info('Optionally set AWS_REGION as a repository variable (defaults to us-east-1).');
     console.log();
   } else if (aiPlatform === 'codex' && ciProvider === 'github-actions') {
     console.log();

@@ -30,11 +30,16 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain("prompt: 'Do something'");
   });
 
-  it('should produce 3 steps for Kiro (AWS OIDC + setup + run)', () => {
+  it('should produce 3 steps for Kiro (AWS auth + setup + run)', () => {
     const lines = buildAgentStepLines('kiro', baseConfig);
     const yaml = lines.join('\n');
     expect(yaml).toContain('Configure AWS credentials');
+    expect(yaml).not.toContain('Configure AWS credentials (OIDC)');
     expect(yaml).toContain('aws-actions/configure-aws-credentials@v4');
+    expect(yaml).toContain('role-to-assume: ${{ secrets.AWS_ROLE_ARN }}');
+    expect(yaml).toContain('aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}');
+    expect(yaml).toContain('aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}');
+    expect(yaml).toContain("aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
     expect(yaml).toContain('Setup Kiro CLI');
     expect(yaml).toContain('clouatre-labs/setup-kiro-action@v1');
     expect(yaml).toContain('kiro-cli chat --no-interactive --trust-all-tools');

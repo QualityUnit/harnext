@@ -20,7 +20,7 @@ export interface AgentStepConfig {
  *
  * For Claude: single `uses:` step with claude-code-action
  * For Codex: single `uses:` step with codex-action
- * For Kiro: 3 steps — configure AWS OIDC, setup Kiro CLI, run CLI via `run:`
+ * For Kiro: 3 steps — configure AWS credentials, setup Kiro CLI, run CLI via `run:`
  */
 export function buildAgentStepLines(platform: AIPlatform, config: AgentStepConfig): string[] {
   const action = CI_AGENT_ACTIONS[platform];
@@ -58,15 +58,17 @@ export function buildAgentStepLines(platform: AIPlatform, config: AgentStepConfi
 function buildKiroStepLines(config: AgentStepConfig): string[] {
   const lines: string[] = [];
 
-  // Step 1: Configure AWS OIDC credentials
-  lines.push('      - name: Configure AWS credentials (OIDC)');
+  // Step 1: Configure AWS credentials (supports OIDC and static keys)
+  lines.push('      - name: Configure AWS credentials');
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
   }
   lines.push('        uses: aws-actions/configure-aws-credentials@v4');
   lines.push('        with:');
   lines.push('          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}');
-  lines.push('          aws-region: us-east-1');
+  lines.push('          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}');
+  lines.push('          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}');
+  lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
   // Step 2: Install Kiro CLI
   lines.push('      - name: Setup Kiro CLI');
