@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import type { z } from 'zod';
 
 import type { AIRunner, AIRunnerOptions, AIPlatform, GenerateResult } from './ai-runner.js';
@@ -58,9 +60,26 @@ export abstract class GitDiffRunner implements AIRunner {
     const systemPrompt = [this.options.systemPrompt, systemPromptAppend].filter(Boolean).join('\n');
 
     const args = this.buildGenerateArgs(prompt, systemPrompt || undefined);
-    await this.run(args);
+    const result = await this.run(args);
 
-    const { created, modified } = diffWorkingTree(beforeUntracked, cwd, beforeModified);
+    let { created, modified } = diffWorkingTree(beforeUntracked, cwd, beforeModified);
+
+    // Fallback: when the CLI outputs file contents as text instead of using its
+    // file-writing tool (e.g. kiro-cli hitting context limits), parse the text
+    // output and write the files to disk.
+    if (result.resultText.length > 200) {
+      const alreadyCreated = new Set(created.map((f) => relative(cwd, f)));
+      const recovered = parseAndWriteTextOutput(result.resultText, cwd, alreadyCreated);
+      if (recovered.length > 0) {
+        this.options.onLogLine?.(
+          `  ${this.logPrefix}: recovered ${recovered.length} file(s) from text output`,
+        );
+        const diff = diffWorkingTree(beforeUntracked, cwd, beforeModified);
+        created = diff.created;
+        modified = diff.modified;
+      }
+    }
+
     return { filesCreated: created, filesModified: modified };
   }
 
@@ -107,4 +126,89 @@ export abstract class GitDiffRunner implements AIRunner {
       });
     });
   }
+}
+
+// ── Text output fallback parser ──────────────────────────────────────────────
+
+/** Minimum content length (bytes) to consider a parsed section as a real file. */
+const MIN_FILE_CONTENT_LENGTH = 50;
+
+/**
+ * Pattern matching file path headers in CLI text output.
+ *
+ * Matches formats like:
+ *   File: .github/workflows/issue-planner.yml
+ *   # File: scripts/guard.ts
+ *   ## .codefactory/prompts/planner.md
+ *   ### .github/workflows/issue-planner.yml
+ *   // File: scripts/guard.ts
+ *
+ * Requires at least one `/` in the path to reduce false positives.
+ */
+const FILE_HEADER_RE =
+  /^(?:#{1,4}\s+)?(?:(?:\/\/|#)\s+)?(?:File:\s*)?(\S+\/\S+\.(?:ya?ml|tsx?|jsx?|md|json|sh))\s*$/;
+
+/**
+ * Parse CLI text output for file content patterns and write them to disk.
+ *
+ * When a git-diff-based runner (kiro-cli, codex-cli) outputs file contents as
+ * text instead of using its file-writing tool, this function extracts the
+ * file path + content pairs and writes them to the working directory.
+ */
+export function parseAndWriteTextOutput(
+  text: string,
+  cwd: string,
+  skip: Set<string> = new Set(),
+): string[] {
+  const lines = text.split('\n');
+  const files: Array<{ path: string; contentLines: string[] }> = [];
+
+  let current: { path: string; contentLines: string[] } | null = null;
+  let wrappedInFence = false;
+
+  for (const line of lines) {
+    // Check for file header (only outside wrapping fences)
+    if (!wrappedInFence) {
+      const match = line.match(FILE_HEADER_RE);
+      if (match) {
+        if (current) files.push(current);
+        current = { path: match[1], contentLines: [] };
+        continue;
+      }
+    }
+
+    if (!current) continue;
+
+    // If the first content line is a code fence opener, mark as wrapped
+    if (current.contentLines.length === 0 && !wrappedInFence && line.startsWith('```')) {
+      wrappedInFence = true;
+      continue; // skip the opening fence
+    }
+
+    // Closing fence for a wrapped block
+    if (wrappedInFence && line.trim() === '```') {
+      wrappedInFence = false;
+      continue; // skip the closing fence
+    }
+
+    current.contentLines.push(line);
+  }
+
+  if (current) files.push(current);
+
+  // Write files to disk (skip already-created ones)
+  const written: string[] = [];
+  for (const file of files) {
+    if (skip.has(file.path)) continue;
+
+    const content = file.contentLines.join('\n').trim();
+    if (content.length < MIN_FILE_CONTENT_LENGTH) continue;
+
+    const fullPath = join(cwd, file.path);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, content + '\n');
+    written.push(fullPath);
+  }
+
+  return written;
 }

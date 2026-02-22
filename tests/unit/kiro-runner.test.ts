@@ -7,6 +7,15 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+  };
+});
+
 vi.mock('../../src/utils/git.js', () => ({
   snapshotUntrackedFiles: vi.fn(),
   snapshotModifiedFiles: vi.fn(),
@@ -130,6 +139,44 @@ describe('KiroRunner', () => {
       expect(mockedSnapshotUntrackedFiles).toHaveBeenCalled();
       expect(mockedSnapshotModifiedFiles).toHaveBeenCalled();
       expect(mockedDiffWorkingTree).toHaveBeenCalled();
+    });
+
+    it('should recover files from text output when CLI does not write them', async () => {
+      // First diffWorkingTree call returns nothing (CLI did not use fs_write)
+      // Second call (after fallback writes files) returns the recovered files
+      mockedDiffWorkingTree.mockReturnValueOnce({ created: [], modified: [] }).mockReturnValueOnce({
+        created: ['/tmp/test/.github/workflows/planner.yml', '/tmp/test/scripts/guard.ts'],
+        modified: [],
+      });
+
+      // CLI outputs file contents as text instead of writing them
+      const cliOutput = [
+        'File: .github/workflows/planner.yml',
+        'name: Issue Planner Agent',
+        'on:',
+        '  issues:',
+        '    types: [labeled]',
+        'jobs:',
+        '  plan:',
+        '    runs-on: ubuntu-latest',
+        '',
+        'File: scripts/guard.ts',
+        '#!/usr/bin/env npx tsx',
+        'export function evaluate() {',
+        '  return { shouldPlan: true };',
+        '}',
+      ].join('\n');
+
+      mockSpawnWith(mockedSpawn, cliOutput + '\n');
+
+      const result = await runner.generate('Generate planner files');
+
+      // Should have called diffWorkingTree twice (initial + after fallback)
+      expect(mockedDiffWorkingTree).toHaveBeenCalledTimes(2);
+      expect(result.filesCreated).toEqual([
+        '/tmp/test/.github/workflows/planner.yml',
+        '/tmp/test/scripts/guard.ts',
+      ]);
     });
   });
 

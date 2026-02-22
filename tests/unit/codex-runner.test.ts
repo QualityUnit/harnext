@@ -7,6 +7,15 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+  };
+});
+
 vi.mock('../../src/utils/git.js', () => ({
   snapshotUntrackedFiles: vi.fn(),
   snapshotModifiedFiles: vi.fn(),
