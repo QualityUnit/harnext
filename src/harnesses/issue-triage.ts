@@ -253,7 +253,7 @@ jobs:
 
 ${buildAgentStepLines(platform, {
   stepName: 'Run AI triage analysis',
-  stepId: 'claude-triage',
+  stepId: 'ai-triage',
   promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
   ifCondition: "steps.guard.outputs.should-triage == 'true'",
   argsExpr: `"--max-turns 15 --json-schema '\${{ steps.schema.outputs.value }}'"`,
@@ -264,14 +264,14 @@ ${buildAgentStepLines(platform, {
         id: verdict
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
         env:
-          STRUCTURED_OUTPUT: \${{ steps.claude-triage.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
+          STRUCTURED_OUTPUT: \${{ steps.ai-triage.outputs.${agentAction.structuredOutputKey || 'structured_output'} || '' }}
         with:
           script: |
             const raw = process.env.STRUCTURED_OUTPUT || '';
             core.info(\`Structured output length: \${raw.length}\`);
 
             if (!raw) {
-              core.warning('No structured output from Claude — structured_output is empty');
+              core.warning('No structured output from AI agent — structured_output is empty');
               core.setOutput('parsed', 'false');
               core.setOutput('raw-text', '');
               return;
@@ -446,7 +446,7 @@ ${agentAction.argsInputKey ? `          ${agentAction.argsInputKey}: '--max-turn
             const commentSections = [\`<!-- issue-triage: #\${issueNumber} -->\`];
 
             if (!parsed) {
-              // Failed to parse — add failure label and show what Claude said
+              // Failed to parse — add failure label and show what the AI agent said
               labelsToAdd.push('triage:failed');
               commentSections.push(
                 '\u26a0\ufe0f Issue Triage — Parse Failure',

@@ -270,7 +270,7 @@ jobs:
 
 ${buildAgentStepLines(platform, {
   stepName: 'Run AI planning analysis',
-  stepId: 'claude-plan',
+  stepId: 'ai-plan',
   promptExpr: '${{ steps.build-prompt.outputs.prompt }}',
   ifCondition: "steps.guard.outputs.should-plan == 'true'",
   argsExpr: '\'--model claude-opus-4-6 --max-turns 30 --allowedTools "Read,Glob,Grep,Bash"\'',
@@ -281,7 +281,7 @@ ${buildAgentStepLines(platform, {
         if: steps.guard.outputs.should-plan == 'true'
         id: extract-plan
         env:
-          ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.claude-plan.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.claude-plan.outputs.${agentAction.textOutputKey} }}`}
+          ${agentAction.executionFileOutputKey ? `EXECUTION_FILE: \${{ steps.ai-plan.outputs.${agentAction.executionFileOutputKey} }}` : `FINAL_MESSAGE: \${{ steps.ai-plan.outputs.${agentAction.textOutputKey} }}`}
         run: |
 ${
   agentAction.executionFileOutputKey

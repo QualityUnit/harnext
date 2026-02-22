@@ -295,7 +295,7 @@ function buildRemediationWorkflow(
     '',
     '      - name: Run AI remediation',
     "        if: steps.guard.outputs.should-remediate == 'true'",
-    '        id: claude',
+    '        id: ai-remediate',
     `        uses: ${agentAction.action}`,
     '        with:',
     `          ${agentAction.secretInputKey}: \${{ secrets.${agentAction.secretName} }}`,

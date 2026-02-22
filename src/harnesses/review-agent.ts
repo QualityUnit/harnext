@@ -636,7 +636,7 @@ function buildCodeReviewWorkflow(instructionFile: string, platform: AIPlatform):
     '              completed_at: new Date().toISOString(),',
     '              output: {',
     "                title: `Review Agent — ${conclusion === 'success' ? 'Complete' : 'Review Needed'}`,",
-    '                summary: `Claude Code review completed with outcome: ${reviewOutcome}`,',
+    '                summary: `AI code review completed with outcome: ${reviewOutcome}`,',
     '              },',
     '            });',
     '',
