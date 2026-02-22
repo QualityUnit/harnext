@@ -6,6 +6,7 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildGarbageCollectionPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
   return `Generate a documentation garbage collection (doc-gardening) system for this ${detection.primaryLanguage} project. This system runs periodically to detect stale, outdated, or inaccurate documentation and creates PRs to fix it.
 
@@ -68,7 +69,7 @@ jobs:
             - Fixed broken internal markdown links
             - Synchronized documented commands with actual package.json/pyproject.toml scripts
             - Removed references to deprecated APIs or deleted modules
-            - Updated CLAUDE.md if project tooling has changed
+            - Updated ${instructionFile} if project tooling has changed
 
             Please review changes carefully before merging.
           branch: docs/weekly-gardening
@@ -104,7 +105,7 @@ Scan this repository for stale, outdated, or inaccurate documentation and fix it
 
 ### 2. Outdated Commands
 - Read the project's build configuration (package.json scripts, pyproject.toml, Makefile, etc.)
-- Compare documented commands in CLAUDE.md, README.md, and docs/*.md against actual available commands
+- Compare documented commands in ${instructionFile}, README.md, and docs/*.md against actual available commands
 - Update any commands that have changed
 - Flag commands that exist in docs but not in the project configuration
 
@@ -113,10 +114,10 @@ Scan this repository for stale, outdated, or inaccurate documentation and fix it
 - Identify components/modules that have been added, renamed, or removed since the docs were last updated
 - Update component descriptions, dependency diagrams, and layer definitions
 
-### 4. CLAUDE.md Accuracy
-- Verify that CLAUDE.md build/test/lint commands match the project's actual scripts
+### 4. ${instructionFile} Accuracy
+- Verify that ${instructionFile} build/test/lint commands match the project's actual scripts
 - Check that listed architectural layers match the real directory structure
-- Ensure critical paths listed in CLAUDE.md match harness.config.json
+- Ensure critical paths listed in ${instructionFile} match harness.config.json
 - Validate code style rules against the actual linter/formatter configuration
 
 ### 5. Broken Links

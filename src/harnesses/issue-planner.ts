@@ -26,7 +26,7 @@ export const issuePlannerHarness: HarnessModule = {
     const refPromptMd = buildIssuePlannerPromptMd(instructionFile);
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildIssuePlannerPrompt(detection, userPreferences);
+    const basePrompt = buildIssuePlannerPrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation

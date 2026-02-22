@@ -7,11 +7,13 @@ This document is the authoritative reference for CodeFactory's coding standards.
 ### Files
 
 All source files use **kebab-case** with `.ts` extension:
+
 ```
 claude-runner.ts    risk-policy-gate.ts    file-writer.ts
 ```
 
 Test files mirror source names with a `.test.ts` suffix, located in `tests/`:
+
 ```
 tests/unit/detector.test.ts
 tests/unit/harnesses/risk-contract.test.ts
@@ -21,6 +23,7 @@ tests/integration/init-flow.test.ts
 ### Variables and Functions
 
 **camelCase** for all variables and functions:
+
 ```typescript
 const repoRoot = await getRepoRoot();
 const harnessChoices = allHarnesses.map((h) => ({ ... }));
@@ -29,6 +32,7 @@ const harnessChoices = allHarnesses.map((h) => ({ ... }));
 ### Types, Interfaces, and Classes
 
 **PascalCase** with no prefix (no `I` on interfaces, no `T` on types):
+
 ```typescript
 export interface HarnessModule { ... }
 export interface DetectionResult { ... }
@@ -40,12 +44,14 @@ export class NotAGitRepoError extends Error { ... }
 ### Constants
 
 Module-level constants use **UPPER_SNAKE_CASE** for plain data, **camelCase** for functional values:
+
 ```typescript
 const CONFIG_FILENAME = 'harness.config.json';
 const HARNESS_SCRIPTS: Record<string, Record<string, string>> = { ... };
 ```
 
 Exported singleton instances use **camelCase**:
+
 ```typescript
 export const githubActionsProvider = new GitHubActionsProvider();
 export const logger = { info() { ... }, ... };
@@ -62,7 +68,7 @@ Imports are grouped in this order, separated by blank lines:
 3. **Local imports** — relative paths
 
 ```typescript
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
 import { join, relative } from 'node:path';
 
 import { z } from 'zod';
@@ -85,17 +91,24 @@ import type { ClaudeRunner } from '../core/claude-runner.js';
 ### ESM Extensions
 
 This is a pure ESM package (`"type": "module"`). All local imports **must** include `.js` extensions:
+
 ```typescript
-import { fileExists } from '../utils/fs.js';      // correct
-import { fileExists } from '../utils/fs';          // wrong — will fail at runtime
+import { fileExists } from '../utils/fs.js'; // correct
+import { fileExists } from '../utils/fs'; // wrong — will fail at runtime
 ```
 
 ### Barrel Exports
 
 Each layer uses an `index.ts` barrel file for re-exports. The harness registry re-exports types from `types.ts`:
+
 ```typescript
 // src/harnesses/index.ts
-export { type HarnessModule, type HarnessContext, type HarnessOutput, type UserPreferences } from './types.js';
+export {
+  type HarnessModule,
+  type HarnessContext,
+  type HarnessOutput,
+  type UserPreferences,
+} from './types.js';
 ```
 
 ### Module Boundaries
@@ -105,6 +118,7 @@ Imports must respect the architectural boundary rules defined in `harness.config
 ## Exports
 
 **Named exports only.** No default exports in source files:
+
 ```typescript
 export class ClaudeRunner { ... }           // correct
 export function getHarnessModules() { ... } // correct
@@ -116,9 +130,10 @@ export default class ClaudeRunner { ... }   // forbidden
 ### Custom Error Classes
 
 Throw domain-specific errors defined in `src/utils/errors.ts`:
+
 ```typescript
 export class UserCancelledError extends Error { ... }
-export class ClaudeNotFoundError extends Error { ... }
+export class PlatformCLINotFoundError extends Error { ... }
 export class NotAGitRepoError extends Error { ... }
 ```
 
@@ -149,13 +164,13 @@ The `error instanceof Error ? error.message : String(error)` pattern is used con
 
 Enforced by Prettier (`.prettierrc`):
 
-| Rule | Value |
-|---|---|
-| Semicolons | yes |
-| Quotes | single |
-| Trailing commas | all |
-| Print width | 100 |
-| Tab width | 2 (spaces) |
+| Rule            | Value      |
+| --------------- | ---------- |
+| Semicolons      | yes        |
+| Quotes          | single     |
+| Trailing commas | all        |
+| Print width     | 100        |
+| Tab width       | 2 (spaces) |
 
 ## TypeScript
 
@@ -172,11 +187,13 @@ Enforced by Prettier (`.prettierrc`):
 - **Coverage**: V8 provider, covering `src/**/*.ts`.
 
 What to test:
+
 - Public API of every module (exported functions, class methods)
 - Edge cases in detection logic (missing files, parse failures)
 - Error paths (verify correct error class is thrown)
 
 What is optional:
+
 - Internal helper functions not exported from barrel files
 - Prompt template string content (tested indirectly via harness integration tests)
 
@@ -185,6 +202,7 @@ What is optional:
 ### Branch Naming
 
 `<type>/<short-description>` where type is one of:
+
 ```
 feat/    fix/    chore/    docs/    refactor/    test/
 ```
@@ -194,6 +212,7 @@ Examples: `feat/add-gitlab-provider`, `fix/detection-null-check`, `chore/update-
 ### Commit Messages
 
 [Conventional Commits](https://www.conventionalcommits.org/) format:
+
 ```
 feat: add GitLab CI provider adapter
 fix: handle missing package.json in detection
@@ -211,15 +230,16 @@ Keep PRs focused on a single concern. Prefer multiple small PRs over one large P
 
 ### Risk Tiers (from `harness.config.json`)
 
-| Tier | Scope | Required Checks |
-|---|---|---|
-| **Tier 1** (low) | Docs, comments, config | lint |
-| **Tier 2** (medium) | UI, utils, prompts, providers, tests | lint, type-check, test, review-agent |
-| **Tier 3** (high) | Entry points, core engine, harness contracts, build infra | lint, type-check, test, review-agent, manual-review |
+| Tier                | Scope                                                     | Required Checks                                     |
+| ------------------- | --------------------------------------------------------- | --------------------------------------------------- |
+| **Tier 1** (low)    | Docs, comments, config                                    | lint                                                |
+| **Tier 2** (medium) | UI, utils, prompts, providers, tests                      | lint, type-check, test, review-agent                |
+| **Tier 3** (high)   | Entry points, core engine, harness contracts, build infra | lint, type-check, test, review-agent, manual-review |
 
 ### Automated Review Agent
 
 The review agent checks:
+
 - Architectural boundary violations (imports from forbidden layers)
 - Missing type annotations on public APIs
 - Unsafe error handling (bare `catch` without logging)
@@ -228,6 +248,7 @@ The review agent checks:
 ### Human Reviewer Focus
 
 Human reviewers should focus on:
+
 - Correctness of business logic and orchestration flow
 - Prompt engineering quality (clarity, completeness, no hallucinated values)
 - Security implications (unsanitized input to shell commands, secret exposure)

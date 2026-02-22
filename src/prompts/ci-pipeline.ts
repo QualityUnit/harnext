@@ -3,7 +3,11 @@ import type { DetectionResult, UserPreferences } from './types.js';
 /**
  * Prompt for generating CI pipeline workflows.
  */
-export function buildCiPipelinePrompt(detection: DetectionResult, prefs: UserPreferences): string {
+export function buildCiPipelinePrompt(
+  detection: DetectionResult,
+  prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
+): string {
   const ciFormat = {
     'github-actions': 'GitHub Actions YAML workflow files in `.github/workflows/`',
     'gitlab-ci': 'GitLab CI YAML in `.gitlab-ci.yml`',
@@ -106,7 +110,7 @@ This is the primary CI workflow. It must be **gated behind the risk-policy-gate*
 - Condition: always runs
 - Steps:
   1. Validate harness.config.json is present and valid JSON
-  2. Verify CLAUDE.md exists
+  2. Verify ${instructionFile} exists
   3. Check that required CI workflow files exist
   4. Validate PR template exists
 
@@ -122,7 +126,7 @@ A dedicated workflow (or job within the main pipeline) that validates architectu
 Validates the harness engineering setup itself:
 - Check that harness.config.json is valid JSON and matches the expected schema
 - Verify all referenced commands in harness.config.json actually exist as scripts
-- Ensure CLAUDE.md is present and non-empty
+- Ensure ${instructionFile} is present and non-empty
 - Validate that PR templates are present
 - Check that all workflow files referenced in the harness config exist
 

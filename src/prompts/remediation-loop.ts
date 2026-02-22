@@ -6,6 +6,7 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildRemediationLoopPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
   return `Generate an automated remediation loop system for this ${detection.primaryLanguage} project. This system allows an AI agent to automatically fix issues found by the review agent, push corrective commits, and trigger re-review.
 
@@ -40,7 +41,7 @@ ${
       : '- **Relaxed mode**: Auto-fix all types of issues the agent is confident about.\n- Maximum 10 remediation attempts per PR.'
 }
 - NEVER auto-remediate security findings — those always require human review
-- NEVER modify CI workflow files, harness.config.json, CLAUDE.md, or lock files
+- NEVER modify CI workflow files, harness.config.json, ${instructionFile}, or lock files
 - Track attempt count via PR labels (\`remediation-attempt-1\`, \`remediation-attempt-2\`, etc.)
 
 **Workflow steps**:
@@ -63,7 +64,7 @@ ${
 
 3. **Context gathering**:
    - Parse the review agent's comment to extract issues (file paths, line numbers, descriptions, severities)
-   - Read CLAUDE.md for coding conventions
+   - Read ${instructionFile} for coding conventions
    - Read harness.config.json for project rules
 
 4. **Remediation execution**:
@@ -120,7 +121,7 @@ You are a code remediation agent. Your task is to fix specific review findings o
 
 - CI/CD workflow files (.github/workflows/*, .gitlab-ci.yml, etc.)
 - harness.config.json
-- CLAUDE.md
+- ${instructionFile}
 - Lock files (package-lock.json, yarn.lock, poetry.lock, etc.)
 - Authentication/authorization modules (unless the finding specifically targets them AND they are not in critical paths)
 

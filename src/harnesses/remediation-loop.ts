@@ -27,7 +27,7 @@ export const remediationLoopHarness: HarnessModule = {
     const refGuard = buildRemediationGuard(instructionFile);
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildRemediationLoopPrompt(detection, userPreferences);
+    const basePrompt = buildRemediationLoopPrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation

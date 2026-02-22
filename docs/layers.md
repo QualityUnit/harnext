@@ -7,7 +7,7 @@ This document defines the architectural layer structure of CodeFactory. These bo
 ### utils
 
 - **Purpose**: Pure utility functions with zero knowledge of the application domain.
-- **Contains**: File system helpers (`fileExists`, `readFileIfExists`, `getDirectoryTree`), Git CLI wrappers (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`), custom Error subclasses (`UserCancelledError`, `ClaudeNotFoundError`, `NotAGitRepoError`).
+- **Contains**: File system helpers (`fileExists`, `readFileIfExists`, `getDirectoryTree`), Git CLI wrappers (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`), custom Error subclasses (`UserCancelledError`, `PlatformCLINotFoundError`, `NotAGitRepoError`).
 - **Allowed dependencies**: none — this is the leaf layer.
 - **Forbidden dependencies**: All other layers. Utils must never import from `ui`, `core`, `commands`, `prompts`, `providers`, or `harnesses`.
 - **Public API**: All exports from `errors.ts`, `fs.ts`, and `git.ts`.
@@ -62,15 +62,15 @@ This document defines the architectural layer structure of CodeFactory. These bo
 
 ## Dependency Matrix
 
-| From \ To | commands | core | harnesses | prompts | providers | ui | utils |
-|---|---|---|---|---|---|---|---|
-| **commands** | - | Y | N | N | N | Y | Y |
-| **core** | N | - | N | N | N | N | Y |
-| **harnesses** | N | Y | - | Y | Y | N | Y |
-| **prompts** | N | Y | N | - | N | N | Y |
-| **providers** | N | Y | N | N | - | N | Y |
-| **ui** | N | N | N | N | N | - | Y |
-| **utils** | N | N | N | N | N | N | - |
+| From \ To     | commands | core | harnesses | prompts | providers | ui  | utils |
+| ------------- | -------- | ---- | --------- | ------- | --------- | --- | ----- |
+| **commands**  | -        | Y    | N         | N       | N         | Y   | Y     |
+| **core**      | N        | -    | N         | N       | N         | N   | Y     |
+| **harnesses** | N        | Y    | -         | Y       | Y         | N   | Y     |
+| **prompts**   | N        | Y    | N         | -       | N         | N   | Y     |
+| **providers** | N        | Y    | N         | N       | -         | N   | Y     |
+| **ui**        | N        | N    | N         | N       | N         | -   | Y     |
+| **utils**     | N        | N    | N         | N       | N         | N   | -     |
 
 **Y** = allowed import. **N** = forbidden.
 
@@ -83,6 +83,7 @@ Note: `commands` does not directly import `harnesses` files. It imports only fro
 The `architectural-linters` harness generates a custom lint script that statically analyzes import statements against the `architecturalBoundaries` definition in `harness.config.json`. This runs as part of the `structural-tests` CI job.
 
 A boundary violation fails the build:
+
 ```
 ERROR: src/core/detector.ts imports from "ui" layer (forbidden).
        core → ui is not in allowedImports: ["utils"]
@@ -95,6 +96,7 @@ Run `npm run lint` before pushing. The ESLint configuration combined with the ar
 ### Exemptions
 
 If a boundary violation is intentionally necessary (rare), annotate the import with a comment explaining why:
+
 ```typescript
 // arch-exempt: logger needed for debug output during detection phase
 import { logger } from '../ui/logger.js';
@@ -111,6 +113,7 @@ Exemptions must be approved by a human reviewer (not just review-agent) and docu
 **Why it's wrong**: Core must remain free of terminal I/O so it can be tested without mocking console output.
 
 **Fix**: Return diagnostic data in the result object. Let `commands/init.ts` handle logging:
+
 ```typescript
 // wrong — core/detector.ts
 import { logger } from '../ui/logger.js';
@@ -128,6 +131,7 @@ logger.debug(`Detected ${heuristics.languages.length} languages`);
 **Why it's wrong**: Harnesses return `HarnessOutput`; the orchestrator handles output display.
 
 **Fix**: Remove the UI import. Use `metadata` in `HarnessOutput` to pass extra info to the orchestrator:
+
 ```typescript
 // wrong — harnesses/ci-pipeline.ts
 import { logger } from '../ui/logger.js';
@@ -149,6 +153,7 @@ return {
 **Why it's wrong**: Prompts produce strings (instructions for Claude), not CI artifacts. Provider logic belongs in `providers/` or the harness module itself.
 
 **Fix**: Keep prompt builders pure — they should reference the CI provider by name string, not by importing provider classes:
+
 ```typescript
 // wrong — prompts/ci-pipeline.ts
 import { GitHubActionsProvider } from '../providers/github-actions.js';

@@ -6,6 +6,7 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildIssuePlannerPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
   return `Generate an issue-planner agent system for this ${detection.primaryLanguage} project. When an issue is labeled with \`agent:plan\` (by the triage workflow), the system spawns a Claude Code agent that reads the issue, analyzes the codebase, and posts a structured implementation plan as a comment on the issue. It then adds the \`agent:implement\` label and dispatches the implementer workflow.
 
@@ -92,7 +93,7 @@ When triggered via \`workflow_dispatch\`:
 3. **Read planner prompt** from \`.codefactory/prompts/issue-planner.md\`
 
 4. **Build planning prompt**:
-   - Combine: prompt template + issue details + CLAUDE.md conventions + codebase structure overview
+   - Combine: prompt template + issue details + ${instructionFile} conventions + codebase structure overview
    - Include \`harness.config.json\` for architectural boundaries
 
 5. **Agent execution**:

@@ -30,7 +30,7 @@ export const ciPipelineHarness: HarnessModule = {
     const refStructuralScript = buildStructuralTestsScript();
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildCiPipelinePrompt(detection, userPreferences);
+    const basePrompt = buildCiPipelinePrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation

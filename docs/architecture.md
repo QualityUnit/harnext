@@ -64,6 +64,7 @@ This pattern suits the project because:
 4. **Dependency safety** — the strict import rules prevent circular dependencies and ensure changes to leaf layers (`utils`, `ui`) never cascade into unrelated modules.
 
 Key design principles:
+
 - **Interface-driven contracts**: `HarnessModule`, `CIProvider`, and `DetectionResult` define the contracts between layers.
 - **Dependency inversion**: Harness modules receive a `HarnessContext` (containing `ClaudeRunner`, `FileWriter`, and detection results) rather than constructing their own dependencies.
 - **Fail-soft execution**: Each harness runs in a try/catch — a single harness failure logs a warning and does not abort the remaining harnesses.
@@ -107,38 +108,45 @@ graph TD
 ## Layer Structure
 
 ### commands
+
 - **Responsibility**: CLI command handlers that orchestrate the full init flow.
 - **Contains**: `init.ts` — the 10-step orchestration: pre-flight checks, detection, user prompts, harness execution, config persistence, git commit, and summary output.
 - **Allowed imports**: `core`, `ui`, `utils`
 
 ### core
+
 - **Responsibility**: The engine — stack detection, Claude SDK integration, configuration I/O, and file tracking.
 - **Contains**: `ClaudeRunner` (spawns `claude` CLI with `--output-format stream-json`, parses JSONL, tracks file operations), `detector.ts` (two-phase: heuristic file checks + Claude-powered deep analysis via Zod-validated schema), `config.ts` (load/save `harness.config.json`), `file-writer.ts` (tracks created vs modified files).
 - **Allowed imports**: `utils`
 
 ### harnesses
+
 - **Responsibility**: The 13 harness modules, each generating a specific set of artifacts.
 - **Contains**: `types.ts` (the `HarnessModule` interface with `name`, `order`, `isApplicable()`, `execute()`), `index.ts` (registry sorted by `order`), and one file per harness module.
 - **Allowed imports**: `core`, `prompts`, `providers`, `utils`
 
 ### prompts
+
 - **Responsibility**: Prompt templates sent to Claude for each harness generation step.
 - **Contains**: `system.ts` (shared system prompt establishing Claude's role, risk-tier model, and SHA discipline), `detect-stack.ts` (stack analysis prompt), and one prompt builder per harness module.
 - **Allowed imports**: `core`, `utils`
 
 ### providers
+
 - **Responsibility**: CI provider adapters that translate `WorkflowConfig` objects into provider-specific YAML/config.
 - **Contains**: `types.ts` (`CIProvider`, `WorkflowConfig`, `WorkflowJob`, `WorkflowStep` interfaces), `github-actions.ts` (YAML generation via the `yaml` package, with helper methods for checkout, node setup, caching).
 - **Allowed imports**: `core`, `utils`
 
 ### ui
+
 - **Responsibility**: Terminal output and interactive user input.
 - **Contains**: `logger.ts` (Chalk-based methods: `info`, `success`, `warn`, `error`, `debug`, `header`, `dim`, `fileCreated`, `fileModified`), `spinner.ts` (Ora-based `withSpinner<T>()` async wrapper), `prompts.ts` (Inquirer-based `confirmPrompt`, `selectPrompt`, `multiselectPrompt`, `inputPrompt`).
 - **Allowed imports**: `utils`
 
 ### utils
+
 - **Responsibility**: Pure utility functions with zero cross-layer dependencies.
-- **Contains**: `errors.ts` (custom error classes: `UserCancelledError`, `ClaudeNotFoundError`, `NotAGitRepoError`), `fs.ts` (`fileExists`, `readFileIfExists`, `getDirectoryTree`), `git.ts` (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`).
+- **Contains**: `errors.ts` (custom error classes: `UserCancelledError`, `PlatformCLINotFoundError`, `NotAGitRepoError`), `fs.ts` (`fileExists`, `readFileIfExists`, `getDirectoryTree`), `git.ts` (`isGitRepo`, `getRepoRoot`, `getRemoteUrl`).
 - **Allowed imports**: none (leaf layer)
 
 ### Dependency Diagram
@@ -181,11 +189,11 @@ A typical `codefactory init` execution follows this path:
 
 ## External Dependencies
 
-| Dependency | Purpose | Abstraction |
-|---|---|---|
-| **Claude CLI** (`claude`) | AI-powered code analysis and file generation | `ClaudeRunner` wraps the CLI as a child process with `--output-format stream-json`, exposing `analyze<T>()` and `generate()` |
-| **GitHub Actions** | CI/CD workflow execution | `GitHubActionsProvider` implements `CIProvider` interface, generating YAML via the `yaml` package |
-| **Git** | Repository metadata (root, remote URL, status) | `utils/git.ts` wraps `git` CLI calls via `child_process.exec` |
+| Dependency                | Purpose                                        | Abstraction                                                                                                                  |
+| ------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Claude CLI** (`claude`) | AI-powered code analysis and file generation   | `ClaudeRunner` wraps the CLI as a child process with `--output-format stream-json`, exposing `analyze<T>()` and `generate()` |
+| **GitHub Actions**        | CI/CD workflow execution                       | `GitHubActionsProvider` implements `CIProvider` interface, generating YAML via the `yaml` package                            |
+| **Git**                   | Repository metadata (root, remote URL, status) | `utils/git.ts` wraps `git` CLI calls via `child_process.exec`                                                                |
 
 The Claude CLI dependency is the only runtime requirement beyond Node.js. It is spawned as a subprocess with explicit `--allowedTools` whitelists per operation — `analyze()` permits only read-only tools (`Read`, `Glob`, `Grep`, `Bash`), while `generate()` additionally permits `Write` and `Edit`.
 

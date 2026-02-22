@@ -249,7 +249,7 @@ export const garbageCollectionHarness: HarnessModule = {
     const refPrompt = buildDocGardeningPrompt(instructionFile);
 
     // 2. Build the prompt with reference context
-    const basePrompt = buildGarbageCollectionPrompt(detection, userPreferences);
+    const basePrompt = buildGarbageCollectionPrompt(detection, userPreferences, instructionFile);
     const prompt = `${basePrompt}
 
 ## Reference Implementation

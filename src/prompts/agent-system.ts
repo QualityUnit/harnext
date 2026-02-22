@@ -4,6 +4,7 @@ import { join } from 'node:path';
 export interface AgentSystemPromptOptions {
   branchName: string;
   repoRoot: string;
+  instructionFile?: string;
   harnessCommands: {
     test: string;
     build: string;
@@ -21,7 +22,7 @@ Your task is described in the first message. Execute it fully.
 
 SPEED FIRST:
 - Start coding immediately. Do not ask clarifying questions unless genuinely ambiguous.
-- Read CLAUDE.md first for project conventions.
+- Read {{instructionFile}} first for project conventions.
 - Make informed decisions rather than asking. Adjust later if needed.
 
 PARALLELIZATION:
@@ -48,7 +49,7 @@ This project follows an agent-first model. You are expected to drive tasks to co
 ## Harness Compliance
 
 This project uses harness engineering:
-- Read CLAUDE.md for all project conventions.
+- Read {{instructionFile}} for all project conventions.
 - Respect architectural boundaries in harness.config.json.
 - Changes to Tier 3 (critical) paths require extra test coverage.
 - Never disable linters, type checking, or test suites.
@@ -110,7 +111,7 @@ function buildQualityGates(commands: AgentSystemPromptOptions['harnessCommands']
 }
 
 export async function buildAgentSystemPrompt(options: AgentSystemPromptOptions): Promise<string> {
-  const { branchName, repoRoot, harnessCommands } = options;
+  const { branchName, repoRoot, instructionFile = 'CLAUDE.md', harnessCommands } = options;
 
   let template: string;
   try {
@@ -123,5 +124,6 @@ export async function buildAgentSystemPrompt(options: AgentSystemPromptOptions):
 
   return template
     .replace(/\{\{branchName\}\}/g, branchName)
-    .replace(/\{\{qualityGates\}\}/g, qualityGates);
+    .replace(/\{\{qualityGates\}\}/g, qualityGates)
+    .replace(/\{\{instructionFile\}\}/g, instructionFile);
 }

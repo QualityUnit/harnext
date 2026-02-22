@@ -6,6 +6,7 @@ import type { DetectionResult, UserPreferences } from './types.js';
 export function buildIssueImplementerPrompt(
   detection: DetectionResult,
   prefs: UserPreferences,
+  instructionFile = 'CLAUDE.md',
 ): string {
   return `Generate an issue-implementer agent system for this ${detection.primaryLanguage} project. When a new issue is opened (or labeled with a trigger label), the system spawns a Claude Code agent that reads the issue, creates a worktree branch, implements the change, and opens a pull request.
 
@@ -116,13 +117,13 @@ When triggered via \`workflow_dispatch\` (issue mode):
 5. **Build implementation prompt**:
    - Read the implementer prompt from \`.codefactory/prompts/issue-implementer.md\`
    - Parse \`ISSUE_JSON\` (from fetched data or event payload) to extract issue fields
-   - Combine: prompt template + issue details + CLAUDE.md conventions + harness config + baseline state
+   - Combine: prompt template + issue details + ${instructionFile} conventions + harness config + baseline state
    - For workflow_dispatch: use \`(issue.user || {}).login || 'unknown'\` for safe author access
 
 6. **Agent execution**:
    - Invoke Claude Code using \`anthropics/claude-code-action@v1\` with \`claude_code_oauth_token: \${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}\` (NOT \`ANTHROPIC_API_KEY\`)
    - Pass the built prompt via the action's \`prompt\` input
-   - The agent reads CLAUDE.md and harness.config.json for project conventions
+   - The agent reads ${instructionFile} and harness.config.json for project conventions
    - Set \`--max-turns 100 --allowedTools "Edit,Write,Read,Glob,Grep,Bash"\` in \`claude_args\` (claude-code-action does NOT enable write tools by default — without \`--allowedTools\`, all Edit/Write/Bash calls will be permission-denied)
    - Set \`allowed_bots: 'github-actions'\` — this workflow is dispatched by other workflows using \`GITHUB_TOKEN\`, so the actor is \`github-actions[bot]\`. Without \`allowed_bots\`, the action rejects bot-initiated runs.
    - Set a timeout of ${prefs.strictnessLevel === 'strict' ? '30' : prefs.strictnessLevel === 'standard' ? '45' : '60'} minutes
@@ -130,7 +131,7 @@ When triggered via \`workflow_dispatch\` (issue mode):
 7. **Post-implementation checks**:
    - Check for file changes (both modified and new files)
    - If no changes, log notice and skip PR creation
-   - Verify no protected files were modified: \`.github/workflows/*\`, \`harness.config.json\`, \`CLAUDE.md\`, lock files
+   - Verify no protected files were modified: \`.github/workflows/*\`, \`harness.config.json\`, \`${instructionFile}\`, lock files
    - If protected files were touched, revert them via \`git checkout -- <file>\`
 
 8. **Quality gates** (regression-only):
@@ -217,7 +218,7 @@ Similarly, the agent must NOT run git commands (commit, push) — the CI workflo
 
 ## Safety Constraints
 
-- The agent must NEVER modify CI workflow files, harness.config.json, CLAUDE.md, or lock files
+- The agent must NEVER modify CI workflow files, harness.config.json, ${instructionFile}, or lock files
 - All commits must be clearly attributed to the implementer bot
 - The agent operates on a dedicated branch — never pushes to main/default branch
 - Set a hard timeout to prevent runaway execution
