@@ -178,4 +178,60 @@ describe('parseAndWriteTextOutput()', () => {
     const written = parseAndWriteTextOutput(text, tmpDir);
     expect(written).toHaveLength(0);
   });
+
+  it('should strip ANSI escape codes before matching headers', () => {
+    const text = [
+      '\x1b[38;5;252m\x1b[1m# Generated Issue Planner Agent System\x1b[0m\x1b[0m',
+      '\x1b[0m\x1b[0m',
+      '\x1b[38;5;252m\x1b[1m## File: .github/workflows/issue-planner.yml\x1b[0m\x1b[0m',
+      '\x1b[0m\x1b[0m',
+      '\x1b[1myaml',
+      '\x1b[0m\x1b[38;5;10mname: Issue Planner Agent',
+      'on:',
+      '  issues:',
+      '    types: [labeled]',
+      'jobs:',
+      '  plan:',
+      '    runs-on: ubuntu-latest',
+      '\x1b[0m\x1b[0m',
+      '\x1b[38;5;252m\x1b[1m## File: scripts/issue-planner-guard.ts\x1b[0m\x1b[0m',
+      '\x1b[0m\x1b[0m',
+      '\x1b[1mtypescript',
+      '\x1b[0m\x1b[38;5;10m#!/usr/bin/env npx tsx',
+      'export function evaluate() {',
+      '  return { shouldPlan: true, reason: "Ready for planning" };',
+      '}',
+    ].join('\n');
+
+    const written = parseAndWriteTextOutput(text, tmpDir);
+
+    expect(written).toHaveLength(2);
+    const yml = readFileSync(join(tmpDir, '.github/workflows/issue-planner.yml'), 'utf-8');
+    expect(yml).toContain('name: Issue Planner Agent');
+    expect(yml).not.toContain('yaml'); // language identifier should be stripped
+    expect(yml).not.toContain('\x1b'); // ANSI codes should be stripped
+
+    const ts = readFileSync(join(tmpDir, 'scripts/issue-planner-guard.ts'), 'utf-8');
+    expect(ts).toContain('export function evaluate');
+    expect(ts).not.toContain('typescript'); // language identifier should be stripped
+  });
+
+  it('should skip bare language identifiers rendered by kiro-cli', () => {
+    const text = [
+      'File: .github/workflows/ci.yml',
+      'yaml',
+      'name: CI',
+      'on: push',
+      'jobs:',
+      '  build:',
+      '    runs-on: ubuntu-latest',
+    ].join('\n');
+
+    const written = parseAndWriteTextOutput(text, tmpDir);
+
+    expect(written).toHaveLength(1);
+    const content = readFileSync(join(tmpDir, '.github/workflows/ci.yml'), 'utf-8');
+    expect(content).toContain('name: CI');
+    expect(content).not.toMatch(/^yaml\n/); // language identifier should be stripped
+  });
 });

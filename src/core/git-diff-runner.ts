@@ -133,6 +133,34 @@ export abstract class GitDiffRunner implements AIRunner {
 /** Minimum content length (bytes) to consider a parsed section as a real file. */
 const MIN_FILE_CONTENT_LENGTH = 50;
 
+/** Strip ANSI escape sequences (SGR, OSC, etc.) from a string. */
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07/g;
+function stripAnsi(s: string): string {
+  return s.replace(ANSI_RE, '');
+}
+
+/**
+ * Bare language identifiers that kiro-cli renders instead of ```lang fences.
+ * When one of these appears as the first non-empty content line after a file
+ * header, it is a rendered code fence opener and should be skipped.
+ */
+const LANG_IDENTIFIERS = new Set([
+  'yaml',
+  'yml',
+  'typescript',
+  'ts',
+  'javascript',
+  'js',
+  'json',
+  'sh',
+  'bash',
+  'markdown',
+  'md',
+  'tsx',
+  'jsx',
+]);
+
 /**
  * Pattern matching file path headers in CLI text output.
  *
@@ -154,6 +182,9 @@ const FILE_HEADER_RE =
  * When a git-diff-based runner (kiro-cli, codex-cli) outputs file contents as
  * text instead of using its file-writing tool, this function extracts the
  * file path + content pairs and writes them to the working directory.
+ *
+ * Handles ANSI escape codes in the output (common with kiro-cli terminal
+ * rendering) by stripping them before header matching and content extraction.
  */
 export function parseAndWriteTextOutput(
   text: string,
@@ -166,7 +197,9 @@ export function parseAndWriteTextOutput(
   let current: { path: string; contentLines: string[] } | null = null;
   let wrappedInFence = false;
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = stripAnsi(rawLine);
+
     // Check for file header (only outside wrapping fences)
     if (!wrappedInFence) {
       const match = line.match(FILE_HEADER_RE);
@@ -179,10 +212,21 @@ export function parseAndWriteTextOutput(
 
     if (!current) continue;
 
-    // If the first content line is a code fence opener, mark as wrapped
-    if (current.contentLines.length === 0 && !wrappedInFence && line.startsWith('```')) {
-      wrappedInFence = true;
-      continue; // skip the opening fence
+    // Before any real content has appeared, skip leading empty lines and
+    // detect code fence openers / bare language identifiers.
+    const isLeading = !wrappedInFence && current.contentLines.every((l) => l.trim() === '');
+    if (isLeading) {
+      if (line.trim() === '') continue; // skip leading empty lines
+      if (line.startsWith('```')) {
+        wrappedInFence = true;
+        current.contentLines = []; // clear any accumulated empties
+        continue; // skip the opening fence
+      }
+      if (LANG_IDENTIFIERS.has(line.trim().toLowerCase())) {
+        current.contentLines = []; // clear any accumulated empties
+        continue; // skip rendered language identifier
+      }
+      current.contentLines = []; // clear leading empties before real content
     }
 
     // Closing fence for a wrapped block
