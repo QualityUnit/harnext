@@ -70,14 +70,17 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
   lines.push('          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}');
   lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
-  // Step 2: Install Kiro CLI
+  // Step 2: Install Kiro CLI with SIGV4 auth
   lines.push('      - name: Setup Kiro CLI');
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
   }
   lines.push('        uses: clouatre-labs/setup-kiro-action@v1');
+  lines.push('        with:');
+  lines.push("          enable-sigv4: 'true'");
+  lines.push("          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
 
-  // Step 3: Run Kiro CLI
+  // Step 3: Run Kiro CLI (binary is kiro-cli-chat, installed by setup action)
   lines.push(`      - name: ${config.stepName}`);
   if (config.ifCondition) {
     lines.push(`        if: ${config.ifCondition}`);
@@ -87,7 +90,7 @@ function buildKiroStepLines(config: AgentStepConfig): string[] {
     lines.push('        continue-on-error: true');
   }
   lines.push('        run: |');
-  lines.push(`          kiro-cli chat --no-interactive --trust-all-tools ${config.promptExpr}`);
+  lines.push(`          kiro-cli-chat --no-interactive --trust-all-tools ${config.promptExpr}`);
 
   return lines;
 }

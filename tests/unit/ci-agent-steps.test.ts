@@ -42,7 +42,8 @@ describe('buildAgentStepLines', () => {
     expect(yaml).toContain("aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}");
     expect(yaml).toContain('Setup Kiro CLI');
     expect(yaml).toContain('clouatre-labs/setup-kiro-action@v1');
-    expect(yaml).toContain('kiro-cli chat --no-interactive --trust-all-tools');
+    expect(yaml).toContain("enable-sigv4: 'true'");
+    expect(yaml).toContain('kiro-cli-chat --no-interactive --trust-all-tools');
   });
 
   it('should include claude_args for Claude when argsExpr is provided', () => {
