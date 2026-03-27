@@ -53,9 +53,9 @@ RELEASE_JSON=$(curl -fsSL "$API_URL")
 # Anchor to /codefactory" so we only match URLs whose filename is exactly "codefactory",
 # avoiding false matches on other assets whose URL path contains the repo name.
 BINARY_URL=$(printf '%s' "$RELEASE_JSON" \
-  | grep -o '"browser_download_url":\s*"[^"]*/codefactory"' \
+  | grep -o '"browser_download_url":[[:space:]]*"[^"]*/codefactory"' \
   | head -1 \
-  | sed 's/"browser_download_url":\s*"//;s/"$//')
+  | sed 's/"browser_download_url":[[:space:]]*"//;s/"$//')
 
 if [ -z "$BINARY_URL" ]; then
   error "Could not find a 'codefactory' binary asset in the latest release."
@@ -71,9 +71,9 @@ info "Downloaded binary to temp directory."
 
 # ── 6. Download and verify checksum ─────────────────────────────────
 CHECKSUM_URL=$(printf '%s' "$RELEASE_JSON" \
-  | grep -o '"browser_download_url":\s*"[^"]*checksums\.sha256[^"]*"' \
+  | grep -o '"browser_download_url":[[:space:]]*"[^"]*checksums\.sha256[^"]*"' \
   | head -1 \
-  | sed 's/"browser_download_url":\s*"//;s/"$//')
+  | sed 's/"browser_download_url":[[:space:]]*"//;s/"$//')
 
 if [ -n "$CHECKSUM_URL" ]; then
   curl -fsSL -o "${TMP_DIR}/checksums.sha256" "$CHECKSUM_URL"
