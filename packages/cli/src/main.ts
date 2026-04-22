@@ -27,6 +27,7 @@ import {
   runMcpMode,
   runPrintMode,
   runStatusMode,
+  runUpgradeMode,
 } from './modes/index.js';
 
 const FALLBACK_PROVIDER = 'anthropic';
@@ -67,6 +68,14 @@ export async function main(argv: string[]): Promise<void> {
 
   if (args.mode === 'status') {
     const exitCode = await runStatusMode({ cwd: args.cwd });
+    process.exit(exitCode);
+  }
+
+  if (args.mode === 'upgrade') {
+    const exitCode = await runUpgradeMode({
+      check: args.upgradeCheck,
+      force: args.upgradeForce,
+    });
     process.exit(exitCode);
   }
 

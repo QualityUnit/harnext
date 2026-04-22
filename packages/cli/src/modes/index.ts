@@ -4,3 +4,4 @@ export { runHeartbeatMode, type HeartbeatModeOptions } from './heartbeat-mode.js
 export { runGithubPollMode, type GithubPollModeOptions } from './github-poll-mode.js';
 export { runMcpMode } from './mcp-mode.js';
 export { runStatusMode, type StatusModeOptions } from './status-mode.js';
+export { runUpgradeMode, type UpgradeModeOptions } from './upgrade-mode.js';

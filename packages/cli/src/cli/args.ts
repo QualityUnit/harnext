@@ -7,7 +7,8 @@ export type Mode =
   | 'github-poll'
   | 'mcp'
   | 'setup'
-  | 'status';
+  | 'status'
+  | 'upgrade';
 export type McpVerb = 'add' | 'remove' | 'list' | 'reconnect';
 export type McpScopeArg = 'user' | 'project';
 
@@ -33,6 +34,10 @@ export interface Args {
   mcpDirect?: boolean;
   /** Positional args after `--` for mcp add stdio: command + args. */
   mcpCommandArgs?: string[];
+  /** `harnext upgrade --check` — preview only, do not run npm install. */
+  upgradeCheck?: boolean;
+  /** `harnext upgrade --force` — reinstall even when already on latest. */
+  upgradeForce?: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -53,6 +58,10 @@ export function parseArgs(argv: string[]): Args {
 
   if (argv[0] === 'status') {
     return parseStatusArgs(argv.slice(1), args);
+  }
+
+  if (argv[0] === 'upgrade') {
+    return parseUpgradeArgs(argv.slice(1), args);
   }
 
   let i = 0;
@@ -140,6 +149,47 @@ Usage:
 Lists each registered worktree (per open issue/PR), the branch checked out,
 any coding-agent process currently running against it (with stage + elapsed
 time), and the uncommitted file changes present in the worktree.
+`);
+}
+
+function parseUpgradeArgs(rest: string[], args: Args): Args {
+  args.mode = 'upgrade';
+  let i = 0;
+  while (i < rest.length) {
+    const arg = rest[i];
+    switch (arg) {
+      case '--check':
+        args.upgradeCheck = true;
+        break;
+      case '--force':
+        args.upgradeForce = true;
+        break;
+      case '-h':
+      case '--help':
+        printUpgradeHelp();
+        process.exit(0);
+        break;
+      default:
+        break;
+    }
+    i++;
+  }
+  return args;
+}
+
+export function printUpgradeHelp(): void {
+  console.log(`
+harnext upgrade - Install the latest published harnext from npm
+
+Usage:
+  harnext upgrade [--check] [--force]
+
+Options:
+  --check                  Print the available version without installing
+  --force                  Reinstall even when already on the latest version
+
+Runs 'npm install -g harnext@<latest>' under the hood, so the user's existing
+global prefix, registry, and auth settings are respected.
 `);
 }
 
@@ -280,6 +330,7 @@ Options:
 Subcommands:
   setup                    Pick a coding agent and configure the project pipeline
   status                   Show active coding-agent runs (worktrees + processes)
+  upgrade                  Install the latest harnext from npm
   mcp                      Manage MCP servers (run \`harnext mcp --help\`)
 `);
 }
