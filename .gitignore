@@ -1,8 +1,18 @@
 node_modules/
 dist/
+packages/*/dist/
 .env
 .env.local
 *.tsbuildinfo
 coverage/
 .idea/
 .DS_Store
+# harnext: github connection config
+.harnext/github.json
+# harnext: github poller runtime
+.harnext/github-poller.jsonl
+.harnext/github-poller.lock
+# harnext: github poller runtime
+.harnext/github-runs/
+# harnext: github poller worktree state
+.harnext/worktrees/

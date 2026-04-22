@@ -1,354 +1,42 @@
 name: CI
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to run CI for (used by implementer agent)'
-        required: true
-        type: string
-
-permissions:
-  contents: read
-  pull-requests: read
-  checks: write
+  pull_request:
+    branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ============================================================================
-  # Preflight — classifies the PR by risk tier and computes required checks.
-  # All downstream jobs gate on this job's outputs.
-  # For push events (post-merge), defaults to Tier 2 with standard checks.
-  # ============================================================================
-  risk-gate:
-    name: Risk Policy Gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      sha: ${{ steps.pr-gate.outputs.sha || steps.push-gate.outputs.sha }}
-      tier: ${{ steps.pr-gate.outputs.tier || steps.push-gate.outputs.tier }}
-      tier-name: ${{ steps.pr-gate.outputs.tier-name || steps.push-gate.outputs.tier-name }}
-      required-checks: ${{ steps.pr-gate.outputs.required-checks || steps.push-gate.outputs.required-checks }}
-      docs-drift: ${{ steps.pr-gate.outputs.docs-drift || steps.push-gate.outputs.docs-drift }}
-      review-agent-status: ${{ steps.pr-gate.outputs.review-agent-status || steps.push-gate.outputs.review-agent-status }}
-    steps:
-      - name: Resolve PR context
-        id: pr-context
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_JSON=$(gh pr view "${{ inputs.pr_number }}" --repo "${{ github.repository }}" --json headRefOid,baseRefName)
-          echo "head-sha=$(echo "$PR_JSON" | jq -r '.headRefOid')" >> "$GITHUB_OUTPUT"
-          echo "base-ref=$(echo "$PR_JSON" | jq -r '.baseRefName')" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout at verified SHA
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ steps.pr-context.outputs.head-sha || github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-
-      - name: Run risk policy gate (PR)
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-        id: pr-gate
-        run: bash scripts/risk-policy-gate.sh
-        env:
-          EXPECTED_SHA: ${{ steps.pr-context.outputs.head-sha || github.event.pull_request.head.sha }}
-          BASE_REF: ${{ steps.pr-context.outputs.base-ref || github.event.pull_request.base.ref }}
-          STRICTNESS: relaxed
-
-      - name: Set defaults (push to main)
-        if: github.event_name == 'push'
-        id: push-gate
-        run: |
-          {
-            echo "sha=${{ github.sha }}"
-            echo "tier=2"
-            echo "tier-name=medium"
-            echo 'required-checks=["lint","type-check","test","build","structural-tests","harness-smoke"]'
-            echo "docs-drift=false"
-            echo "review-agent-status=skipped"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Annotate PR with tier
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-        run: |
-          echo "### Risk Policy Gate" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Tier** | ${{ steps.pr-gate.outputs.tier }} (${{ steps.pr-gate.outputs.tier-name }}) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **SHA** | \`${{ steps.pr-gate.outputs.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Docs Drift** | ${{ steps.pr-gate.outputs.docs-drift }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "<details><summary>Required Checks</summary>" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo '```json' >> "$GITHUB_STEP_SUMMARY"
-          echo '${{ steps.pr-gate.outputs.required-checks }}' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
-
-  # ============================================================================
-  # Downstream jobs — gated by risk tier via contains() on required-checks.
-  # ============================================================================
-
-  lint:
-    name: Lint
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'lint')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
-
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-      - run: npm run lint
-
-  type-check:
-    name: Type Check
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'type-check')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
-
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-      - run: npm run typecheck
-
   test:
-    name: Test
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'test')
+    name: test (node ${{ matrix.node }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
 
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Run tests
-        run: npx vitest run --reporter=verbose --reporter=junit --outputFile.junit=test-results.xml
+      - name: Build (core then cli)
+        run: npm run build
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
-        with:
-          name: test-results
-          path: test-results.xml
-          retention-days: 30
+      - name: Typecheck
+        run: npm run typecheck
 
-  build:
-    name: Build
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'build')
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
+      - name: Lint
+        run: npm run lint
 
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-      - run: npm run build
-
-  structural-tests:
-    name: Structural Tests
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'structural-tests')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
-
-      - name: Validate architectural boundaries
-        run: bash scripts/structural-tests.sh
-
-  harness-smoke:
-    name: Harness Smoke
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'harness-smoke')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.risk-gate.outputs.sha }}
-
-      - name: Validate harness.config.json
-        run: |
-          node -e "
-            const fs = require('fs');
-            const config = JSON.parse(fs.readFileSync('harness.config.json', 'utf8'));
-            const required = ['version', 'riskTiers', 'commands', 'shaDiscipline', 'architecturalBoundaries'];
-            const missing = required.filter(k => !(k in config));
-            if (missing.length) { console.error('Missing keys:', missing.join(', ')); process.exit(1); }
-            for (const t of ['tier1', 'tier2', 'tier3']) {
-              if (!config.riskTiers[t]) { console.error('Missing tier:', t); process.exit(1); }
-            }
-            console.log('✔ harness.config.json schema valid');
-          "
-
-      - name: Check CLAUDE.md
-        run: |
-          if [[ ! -s CLAUDE.md ]]; then
-            echo "::error::CLAUDE.md is missing or empty"
-            exit 1
-          fi
-          echo "✔ CLAUDE.md present ($(wc -l < CLAUDE.md) lines)"
-
-      - name: Check critical files
-        run: |
-          files=(
-            src/index.ts src/cli.ts package.json tsconfig.json
-            tsup.config.ts vitest.config.ts eslint.config.js harness.config.json
-          )
-          for f in "${files[@]}"; do
-            if [[ ! -f "$f" ]]; then
-              echo "::error::Missing: $f"
-              exit 1
-            fi
-          done
-          echo "✔ All critical files present"
-
-      - name: Check workflow files
-        run: |
-          for f in .github/workflows/ci.yml .github/workflows/structural-tests.yml .github/workflows/harness-smoke.yml; do
-            if [[ ! -f "$f" ]]; then
-              echo "::error::Missing workflow: $f"
-              exit 1
-            fi
-          done
-          echo "✔ All workflow files present"
-
-      - name: Check PR template
-        run: |
-          if [[ -f templates/pr-template.md ]] || [[ -f .github/PULL_REQUEST_TEMPLATE.md ]]; then
-            echo "✔ PR template present"
-          else
-            echo "::warning::No PR template found"
-          fi
-
-      - name: Validate harness commands
-        run: |
-          node -e "
-            const config = JSON.parse(require('fs').readFileSync('harness.config.json', 'utf8'));
-            const pkg = JSON.parse(require('fs').readFileSync('package.json', 'utf8'));
-            const cmds = config.commands || {};
-            for (const [key, cmd] of Object.entries(cmds)) {
-              const bin = cmd.split(' ')[0];
-              const inScripts = pkg.scripts && Object.values(pkg.scripts).some(s => s.includes(bin));
-              console.log(inScripts ? '✔' : '⚠', key + ':', cmd, inScripts ? '(found)' : '(not in scripts — may be devDep binary)');
-            }
-          "
-
-  manual-approval:
-    name: Manual Approval (Tier 3)
-    needs: risk-gate
-    if: contains(fromJSON(needs.risk-gate.outputs.required-checks), 'manual-approval')
-    runs-on: ubuntu-latest
-    timeout-minutes: 1440
-    environment: tier3-approval
-    steps:
-      - name: Tier 3 change detected
-        run: |
-          echo "::warning::This PR touches critical paths and requires manual approval."
-          echo "A maintainer must approve the 'tier3-approval' environment to proceed."
-          echo ""
-          echo "Changed tier-3 files are listed in the Risk Policy Gate summary."
-
-  # ============================================================================
-  # Report Checks — creates check runs on the PR head SHA for workflow_dispatch.
-  # When CI is triggered via workflow_dispatch (by the implementer agent),
-  # GitHub associates results with the default branch, not the PR. This job
-  # explicitly creates check runs on the PR's head SHA so they appear on the PR.
-  # ============================================================================
-  report-checks:
-    name: Report PR Checks
-    needs:
-      [risk-gate, lint, type-check, test, build, structural-tests, harness-smoke, manual-approval]
-    if: always() && github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Create check runs on PR head SHA
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1
-        env:
-          HEAD_SHA: ${{ needs.risk-gate.outputs.sha }}
-        with:
-          script: |
-            const sha = process.env.HEAD_SHA;
-            if (!sha) {
-              core.warning('No head SHA available — cannot create check runs.');
-              return;
-            }
-
-            // Dynamically discover all jobs in this workflow run via API
-            const { data: { jobs } } = await github.rest.actions.listJobsForWorkflowRun({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-            });
-
-            // Report every job except this one
-            const selfName = 'Report PR Checks';
-            const ciJobs = jobs.filter(j => j.name !== selfName);
-
-            for (const job of ciJobs) {
-              let conclusion = job.conclusion || 'neutral';
-              if (conclusion === 'skipped') conclusion = 'neutral';
-
-              const summary = job.conclusion === 'skipped'
-                ? 'Skipped — not required for this risk tier.'
-                : `Completed with result: ${job.conclusion}`;
-
-              await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: `CI / ${job.name}`,
-                head_sha: sha,
-                status: 'completed',
-                conclusion,
-                output: {
-                  title: `CI / ${job.name}`,
-                  summary,
-                },
-              });
-
-              core.info(`Created check run: CI / ${job.name} → ${conclusion}`);
-            }
+      - name: Test
+        run: npm test

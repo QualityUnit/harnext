@@ -1,0 +1,59 @@
+{
+  "name": "harnext",
+  "version": "0.1.0",
+  "description": "AI coding agent with harness engineering — interactive REPL, MCP support, and a GitHub-issue-driven workflow runner.",
+  "type": "module",
+  "bin": {
+    "harnext": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.67.68",
+    "@mariozechner/pi-ai": "^0.67.68",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.4.1",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@harnext/core": "^0.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ai-agent",
+    "coding-agent",
+    "cli",
+    "claude",
+    "openai",
+    "anthropic",
+    "ollama",
+    "mcp",
+    "developer-tools"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yasha-dev1/codefactory.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/yasha-dev1/codefactory#readme",
+  "bugs": {
+    "url": "https://github.com/yasha-dev1/codefactory/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

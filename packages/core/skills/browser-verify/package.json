@@ -1,0 +1,10 @@
+{
+  "name": "@harnext/skill-browser-verify",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-verify skill runtime deps. Installed lazily via scripts/prepare.mjs; not a harnext-core dep.",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

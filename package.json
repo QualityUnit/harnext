@@ -1,55 +1,32 @@
 {
-  "name": "codefactory-cli",
-  "version": "0.2.5",
-  "description": "CLI tool that automates harness engineering setup for AI coding agents",
+  "private": true,
   "type": "module",
-  "bin": {
-    "codefactory": "./dist/index.js"
-  },
-  "main": "./dist/index.js",
-  "files": [
-    "dist",
-    "templates"
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "build": "tsup",
-    "build:release": "tsup --config tsup.config.release.ts",
-    "dev": "tsup --watch",
+    "build": "npm -w packages/core run build && npm -w packages/cli run build",
+    "build:core": "npm -w packages/core run build",
+    "build:cli": "npm -w packages/cli run build",
+    "dev": "npm run dev --workspaces --if-present",
     "test": "vitest run",
-    "lint": "eslint src/",
-    "typecheck": "tsc --noEmit",
-    "prepare": "husky",
-    "harness:smoke": "npx ts-node scripts/harness-smoke.ts",
-    "harness:risk-tier": "npx ts-node scripts/risk-policy-gate.ts",
-    "harness:weekly-metrics": "npx ts-node scripts/harness-weekly-metrics.ts"
+    "lint": "eslint packages/*/src/",
+    "typecheck": "npm run typecheck --workspaces"
   },
   "keywords": [
+    "ai-agent",
+    "coding-agent",
     "harness-engineering",
-    "ai-agents",
-    "claude",
-    "ci-cd",
     "developer-tools"
   ],
   "license": "MIT",
   "engines": {
     "node": ">=20"
   },
-  "dependencies": {
-    "@inquirer/core": "11.1.4",
-    "@inquirer/prompts": "^7.3.2",
-    "chalk": "^5.4.1",
-    "commander": "^13.1.0",
-    "fast-glob": "^3.3.3",
-    "ora": "^8.1.1",
-    "yaml": "^2.7.0",
-    "zod": "^3.24.2"
-  },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@types/node": "^22.13.4",
     "eslint": "^9.20.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^15.4.3",
     "prettier": "^3.5.2",
     "tsup": "^8.3.6",
     "typescript": "^5.7.3",

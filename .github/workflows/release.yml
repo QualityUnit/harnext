@@ -3,80 +3,46 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run npm publish with --dry-run (no upload)'
+        type: boolean
+        default: true
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
 
 jobs:
-  release:
-    name: Build & Release
+  publish:
+    name: Publish harnext to npm
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
+          node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify version tag matches package.json
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match package.json ($PKG_VERSION)"
-            exit 1
-          fi
-          echo "VERSION=$TAG_VERSION" >> "$GITHUB_ENV"
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Type check
-        run: npm run typecheck
+      - name: Build
+        run: npm run build
 
       - name: Test
         run: npm test
 
-      - name: Build
-        run: npm run build
-
-      - name: Build release bundle
-        run: npm run build:release
-
-      - name: Smoke test release binary
-        run: |
-          node dist/index.js --version
-          node dist/index.js --help
-
-      - name: Prepare release assets
-        run: |
-          cp dist/index.js codefactory
-          chmod +x codefactory
-          sha256sum codefactory > checksums.sha256
-          cp scripts/install.sh install.sh
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "CodeFactory v${VERSION}" \
-            --generate-notes \
-            codefactory \
-            checksums.sha256 \
-            install.sh
-
-      - name: Publish to npm (optional)
-        if: env.NPM_TOKEN != ''
+      - name: Publish CLI
+        working-directory: packages/cli
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm publish --dry-run
+          else
+            npm publish
+          fi

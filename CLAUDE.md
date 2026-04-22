@@ -2,92 +2,86 @@
 
 ## Project Overview
 
-CodeFactory is a CLI tool that automates harness engineering setup for AI coding agents. Written in TypeScript (ESM), it uses the Claude Code Agent SDK to analyze repositories and generate production-grade CI, review, and safety artifacts. No framework; runs on Node.js >= 20.
+Harnext is an AI coding agent with harness engineering. Built on the pi-agent-core runtime, it provides an interactive coding agent that can read, write, edit files and run shell commands. Written in TypeScript (ESM), runs on Node.js >= 20.
+
+This is a monorepo with npm workspaces containing two packages:
+- `@harnext/core` — Reusable library (agent session, tools, SDK, auth, providers)
+- `harnext` (CLI) — Interactive terminal UI and CLI binary
 
 ## Build & Run Commands
 
 ```bash
-npm install              # Install dependencies
-npm run build            # Build with tsup → dist/
-npm run dev              # Build in watch mode
+npm install              # Install dependencies (workspace-aware)
+npm run build            # Build core, then CLI
+npm run build:core       # Build only @harnext/core
+npm run build:cli        # Build only the CLI
+npm run dev              # Build in watch mode (all packages)
 npm test                 # Run all tests (vitest run)
-npx vitest run src/foo   # Run a single test file by path match
-npm run lint             # Lint with eslint (eslint src/)
-npm run typecheck        # Type-check (tsc --noEmit)
+npm run lint             # Lint all packages
+npm run typecheck        # Type-check all packages
+
+# Run the agent
+node packages/cli/dist/index.js                          # Interactive REPL
+node packages/cli/dist/index.js -p --prompt "list files" # One-shot mode
+node packages/cli/dist/index.js --provider openai -m gpt-4o  # Different provider/model
 ```
 
 ## Code Style Rules
 
 - **Formatter**: Prettier — single quotes, semicolons, trailing commas, 100-char line width, 2-space indent.
-- **Import order**: Node built-ins (`node:fs`, `node:path`) → external packages (`commander`, `zod`, `chalk`) → local imports (`../core/`, `../utils/`). Keep `import type` separate from value imports.
-- **Type imports**: Use `import type { Foo }` for type-only imports. `verbatimModuleSyntax` is enabled in tsconfig — the compiler enforces this.
-- **File naming**: `kebab-case.ts` for all source files (e.g., `claude-runner.ts`, `risk-policy-gate.ts`).
-- **Naming conventions**: `camelCase` for variables/functions, `PascalCase` for interfaces/classes/types. No prefixes (no `I` on interfaces).
-- **Exports**: Named exports only. No default exports in source files. Re-export types from barrel files (`index.ts`).
-- **Error handling**: Throw custom `Error` subclasses (see `src/utils/errors.ts`). Use `try/catch` with fallback to `null` or warning logs for non-fatal failures. Pattern: `error instanceof Error ? error.message : String(error)`.
-- **ESM**: This is a pure ESM package (`"type": "module"`). All local imports must include `.js` extensions (e.g., `import { foo } from './bar.js'`).
+- **Import order**: Node built-ins (`node:fs`, `node:path`) → external packages → local imports. Keep `import type` separate from value imports.
+- **Type imports**: Use `import type { Foo }` for type-only imports. `verbatimModuleSyntax` is enabled.
+- **File naming**: `kebab-case.ts` for all source files.
+- **Naming conventions**: `camelCase` for variables/functions, `PascalCase` for interfaces/classes/types.
+- **Exports**: Named exports only. No default exports.
+- **ESM**: Pure ESM package. All local imports must include `.js` extensions.
+- **Cross-package imports**: CLI imports from `@harnext/core`, never via relative paths across package boundaries.
 
 ## Architecture Overview
 
 ```
-src/
-  commands/    CLI command handlers (init flow orchestration)
-  core/        Engine: ClaudeRunner (Agent SDK wrapper), detector, config, file-writer
-  harnesses/   13 harness modules, each implementing HarnessModule interface
-  prompts/     Prompt templates sent to Claude for each harness generation step
-  providers/   CI provider adapters (GitHub Actions, GitLab CI, Bitbucket)
-  ui/          Terminal output: logger, spinner, interactive prompts (Inquirer)
-  utils/       Pure utilities: filesystem helpers, git ops, error classes, templates
+packages/
+  core/                       @harnext/core — library
+    src/
+      index.ts                Barrel exports
+      config.ts               APP_NAME, VERSION, directory helpers
+      agent-session.ts        AgentSession class
+      auth.ts                 API key storage (~/.harnext/agent/auth.json)
+      providers.ts            Provider registry (Anthropic, OpenAI, Google, etc.)
+      sdk.ts                  createAgentSession factory
+      system-prompt.ts        System prompt builder
+      tools/
+        bash.ts               Shell command execution
+        read.ts               File reading with line numbers
+        write.ts              File creation/overwrite
+        edit.ts               String-replacement editing
+        truncate.ts           Output truncation utility
+
+  cli/                        harnext — CLI binary
+    src/
+      index.ts                Entry point (calls main)
+      main.ts                 CLI orchestrator (args → auth → session → mode)
+      cli/
+        args.ts               Argument parsing
+        input.ts              Raw-mode input with ghost-text completion
+        select.ts             Arrow-key select box widget
+        onboarding.ts         First-run auth flow
+        model-picker.ts       Provider/model switching
+      modes/
+        print-mode.ts         One-shot (non-interactive) mode
+        interactive/
+          interactive-mode.ts Main REPL loop with slash commands
+          render.ts           Terminal rendering (boxes, spinner, footer)
 ```
 
-**Dependency rule** (enforced in `harness.config.json` → `architecturalBoundaries`):
-
-- `utils` imports nothing. `ui` imports only `utils`. `core` imports only `utils`.
-- `commands` imports `core`, `ui`, `utils`. `prompts` imports `core`, `utils`.
-- `providers` imports `core`, `utils`. `harnesses` imports `core`, `prompts`, `providers`, `utils`.
-- Never create circular imports. Never import from `commands` or `harnesses` inside `core`.
-
-## Critical Paths — Extra Care Required
-
-Changes to these files require additional test coverage and human review (not just review-agent):
-
-- `src/index.ts`, `src/cli.ts` — entry points
-- `src/commands/init.ts` — main orchestration flow
-- `src/core/claude-runner.ts` — Agent SDK integration
-- `src/core/config.ts`, `src/core/detector.ts`, `src/core/file-writer.ts` — core engine
-- `src/harnesses/index.ts`, `src/harnesses/types.ts` — harness registry and contracts
-- `package.json`, `tsconfig.json`, `tsup.config.ts`, `vitest.config.ts`, `eslint.config.js` — build/CI infra
-
-These are classified as **Tier 3 (high risk)** in `harness.config.json`. All Tier 3 changes require: lint + type-check + full test suite + review-agent + manual human review.
+**Key dependencies:**
+- `@mariozechner/pi-agent-core` — Stateful agent runtime with event streaming
+- `@mariozechner/pi-ai` — Multi-provider LLM API (Anthropic, OpenAI, Google, 25+ providers)
+- `@sinclair/typebox` — Tool parameter schemas
+- `chalk` — Terminal styling (CLI only)
 
 ## Security Constraints
 
 - Never commit secrets, API keys, or `.env` files.
-- Never disable ESLint rules, TypeScript strict mode, or type checking.
-- Validate all external input at system boundaries (use Zod schemas as in `detector.ts`).
-- The CLI spawns `claude` as a child process — never pass unsanitized user input to shell commands.
-- Follow least-privilege: `ClaudeRunner` explicitly whitelists allowed tools per operation.
-
-## Dependency Management
-
-- Add dependencies: `npm add <pkg>` (runtime) or `npm add -D <pkg>` (dev).
-- Always commit `package-lock.json`.
-- Do not upgrade major versions without explicit instruction.
-- Pin exact versions for production dependencies when possible.
-
-## Harness System Reference
-
-This project uses harness engineering with layered CI gates:
-
-- **Risk tiers** defined in `harness.config.json` — Tier 1 (docs), Tier 2 (features), Tier 3 (critical paths).
-- **SHA discipline** enforced — all CI gates and review passes pin to exact commit SHA.
-- **Review agent** automatically reviews PRs; Tier 3 changes also require manual approval.
-- **Pre-commit hooks** enforce local quality checks before push.
-- See `README.md` for harness module descriptions and architectural patterns.
-
-## PR Conventions
-
-- **Branch naming**: `<type>/<short-description>` (e.g., `feat/add-auth`, `fix/null-check`, `chore/update-deps`).
-- **Commit messages**: Conventional Commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
-- All PRs must pass lint, type-check, and test CI gates before merge.
-- Classify every PR by risk tier (Tier 1/2/3) in the PR description.
+- The bash tool executes shell commands — be careful with untrusted input.
+- Tool parameters are validated via TypeBox schemas before execution.
