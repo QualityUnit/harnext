@@ -1,6 +1,6 @@
 {
   "name": "harnext",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "AI coding agent with harness engineering — interactive REPL, MCP support, and a GitHub-issue-driven workflow runner.",
   "type": "module",
   "bin": {
@@ -26,7 +26,7 @@
     "yaml": "^2.5.0"
   },
   "devDependencies": {
-    "@harnext/core": "^0.1.0"
+    "@harnext/core": "^1.0.0"
   },
   "engines": {
     "node": ">=20"
