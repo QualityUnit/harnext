@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { getCodingAgentSpec } from './coding-agents.js';
+import { CODE_ANALYSIS_MAX_TURNS } from './code-analysis/run-coding-agent.js';
 import { runExternalCodingAgent, type ExternalAgentSpawner } from './coding-agent-runner.js';
 import type { GithubConnectionConfig, StageEntry } from './github-connection.js';
 import { createAgentSession } from './sdk.js';
@@ -37,6 +38,16 @@ export interface GenerateStageWorkflowInput {
   awaitingLabel: string;
   /** Label applied on agent failure. */
   needsJudgmentLabel: string;
+  /**
+   * Basename (e.g. `harnext-plan.yml`) of the next stage's workflow to
+   * dispatch via `gh workflow run` after this stage adds the next-stage
+   * label. Required for any yolo chain between two GHA-backed stages —
+   * without it, the label-add does not fire the next workflow's
+   * `labeled` trigger (GitHub suppresses those when `GITHUB_TOKEN`
+   * applied the label). See StageWorkflowInput.nextWorkflowFilename
+   * for the full rationale.
+   */
+  nextWorkflowFilename?: string;
   /** GHA trigger — `issues`, `pull_request`, or `both` (safe default). */
   triggerOn: 'issues' | 'pull_request' | 'both';
   /** Override for tests — skips the real `claude`/`codex` subprocess. */
@@ -85,6 +96,7 @@ export async function generateStageWorkflow(
     nextLabel: input.nextLabel,
     awaitingLabel: input.awaitingLabel,
     needsJudgmentLabel: input.needsJudgmentLabel,
+    nextWorkflowFilename: input.nextWorkflowFilename,
     triggerOn: input.triggerOn,
     codingAgent: input.cfg.codingAgent,
     codingAgentModel: input.cfg.codingAgentModel,
@@ -146,6 +158,7 @@ export async function generateStageWorkflow(
       const result = await runExternalCodingAgent(spec, promptSent, {
         cwd: input.cwd,
         modelId: input.cfg.codingAgentModel,
+        maxTurns: CODE_ANALYSIS_MAX_TURNS,
         spawner: input.spawner,
       });
       agentOutput = result.output;

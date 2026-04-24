@@ -40,3 +40,18 @@ fi
 
 INSTALLED_VERSION="$("${PACKAGE}" --version 2>/dev/null || echo 'unknown')"
 info "Installed ${PACKAGE} ${INSTALLED_VERSION}. Run '${PACKAGE} --help' to get started."
+
+# Fresh terminals will see the new binary immediately, but the *current*
+# shell may have cached a negative lookup for `${PACKAGE}` in its command
+# hash. Tell the user exactly how to refresh the current shell so they
+# don't have to open a new terminal.
+case "$(basename "${SHELL:-}")" in
+  zsh) REFRESH_CMD="rehash" ;;
+  bash) REFRESH_CMD="hash -r" ;;
+  fish) REFRESH_CMD="" ;; # fish rescans $PATH automatically
+  *) REFRESH_CMD="hash -r" ;;
+esac
+
+if [ -n "${REFRESH_CMD}" ]; then
+  info "If '${PACKAGE}' is not found in your current terminal, run '${REFRESH_CMD}' to refresh it (or open a new terminal)."
+fi

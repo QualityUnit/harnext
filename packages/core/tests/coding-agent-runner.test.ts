@@ -78,6 +78,47 @@ describe('buildExternalAgentArgv', () => {
   it('throws for harnext (no external binary)', () => {
     expect(() => buildExternalAgentArgv(getCodingAgentSpec('harnext'), 'hi', 'm')).toThrow();
   });
+
+  it('appends --max-turns to claude-code argv when maxTurns is provided', () => {
+    const spec = getCodingAgentSpec('claude-code');
+    const argv = buildExternalAgentArgv(spec, 'hello', 'claude-sonnet-4-6', {
+      maxTurns: 150,
+    });
+    expect(argv.args).toEqual([
+      '-p',
+      'hello',
+      '--model',
+      'claude-sonnet-4-6',
+      '--max-turns',
+      '150',
+      '--dangerously-skip-permissions',
+    ]);
+  });
+
+  it('drops invalid maxTurns values silently (zero, NaN, negative, non-integer)', () => {
+    // A bad maxTurns value must not break the spawn. Guarding it here
+    // (rather than throwing) means a misconfigured caller still gets a
+    // working claude-code run with the agent's default budget.
+    const spec = getCodingAgentSpec('claude-code');
+    for (const bad of [0, -1, Number.NaN, 1.5]) {
+      const argv = buildExternalAgentArgv(spec, 'hi', 'm', { maxTurns: bad });
+      expect(argv.args).not.toContain('--max-turns');
+    }
+  });
+
+  it('ignores maxTurns for codex (no equivalent flag)', () => {
+    const spec = getCodingAgentSpec('codex');
+    const argv = buildExternalAgentArgv(spec, 'hello', 'gpt-5.4', { maxTurns: 150 });
+    // Codex argv stays exactly as before — no --max-turns, no silent
+    // injection of a claude-style flag.
+    expect(argv.args).toEqual([
+      'exec',
+      '--model',
+      'gpt-5.4',
+      '--dangerously-bypass-approvals-and-sandbox',
+      'hello',
+    ]);
+  });
 });
 
 describe('runExternalCodingAgent', () => {
@@ -169,5 +210,55 @@ describe('runExternalCodingAgent', () => {
     expect(killedWith).toBe('SIGTERM');
     expect(result.exit).toBe(1);
     expect(result.error).toMatch(/timed out/);
+  });
+
+  it('does NOT kill the child when timeoutMs is unset (lock is the serializer)', async () => {
+    // Regression: flowhunt's verify tick ran for ~30 min, hit the old
+    // 30-min default cap, got SIGTERM'd after it had already posted the
+    // PASS comment, and the resulting exit=1 prevented the label
+    // transition. Fix: timeout is opt-in now — no `timeoutMs` ⇒ no
+    // timer. The poller's lockfile prevents overlapping ticks from
+    // running concurrently, so we don't need a wall-clock kill to
+    // enforce mutual exclusion.
+    let killCount = 0;
+    const spawner: ExternalAgentSpawner = () => {
+      const child = makeFakeChild({ stdout: 'done', exitCode: 0, delayMs: 40 });
+      const originalKill = child.kill;
+      child.kill = ((signal?: NodeJS.Signals | number) => {
+        killCount += 1;
+        return originalKill.call(child, signal);
+      }) as ChildProcessWithoutNullStreams['kill'];
+      return child;
+    };
+    const result = await runExternalCodingAgent(claude, 'p', {
+      cwd: '/tmp',
+      modelId: 'm',
+      spawner,
+      // timeoutMs intentionally omitted
+    });
+    expect(result.exit).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(killCount).toBe(0);
+  });
+
+  it('treats timeoutMs=0 as disabled (same as unset)', async () => {
+    let killCount = 0;
+    const spawner: ExternalAgentSpawner = () => {
+      const child = makeFakeChild({ stdout: 'done', exitCode: 0, delayMs: 40 });
+      const originalKill = child.kill;
+      child.kill = ((signal?: NodeJS.Signals | number) => {
+        killCount += 1;
+        return originalKill.call(child, signal);
+      }) as ChildProcessWithoutNullStreams['kill'];
+      return child;
+    };
+    const result = await runExternalCodingAgent(claude, 'p', {
+      cwd: '/tmp',
+      modelId: 'm',
+      spawner,
+      timeoutMs: 0,
+    });
+    expect(result.exit).toBe(0);
+    expect(killCount).toBe(0);
   });
 });

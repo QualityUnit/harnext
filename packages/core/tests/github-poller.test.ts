@@ -80,6 +80,7 @@ function baseConfig(overrides: Partial<GithubConnectionConfig> = {}): GithubConn
     repo: 'example/repo',
     pollIntervalMinutes: 15,
     filter: { kind: 'none' },
+    intake: { runner: { kind: 'local' } },
     stages: DEFAULT_STAGES.map((s) => ({ ...s })),
     lastSeenUpdatedAt: '2026-04-19T10:00:00Z',
     codingAgent: 'harnext',
@@ -272,6 +273,50 @@ describe('buildStagePrompt', () => {
     expect(out).toContain('(empty)');
     expect(out).toContain('(no labels)');
   });
+
+  it('substitutes $ISSUE_NUMBER / $PR_NUMBER / braced variants with the real item number', () => {
+    // Live bug: flowhunt's verify stage's stored prompt used
+    // `$PR_NUMBER` (and `$ISSUE_NUMBER` in earlier stages) as if it
+    // were a shell variable. When the local poller spawns claude
+    // directly via argv, there is no shell expansion — so the agent
+    // got literal `$PR_NUMBER` text. Substitution here makes the
+    // placeholders plain-text numbers before the prompt is handed
+    // to the subprocess.
+    const item = makeItem({ number: 5339 });
+    const withPlaceholders: StageDefinition = {
+      id: 'verify',
+      label: 'harnext:verify',
+      mode: 'yolo',
+      prompt:
+        'Verify PR #$PR_NUMBER. Checkout: `gh pr checkout $PR_NUMBER`. ' +
+        'Branch: `issue/${ISSUE_NUMBER}`. Close with #${PR_NUMBER}.',
+    };
+    const out = buildStagePrompt(withPlaceholders, item);
+    // No literal placeholders survive anywhere in the output.
+    expect(out).not.toContain('$PR_NUMBER');
+    expect(out).not.toContain('${PR_NUMBER}');
+    expect(out).not.toContain('$ISSUE_NUMBER');
+    expect(out).not.toContain('${ISSUE_NUMBER}');
+    // All four placeholder sites should have resolved to the number.
+    expect(out).toContain('Verify PR #5339.');
+    expect(out).toContain('gh pr checkout 5339');
+    expect(out).toContain('Branch: `issue/5339`');
+    expect(out).toContain('Close with #5339.');
+  });
+
+  it('leaves similar-but-non-placeholder text alone (word-boundary on bare $VAR)', () => {
+    // `$ISSUE_NUMBER_SUFFIX` must NOT partial-match.
+    const item = makeItem({ number: 42 });
+    const stage: StageDefinition = {
+      id: 'verify',
+      label: 'harnext:verify',
+      mode: 'yolo',
+      prompt: 'Keep $ISSUE_NUMBER_SUFFIX untouched; resolve $PR_NUMBER only.',
+    };
+    const out = buildStagePrompt(stage, item);
+    expect(out).toContain('$ISSUE_NUMBER_SUFFIX untouched');
+    expect(out).toContain('resolve 42 only');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -360,6 +405,33 @@ describe('runPollTick', () => {
     const result = await runPollTick(cfg, io);
     expect(result.processed).toBe(0);
     expect(result.newPointer).toBe(pr.updated_at);
+    expect(io.transitions).toHaveLength(0);
+    expect(io.prompts).toHaveLength(0);
+  });
+
+  it('does NOT auto-label when intake runs on github-actions (tagger workflow owns that boundary)', async () => {
+    // When intake is delegated to github-actions the generated tagger
+    // workflow is the sole writer for the first-stage label on new
+    // issues. The poller must stay silent — two writers on the same
+    // boundary produce duplicate runs.
+    const initial = makeItem({
+      number: 42,
+      labels: [{ name: 'bug' }],
+      updated_at: '2026-04-19T12:30:00Z',
+    });
+    const cfg = baseConfig({
+      intake: {
+        runner: {
+          kind: 'github-actions',
+          workflowPath: '.github/workflows/harnext-tagger.yml',
+          origin: 'generated',
+        },
+      },
+    });
+    const io = makeIo({ items: [initial], agentResults: [] });
+    const result = await runPollTick(cfg, io);
+    expect(result.processed).toBe(0);
+    expect(result.newPointer).toBe(initial.updated_at);
     expect(io.transitions).toHaveLength(0);
     expect(io.prompts).toHaveLength(0);
   });

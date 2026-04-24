@@ -7,9 +7,14 @@ import type { SkillDiagnostic } from './skills.js';
 
 export function getBundledSkillsDir(): string {
   // tsup splitting:false → import.meta.url resolves to <pkg>/dist/index.js
-  // bundled skills live at <pkg>/skills/, one level up from dist/
+  // in @harnext/core's own dist, and to <cli>/dist/index.js when core is
+  // inlined into the CLI bundle. Check the standalone-core path first
+  // (<dist>/../skills), then the alongside-dist path (<dist>/skills —
+  // populated by the CLI's tsup onSuccess copy step).
   const here = dirname(fileURLToPath(import.meta.url));
-  return join(here, '..', 'skills');
+  const standalone = join(here, '..', 'skills');
+  if (existsSync(standalone)) return standalone;
+  return join(here, 'skills');
 }
 
 export interface SeedResult {

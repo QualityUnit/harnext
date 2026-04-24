@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   AWAITING_APPROVAL_LABEL,
+  DEFAULT_INTAKE,
   DEFAULT_STAGES,
   NEEDS_JUDGMENT_LABEL,
   buildHarnextLabelSpecs,
@@ -77,6 +78,7 @@ describe('GithubConnectionConfig save/load round-trip', () => {
       repo: 'example/repo',
       pollIntervalMinutes: 15,
       filter: { kind: 'none' },
+      intake: { runner: { kind: 'local' } },
       stages: DEFAULT_STAGES.map((s) => ({ ...s })),
       codingAgent: 'harnext',
       updatedAt: Date.now(),
@@ -207,5 +209,58 @@ describe('GithubConnectionConfig save/load round-trip', () => {
     saveGithubConnection(projectCwd, bogus as GithubConnectionConfig);
     const loaded = loadGithubConnection(projectCwd);
     expect(loaded!.stages).toEqual(DEFAULT_STAGES);
+  });
+
+  it('round-trips a local intake runner', () => {
+    const cfg = baseConfig({ intake: { runner: { kind: 'local' } } });
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.intake).toEqual({ runner: { kind: 'local' } });
+  });
+
+  it('round-trips a github-actions intake runner', () => {
+    const cfg = baseConfig({
+      intake: {
+        runner: {
+          kind: 'github-actions',
+          workflowPath: '.github/workflows/harnext-tagger.yml',
+          origin: 'generated',
+        },
+      },
+    });
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.intake.runner).toEqual({
+      kind: 'github-actions',
+      workflowPath: '.github/workflows/harnext-tagger.yml',
+      origin: 'generated',
+    });
+  });
+
+  it('backfills intake to DEFAULT_INTAKE when the field is missing (legacy configs)', () => {
+    // Simulate a pre-issue-65 on-disk config that has no intake field.
+    const cfg = baseConfig();
+    const withoutIntake = { ...cfg } as Partial<GithubConnectionConfig>;
+    delete (withoutIntake as Record<string, unknown>).intake;
+    saveGithubConnection(projectCwd, withoutIntake as GithubConnectionConfig);
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.intake).toEqual(DEFAULT_INTAKE);
+    expect(loaded!.intake.runner.kind).toBe('local');
+  });
+
+  it('rejects configs with a malformed intake runner', () => {
+    // intake.runner with kind="github-actions" but missing workflowPath is
+    // invalid and must fail to load — otherwise the poller would silently
+    // treat it as "not local" and the tagger path wouldn't fire either.
+    const bogus = {
+      ...baseConfig(),
+      intake: { runner: { kind: 'github-actions', origin: 'generated' } },
+    };
+    saveGithubConnection(projectCwd, bogus as GithubConnectionConfig);
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded).toBeNull();
   });
 });

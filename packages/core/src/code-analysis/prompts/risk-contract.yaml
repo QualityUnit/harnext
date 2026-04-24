@@ -1,0 +1,96 @@
+id: risk-contract
+version: 1
+description: >
+  Generate a machine-readable risk-tier contract (globs → tiers → required
+  checks) from the previously-detected TechStack. The contract lives at
+  .harnext/contract.json and is the single source of truth for what must
+  pass before a PR can merge.
+variables:
+  - outputPath
+  - techStackPath
+  - sessionDir
+  - cwd
+  - schemaJson
+prompt: |
+  You are producing a **RiskContract** for harnext. harnext uses this
+  contract to decide which checks every PR must pass based on which files
+  it changes. It removes ambiguity and prevents silent drift between
+  scripts, workflow files, and policy docs.
+
+  Your task, in order:
+
+  1. **Read the TechStack inventory** at:
+       {{techStackPath}}
+     It contains the repo's language / framework / package manager / test
+     command / CI provider and (for monorepos) per-workspace entries.
+     Use it to decide where the *load-bearing* code lives.
+
+  2. **Identify risk tiers.** Define at least two tiers — typically
+     `high` and `low`. You may add `critical` or `medium` when the repo
+     warrants it, but keep the list short (2–4 tiers max).
+
+     A *high*-risk path is anything where a bad change silently breaks
+     production or a regulated flow. Look for:
+       - HTTP/RPC handlers for payments, auth, legal, health, or any
+         externally-regulated domain
+       - database migrations or schema definitions
+       - shared library code imported by many callers (`lib/`, `core/`,
+         `internal/`)
+       - anything under `infra/`, `terraform/`, `k8s/`, deployment configs
+       - security-sensitive middleware (authn, authz, session, crypto)
+
+     A *low*-risk path is **everything else**, typically the fallback
+     tier matching `**`. One tier's globs **must** include `**` so no
+     file escapes policy.
+
+  3. **Pick required checks per tier.** Check ids are short human-readable
+     strings like `risk-policy-gate`, `CI Pipeline`, `harness-smoke`.
+     Names with spaces are fine — the check-scripts stage slugifies
+     them when writing `.harnext/scripts/<slug>.sh`.
+
+     Common patterns:
+       - Every tier includes `risk-policy-gate` and `CI Pipeline`.
+       - Higher tiers add `harness-smoke` or `integration-test` when
+         shared libs / load-bearing modules are touched.
+
+     **What NOT to include here:** anything that belongs in a coding
+     agent's workflow rather than a CI gate. Specifically:
+       - **Do NOT** invent checks for browser / UI verification
+         (e.g. "Browser Evidence", "UI screenshots", "visual regression").
+         UI verification is handled inside the `verify` stage prompt
+         — the agent drives a real browser via the `browser-verify`
+         skill (or `chrome-devtools` MCP tools) and attaches evidence
+         to the PR directly. A shell-gate `.sh` cannot actually open
+         a browser; it would just be an honor-system checklist.
+       - **Do NOT** invent checks for things a reviewer does by hand
+         (code review, design review, security review). Those aren't
+         shell-executable.
+       - **Only include a check here if you can describe an executable
+         shell script that would validate it** in the next stage's
+         prompt. Dedupe checks per tier.
+
+  4. **Write the JSON file.** Write a single JSON file at **exactly**
+     this path. The session scratch dir at `{{sessionDir}}` is yours
+     for any intermediate notes you want later stages to see.
+
+     Output path:
+       {{outputPath}}
+
+     Repository root (cwd):
+       {{cwd}}
+
+  5. **Required shape:**
+
+     {{schemaJson}}
+
+  6. **Validation invariants (your output will be rejected otherwise):**
+       - `version` must be the string `"1"`.
+       - The key sets of `riskTierRules` and `mergePolicy` must match
+         exactly — every tier in one must be in the other.
+       - Every glob is a non-empty string.
+       - Every required check is a non-empty string.
+       - At least one tier's globs include `"**"`.
+
+  7. **Do not return structured data in chat.** The tmp file is the
+     handshake — your chat output is ignored. Just write the JSON and
+     finish.

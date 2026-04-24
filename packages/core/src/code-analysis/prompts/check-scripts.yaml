@@ -1,0 +1,96 @@
+id: check-scripts
+version: 1
+description: >
+  Generate executable shell scripts into .harnext/scripts/ for every
+  required check the risk contract references. Each script is a
+  self-contained gate — it exits 0 on pass, non-zero on fail, and is
+  the single thing CI (or a local run) invokes for that check.
+variables:
+  - missingChecksJson
+  - techStackPath
+  - contractPath
+  - scriptsDir
+  - sessionDir
+  - cwd
+prompt: |
+  You are generating **check scripts** for harnext. Every entry in the
+  risk contract's `requiredChecks` maps to exactly one shell script
+  under `.harnext/scripts/<slug>.sh`. CI and the local harness invoke
+  these scripts directly.
+
+  Your task, in order:
+
+  1. **Read the TechStack inventory** at:
+       {{techStackPath}}
+     Look especially at: primary language, package manager, the exact
+     `testCommand` / `lintCommand` / `buildCommand` / `typecheckCommand`
+     per package. Shell out to the real commands — don't reinvent them.
+
+  2. **Read the RiskContract** at:
+       {{contractPath}}
+     This tells you which checks are required for which tiers. Every
+     check id you see here needs a script.
+
+  3. **Write the missing scripts only.** The harness has already
+     identified which checks are missing. Do **not** overwrite existing
+     scripts — a previous run (or the user) may have tuned them.
+
+     The list of missing check ids to generate is:
+
+     {{missingChecksJson}}
+
+     Each entry is `{ id, slug, fileName, filePath }`. Write to
+     `filePath` exactly — don't invent a different location. The scripts
+     dir is:
+
+       {{scriptsDir}}
+
+  4. **Script requirements:**
+       - First line is `#!/usr/bin/env bash`.
+       - Next line: `set -euo pipefail` (fail fast on any error).
+       - Short header comment describing what this check validates.
+       - Body that runs **real** commands from the TechStack (e.g.
+         `npm test`, `pnpm -F web lint`, `pytest -q`). If the repo is
+         a monorepo, decide whether to run the check repo-wide or only
+         in the workspaces that changed — if in doubt, run repo-wide.
+       - Exit non-zero on any failure; exit 0 on success.
+       - Keep scripts short — each is one gate, not a test runner.
+
+  5. **Common check patterns** (rough starters — adapt to the stack):
+       - `risk-policy-gate`: a short `jq`/`python3` invocation that
+         validates `.harnext/contract.json` is well-formed. Iterate
+         `.mergePolicy | keys` dynamically; don't hardcode tier names.
+       - `CI Pipeline`: shell out to whatever the CI's default suite is.
+         For Node: `npm run build && npm test`. For Python:
+         `pytest -q`. Use the TechStack's exact commands per-package
+         in monorepos.
+       - `harness-smoke`: a short integration smoke test — either a
+         pointer to an existing smoke script in the repo, or a minimal
+         `curl` / `node -e` invocation that exercises one load-bearing
+         path.
+
+  6. **What NOT to generate:**
+       - Scripts that are honor-system checklists (e.g. "pass if this
+         env var is set"). If you can't write a script that really
+         validates something, skip it — the risk-contract stage
+         shouldn't have asked for it in the first place.
+       - Browser / UI verification scripts. UI verification happens
+         inside the `verify` pipeline stage, where the coding agent
+         drives a real browser via the `browser-verify` skill or the
+         `chrome-devtools` MCP tools. A shell `.sh` cannot do that
+         work, so don't pretend.
+       - Scripts that require subjective human judgment (code review,
+         design review). Those aren't shell-executable.
+     If a check in the missing list falls into any of these buckets,
+     write a minimal no-op stub that exits 0 with a one-line echo
+     explaining why (so CI doesn't hard-fail while the human fixes
+     the contract). Do **not** write a fake gate that pretends to
+     validate.
+
+  7. **Do not return structured data in chat.** Write the files
+     directly — that's the handshake. Your chat output is ignored.
+
+  8. **Session scratch dir** (for any intermediate notes):
+       {{sessionDir}}
+
+  Repository root (cwd): {{cwd}}

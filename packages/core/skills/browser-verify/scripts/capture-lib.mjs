@@ -1,5 +1,6 @@
-import { appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, renameSync } from 'node:fs';
+import { appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 function jsonl(path, obj) {
   mkdirSync(dirname(path), { recursive: true });
@@ -176,6 +177,40 @@ export async function finalize(meta, { context, page, listenersCounts }) {
         renameSync(join(videoDir, files[0]), join(videoDir, 'recording.webm'));
       } catch {
         // best-effort rename; Playwright's generated name is fine as fallback
+      }
+    }
+    // Convert webm → mp4. Playwright's webm has stream-level
+    // duration=N/A, which VLC (at least the Linux snap) refuses to
+    // play. H.264 MP4 is also meaningfully smaller for screen
+    // recording content. Best-effort: if ffmpeg or libx264 is
+    // missing we keep the webm.
+    const webmPath = join(videoDir, 'recording.webm');
+    if (existsSync(webmPath)) {
+      const mp4Path = join(videoDir, 'recording.mp4');
+      const r = spawnSync(
+        'ffmpeg',
+        [
+          '-y', '-v', 'error',
+          '-i', webmPath,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+          '-pix_fmt', 'yuv420p',
+          '-movflags', '+faststart',
+          mp4Path,
+        ],
+        { stdio: ['ignore', 'ignore', 'pipe'] },
+      );
+      if (r.status === 0 && existsSync(mp4Path)) {
+        try { unlinkSync(webmPath); } catch { /* ignore */ }
+      } else {
+        try { if (existsSync(mp4Path)) unlinkSync(mp4Path); } catch { /* ignore */ }
+        const why = r.error?.code === 'ENOENT'
+          ? 'ffmpeg not on PATH'
+          : String(r.stderr ?? r.error?.message ?? `exit ${r.status}`);
+        jsonl(join(runDir, 'page-errors.jsonl'), {
+          ts: ts(),
+          message: `video mp4 conversion failed (keeping .webm): ${why}`,
+          stack: null,
+        });
       }
     }
   }

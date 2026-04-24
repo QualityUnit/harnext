@@ -1,0 +1,112 @@
+id: project-skills
+version: 1
+description: >
+  Generate project-specific Agent Skills tailored to the repository.
+  Each skill is a self-contained folder with a SKILL.md the coding
+  agent reads when its description matches the current task.
+variables:
+  - skillsDir
+  - slugsList
+  - techStackJson
+  - sessionDir
+  - cwd
+prompt: |
+  You are generating **Agent Skills** for harnext, tailored to this
+  codebase. Each skill is a self-contained folder with a `SKILL.md` file
+  the coding agent reads when its description matches the current task.
+
+  ## Research phase (do this BEFORE writing any SKILL.md)
+
+  The TechStack is a *summary*. Skills must be grounded in the actual
+  repository, not paraphrased from the summary. Invest real turns here —
+  you have a generous budget and every reader-visible fact in the
+  produced skill should be traceable to a file you read. Skim-and-write
+  produces shallow skills; that is the failure mode we are guarding
+  against.
+
+  For each skill you are asked to generate, before writing anything:
+
+    1. **Read every manifest end-to-end.** Look for all of these at the
+       repo root and inside each package dir (whichever exist): package.json,
+       yarn.lock/pnpm-workspace.yaml, pyproject.toml, poetry.lock,
+       requirements.txt, composer.json, go.mod, Cargo.toml, Gemfile,
+       build.gradle, pom.xml, Makefile, Dockerfile, docker-compose*.yml,
+       .tool-versions, .nvmrc. Commands in the manifest are authoritative —
+       copy them verbatim into the skill. Do not paraphrase.
+
+    2. **Walk the source tree.** For each runnable app, open the routing
+       / entrypoint file and trace the top-level structure. Backend:
+       find the HTTP framework mount and list the route groups by
+       prefix + source file (FastAPI `APIRouter`, Express
+       `app.use`/`router`, Django `urls.py`, Rails `routes.rb`, Flask
+       blueprints, NestJS controllers, Laravel `routes/*.php`, Go
+       chi/gin router files). Frontend: find the router config and
+       list top-level pages/routes with file paths.
+
+    3. **Read CI + scripts.** `.github/workflows/*.yml`,
+       `.gitlab-ci.yml`, `scripts/`, `bin/`, `Makefile` often contain
+       the canonical install/build/test/run sequence. Prefer CI's
+       command to a hand-written README.
+
+    4. **Detect env vars in code.** Grep for `process.env.`,
+       `os.environ`, `os.getenv`, `getenv(`, `ENV[` and cross-check
+       against `.env.example`/`.env.sample`. Document every env var the
+       app actually needs to boot, not only the ones listed in the
+       example file.
+
+  If a command is not discoverable in the repo, omit it and write a one
+  line "Unknown — confirm with the team" note. Do NOT guess.
+
+  ## Output format
+
+  Write each skill directly to disk. Do **not** emit the content in
+  chat. Skills live under:
+
+    {{skillsDir}}
+
+  Per skill, create:
+
+    {{skillsDir}}/<slug>/SKILL.md
+
+  The `SKILL.md` must start with YAML frontmatter:
+
+    ---
+    name: <slug>
+    description: <one-sentence trigger — what task this skill applies to>
+    ---
+
+    # <slug>
+
+    <body in markdown — steps, commands, examples. Be concrete. Reference
+    this repo's actual paths and commands from the files you just read.
+    Cite source paths next to every non-trivial claim (e.g. "port 9010
+    — backend/urlslab-bot/main.py").>
+
+  Rules:
+    - The `name` field MUST equal the folder slug (lowercase a-z, digits,
+      hyphens only).
+    - The `description` must be a crisp one-sentence trigger. No fluff.
+    - The body must use this repo's **actual** commands. Don't suggest
+      `npm test` if the manifest says `pnpm -w test`.
+    - When the repo is a monorepo, cover **every runnable package** —
+      don't stop at the first one. An app counts as runnable if it has
+      a dev/start/run target in its manifest OR a Dockerfile with a
+      CMD/ENTRYPOINT. Pure libraries get one line under the overview.
+    - Each skill body can be longer than a cheatsheet when the research
+      warrants it — thoroughness beats brevity here. A 200-line skill
+      that is correct is better than a 60-line skill that is vague.
+
+  Generate exactly these skills:
+
+  {{slugsList}}
+
+  TechStack (a starting map — do not treat as the full truth; verify
+  in the repo):
+
+  {{techStackJson}}
+
+  After writing every skill, reply with one short sentence listing the
+  slugs you wrote. Do not paste the SKILL.md contents into the reply.
+
+  Session scratch dir (for intermediate notes if needed): {{sessionDir}}
+  Repository root (cwd): {{cwd}}

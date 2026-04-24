@@ -25,6 +25,34 @@ export interface UpgradeModeOptions {
 }
 
 /**
+ * Return the shell builtin that forces the user's interactive shell to
+ * re-scan `$PATH` for command locations. After `npm install -g`, the
+ * parent shell's command hash may still point at (or lack) the old
+ * binary — this hint lets the user refresh the current terminal instead
+ * of opening a new one.
+ *
+ * Returns `null` for shells that don't need the hint (e.g. fish, which
+ * rescans automatically) or when the shell can't be identified.
+ */
+export function shellRefreshCommand(shellPath: string | undefined): string | null {
+  if (!shellPath) return 'hash -r';
+  const name = shellPath.split('/').pop() ?? '';
+  switch (name) {
+    case 'zsh':
+      return 'rehash';
+    case 'bash':
+    case 'sh':
+    case 'dash':
+    case 'ksh':
+      return 'hash -r';
+    case 'fish':
+      return null;
+    default:
+      return 'hash -r';
+  }
+}
+
+/**
  * Compare two semver-ish version strings. Returns 1 if `a > b`, -1 if
  * `a < b`, 0 if equal. Pre-release suffixes (`-rc.1` etc.) are compared
  * as ASCII strings, which is good enough for the upgrade-vs-no-upgrade
@@ -103,6 +131,8 @@ export interface UpgradeModeDeps {
   errLog?: (line: string) => void;
   /** Override of the running version (defaults to the bundled VERSION). */
   currentVersion?: string;
+  /** Override of the login shell path (defaults to `process.env.SHELL`). */
+  shell?: string;
 }
 
 export async function runUpgradeMode(
@@ -176,5 +206,14 @@ export async function runUpgradeMode(
   }
 
   log(chalk.green(`✓ Installed ${target}.`));
+
+  const refresh = shellRefreshCommand(deps.shell ?? process.env.SHELL);
+  if (refresh) {
+    log(
+      chalk.dim(
+        `If '${PACKAGE_NAME}' is not found in your current terminal, run '${refresh}' to refresh it (or open a new terminal).`,
+      ),
+    );
+  }
   return 0;
 }

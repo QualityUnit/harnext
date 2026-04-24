@@ -3,8 +3,28 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   compareVersions,
   runUpgradeMode,
+  shellRefreshCommand,
   type UpgradeModeDeps,
 } from '../src/modes/upgrade-mode.js';
+
+describe('shellRefreshCommand', () => {
+  it.each([
+    ['/bin/zsh', 'rehash'],
+    ['/usr/bin/zsh', 'rehash'],
+    ['/bin/bash', 'hash -r'],
+    ['/usr/bin/dash', 'hash -r'],
+    ['/bin/sh', 'hash -r'],
+    [undefined, 'hash -r'],
+    ['', 'hash -r'],
+    ['/unknown/weird-shell', 'hash -r'],
+  ])('maps %s to %s', (shell, expected) => {
+    expect(shellRefreshCommand(shell)).toBe(expected);
+  });
+
+  it('returns null for fish (auto-rescans PATH)', () => {
+    expect(shellRefreshCommand('/usr/local/bin/fish')).toBeNull();
+  });
+});
 
 describe('compareVersions', () => {
   it.each([
@@ -65,6 +85,42 @@ describe('runUpgradeMode', () => {
     expect(npmCalls).toEqual(['harnext@1.2.3']);
     expect(out.join('\n')).toMatch(/Upgrading.*1\.0\.0.*1\.2\.3/);
     expect(out.join('\n')).toMatch(/Installed harnext@1\.2\.3/);
+  });
+
+  it('prints a shell-refresh hint after a successful install (zsh)', async () => {
+    const { deps, out } = makeDeps({
+      currentVersion: '1.0.0',
+      fetchLatest: async () => '1.2.3',
+      shell: '/bin/zsh',
+    });
+    await runUpgradeMode({}, deps);
+    expect(out.join('\n')).toMatch(/run 'rehash'/);
+  });
+
+  it('prints a shell-refresh hint after a successful install (bash)', async () => {
+    const { deps, out } = makeDeps({
+      currentVersion: '1.0.0',
+      fetchLatest: async () => '1.2.3',
+      shell: '/bin/bash',
+    });
+    await runUpgradeMode({}, deps);
+    expect(out.join('\n')).toMatch(/run 'hash -r'/);
+  });
+
+  it('omits the shell-refresh hint for fish', async () => {
+    const { deps, out } = makeDeps({
+      currentVersion: '1.0.0',
+      fetchLatest: async () => '1.2.3',
+      shell: '/usr/local/bin/fish',
+    });
+    await runUpgradeMode({}, deps);
+    expect(out.join('\n')).not.toMatch(/to refresh it/);
+  });
+
+  it('skips the hint when no install happened', async () => {
+    const { deps, out } = makeDeps({ shell: '/bin/zsh' });
+    await runUpgradeMode({}, deps);
+    expect(out.join('\n')).not.toMatch(/rehash/);
   });
 
   it('does not downgrade when local is ahead of npm latest', async () => {

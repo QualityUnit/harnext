@@ -14,7 +14,8 @@
   },
   "files": [
     "dist",
-    "skills"
+    "skills",
+    "src/code-analysis/prompts"
   ],
   "scripts": {
     "build": "tsup",

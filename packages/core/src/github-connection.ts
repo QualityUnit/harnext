@@ -134,6 +134,26 @@ export function getStageRunner(stage: StageEntry): StageRunner {
 export type StageEntry = NormalStage | ReviewLoopStage;
 
 /**
+ * Stage 0: the mandatory intake step. When a new issue arrives with no
+ * harnext label, *someone* has to tag it with the first real stage's label
+ * so the pipeline can take over. Intake picks who that someone is:
+ *   - `local`: the cron poller auto-labels on its next tick (historical default).
+ *   - `github-actions`: the generated tagger workflow listens for issue events
+ *     and applies the first stage's label. The poller stays out of it, so the
+ *     pipeline can run entirely without a local runner.
+ *
+ * Intake runs no agent, has no prompt, and owns no label of its own — it
+ * only decides *where* the first-label-apply happens. That's why it lives
+ * outside the `stages[]` array (which is strictly agent-running stages).
+ */
+export interface IntakeStage {
+  runner: StageRunner;
+}
+
+/** Default intake shape used when a config is written or loaded without one. */
+export const DEFAULT_INTAKE: IntakeStage = { runner: { kind: 'local' } };
+
+/**
  * Back-compat alias: existing call sites referring to `StageDefinition`
  * continue to work. New code should prefer `NormalStage` or `StageEntry`.
  */
@@ -146,6 +166,13 @@ export interface GithubConnectionConfig {
   pollIntervalMinutes: GithubPollIntervalMinutes;
   /** Optional filter used when selecting which issues the agent picks up. */
   filter: GithubIssueFilter;
+  /**
+   * Stage 0 — the intake runner that pulls fresh issues into the pipeline by
+   * applying the first stage's label. Mandatory. Absent in older configs;
+   * `loadGithubConnection` fills in `DEFAULT_INTAKE` (local) so pre-intake
+   * setups keep their previous behavior.
+   */
+  intake: IntakeStage;
   /**
    * Ordered list of workflow stages. The poller treats `stages[i+1]` as the
    * "next" stage for YOLO chaining, so order matters. Entries are a union of
@@ -201,7 +228,7 @@ export const DEFAULT_STAGES: StageEntry[] = [
     kind: 'normal',
     id: 'plan',
     label: 'harnext:plan',
-    mode: 'human-approval',
+    mode: 'yolo',
     prompt: [
       'Stage: plan.',
       '',
@@ -222,7 +249,7 @@ export const DEFAULT_STAGES: StageEntry[] = [
     kind: 'normal',
     id: 'implement',
     label: 'harnext:implement',
-    mode: 'human-approval',
+    mode: 'yolo',
     prompt: [
       'Stage: implement.',
       '',
@@ -232,21 +259,6 @@ export const DEFAULT_STAGES: StageEntry[] = [
       '"closes #<issue-number>" in the description.',
       '',
       'Do not merge. Do not mark the PR ready-for-review.',
-    ].join('\n'),
-  },
-  {
-    kind: 'normal',
-    id: 'verify',
-    label: 'harnext:verify',
-    mode: 'yolo',
-    prompt: [
-      'Stage: verify.',
-      '',
-      "Check out the pull request branch. Run the project's tests, lint, and",
-      'typecheck. Post a single PR comment with the command exit codes and a',
-      'short excerpt of the failing output (if any). If a check fails and',
-      'the fix is mechanical (formatting, import order, obvious typos),',
-      'commit the fix to the same branch and push.',
     ].join('\n'),
   },
   {
@@ -280,7 +292,22 @@ export const DEFAULT_STAGES: StageEntry[] = [
         'Keep the scope tight: only fix what the review asked for.',
       ].join('\n'),
     },
-    onExit: 'human-approval',
+    onExit: 'yolo',
+  },
+  {
+    kind: 'normal',
+    id: 'verify',
+    label: 'harnext:verify',
+    mode: 'yolo',
+    prompt: [
+      'Stage: verify.',
+      '',
+      "Check out the pull request branch. Run the project's tests, lint, and",
+      'typecheck. Post a single PR comment with the command exit codes and a',
+      'short excerpt of the failing output (if any). If a check fails and',
+      'the fix is mechanical (formatting, import order, obvious typos),',
+      'commit the fix to the same branch and push.',
+    ].join('\n'),
   },
 ];
 
@@ -336,6 +363,18 @@ function isValidReviewLoopStageShape(x: Record<string, unknown>): boolean {
   );
 }
 
+/**
+ * Validate a parsed `intake` object. Absent is allowed (caller fills in
+ * DEFAULT_INTAKE). A present value must carry a valid runner — a bad
+ * runner is rejected rather than silently downgraded to local so the user
+ * sees the typo.
+ */
+function isValidIntake(x: unknown): boolean {
+  if (x === undefined) return true;
+  if (!x || typeof x !== 'object') return false;
+  return isValidStageRunner((x as Record<string, unknown>).runner);
+}
+
 function isValidStageEntry(x: unknown): x is StageEntry {
   if (!x || typeof x !== 'object') return false;
   const s = x as Record<string, unknown>;
@@ -371,6 +410,8 @@ export function loadGithubConnection(cwd: string): GithubConnectionConfig | null
       return null;
     }
 
+    if (!isValidIntake((parsed as { intake?: unknown }).intake)) return null;
+
     // Backfill: configs written before the stages field existed default to
     // DEFAULT_STAGES so existing setups keep working without manual editing.
     // Also normalizes each entry so the `kind` discriminator is always set.
@@ -378,6 +419,14 @@ export function loadGithubConnection(cwd: string): GithubConnectionConfig | null
       Array.isArray(parsed.stages) && parsed.stages.every(isValidStageEntry)
         ? (parsed.stages as StageEntry[]).map(normalizeStageEntry)
         : DEFAULT_STAGES;
+
+    // Backfill: configs written before the intake field existed default to
+    // local — matches the pre-intake behavior where the poller did the
+    // auto-labeling itself.
+    const intake: IntakeStage =
+      parsed.intake && typeof parsed.intake === 'object'
+        ? { runner: (parsed.intake as IntakeStage).runner ?? { kind: 'local' } }
+        : DEFAULT_INTAKE;
 
     const codingAgent: CodingAgentId = isCodingAgentId(parsed.codingAgent)
       ? parsed.codingAgent
@@ -391,6 +440,7 @@ export function loadGithubConnection(cwd: string): GithubConnectionConfig | null
       repo: parsed.repo,
       pollIntervalMinutes: parsed.pollIntervalMinutes as GithubPollIntervalMinutes,
       filter: parsed.filter as GithubIssueFilter,
+      intake,
       stages,
       lastSeenUpdatedAt: typeof parsed.lastSeenUpdatedAt === 'string'
         ? parsed.lastSeenUpdatedAt

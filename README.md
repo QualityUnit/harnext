@@ -22,6 +22,8 @@ harnext
 
 On first run you'll be prompted to pick a provider, paste an API key (stored in `~/.harnext/agent/auth.json`, mode `0600`), and choose a model.
 
+> **Command not found after install?** Your current shell may have cached the old PATH. Run `rehash` (zsh) or `hash -r` (bash), or open a new terminal. New terminals pick up the binary automatically.
+
 ### One-line install script
 
 If you'd rather not invoke `npm` directly:

@@ -1,0 +1,77 @@
+id: tech-stack
+version: 1
+description: >
+  Per-package technology detection. The agent surveys the repo and emits a
+  TechStack JSON at outputPath. Monorepo-aware: emits one entry per
+  workspace plus a root entry covering repo-wide tooling.
+variables:
+  - outputPath
+  - sessionDir
+  - cwd
+  - schemaJson
+prompt: |
+  You are producing a **TechStack inventory** for harnext. harnext will use
+  this inventory to generate tailored stage prompts, risk policies, and
+  check scripts for the coding-agent pipeline that works on issues in this
+  repo.
+
+  Your task, in order:
+
+  1. **Survey the repository.** Use the read/glob/grep/bash tools you
+     already have. Look at package.json / pyproject.toml / Cargo.toml /
+     go.mod files, CI config (.github/workflows, .gitlab-ci.yml, etc.),
+     README files, and any `scripts/` directory. Skim — don't read
+     every file.
+
+  2. **Detect monorepo structure.** The repo is a monorepo iff any of:
+       - `package.json` at cwd has a `"workspaces"` field, OR
+       - a `pnpm-workspace.yaml` exists at cwd, OR
+       - a `Cargo.toml` at cwd has a `[workspace]` section, OR
+       - a `lerna.json` / `nx.json` exists, OR
+       - there are multiple independent `package.json` / `pyproject.toml`
+         / `Cargo.toml` files under obvious subdirs (`packages/`, `apps/`,
+         `crates/`, `services/`, etc.).
+     When monorepo: emit one `PackageTech` entry per workspace package.
+     When single-package: emit `root` only and leave `packages` as `[]`.
+
+  3. **Emit exact commands.** For each package, the `testCommand`,
+     `lintCommand`, `buildCommand`, and `typecheckCommand` must be the
+     **literal shell command a maintainer would run** from that package
+     (or from the repo root for the root entry). If you can't find the
+     command in package.json / Makefile / pyproject / CI config, emit
+     `null`. **Never guess.** Guessed commands wreck later stages.
+
+  4. **Write the JSON file.** Write a single JSON file at **exactly**
+     this path, with the shape documented below. Do not write anywhere
+     else. The session scratch directory at `{{sessionDir}}` is yours
+     for any intermediate files you want to keep for later stages.
+
+     Output path:
+       {{outputPath}}
+
+     Repository root (cwd):
+       {{cwd}}
+
+  5. **Required shape:**
+
+     {{schemaJson}}
+
+  6. **Rules of thumb:**
+       - `language`: free-form but be specific ("TypeScript", "Python",
+         "Go", "Rust", "Kotlin"). Pick the dominant language per package.
+       - `framework`: only set when there's a clearly dominant one
+         ("Next.js", "Django", "FastAPI", "Spring Boot"). Otherwise
+         `null`. Don't pack multiple frameworks in one string.
+       - `hasUI`: true iff the package serves a browser-facing UI
+         (storefront, admin panel, marketing site). API-only servers
+         are false. CLI tools are false.
+       - `notes`: 40–200 chars of what a reviewer would want to know
+         about this package (architecture, gotchas, pointers).
+       - `conventions`: repo-wide rules at the top level only (imports,
+         naming, error handling, formatters). Keep bullets short.
+       - `ciProvider`: infer from `.github/workflows/`, `.gitlab-ci.yml`,
+         `.circleci/`, `azure-pipelines.yml`, etc.
+
+  7. **Do not return structured data in chat.** The tmp file is the
+     handshake — your chat output is ignored. Just write the JSON and
+     finish.

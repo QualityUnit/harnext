@@ -325,6 +325,35 @@ export async function detectOpenedPr(
  * carry their prompts under `.review.prompt` / `.fix.prompt`) can reuse the
  * same context composition without needing a full `NormalStage` shell.
  */
+/**
+ * Resolve `$ISSUE_NUMBER` / `${ISSUE_NUMBER}` / `$PR_NUMBER` /
+ * `${PR_NUMBER}` placeholders in a stage prompt to the actual item
+ * number as a plain-text replacement.
+ *
+ * Why: stage prompts are authored as human-readable Markdown with
+ * shell-style placeholders. When the poller runs the external agent
+ * (claude/codex) directly via `argv`, there is no shell to expand
+ * `$VAR`, and `composeStagePrompt` does not inject an env block the
+ * agent's Bash tool can reach. Every local run therefore hit the
+ * same trap the GHA path hit — the agent saw `gh pr checkout
+ * $PR_NUMBER` literal text and either skipped the call or ran it
+ * against nothing.
+ *
+ * The GHA path has its own sibling helper
+ * (`substituteIssueNumberPlaceholders` in workflow-prompts.ts) that
+ * swaps in a GitHub Actions expression instead of a plain number —
+ * the same regex, different replacement. Two helpers rather than one
+ * to keep each site's substitution self-documenting.
+ */
+function substituteItemNumberPlaceholders(prompt: string, number: number): string {
+  const n = String(number);
+  return prompt
+    .replace(/\$\{ISSUE_NUMBER\}/g, n)
+    .replace(/\$ISSUE_NUMBER\b/g, n)
+    .replace(/\$\{PR_NUMBER\}/g, n)
+    .replace(/\$PR_NUMBER\b/g, n);
+}
+
 export function composeStagePrompt(
   promptText: string,
   item: GithubIssueItem,
@@ -352,7 +381,7 @@ export function composeStagePrompt(
     item.body && item.body.trim().length > 0 ? item.body : '(empty)',
   ].join('\n');
 
-  return [promptText, '', context].join('\n');
+  return [substituteItemNumberPlaceholders(promptText, item.number), '', context].join('\n');
 }
 
 export function buildStagePrompt(
@@ -981,7 +1010,14 @@ export async function runPollTick(
     // sitting unclassified. Without this guard, every tick after a chain
     // completes would re-add the first-stage label and restart the pipeline
     // in an infinite loop.
-    if (!stage && !isPullRequest(item) && cfg.stages.length > 0) {
+    //
+    // Intake gate: when `cfg.intake.runner.kind === 'github-actions'` the
+    // generated tagger workflow is the sole writer for the first-stage
+    // label on new issues. The poller must not race it — two writers on the
+    // same boundary produce duplicate runs. So we skip auto-entry entirely
+    // and only pick up items that already carry a stage label.
+    const intakeRunsLocally = cfg.intake.runner.kind === 'local';
+    if (intakeRunsLocally && !stage && !isPullRequest(item) && cfg.stages.length > 0) {
       const labelSet = new Set(item.labels.map((l) => l.name));
       const parkedOnControlLabel =
         labelSet.has(AWAITING_APPROVAL_LABEL) || labelSet.has(NEEDS_JUDGMENT_LABEL);

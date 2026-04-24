@@ -1,0 +1,151 @@
+id: stage-prompts
+version: 1
+description: >
+  Generate tailored prompts for every pipeline stage the wizard will
+  configure. The agent emits a single JSON map keyed by stage id so
+  prompts stay consistent in tone and can reference each other.
+variables:
+  - outputPath
+  - techStackJson
+  - stageLines
+  - sessionDir
+  - cwd
+prompt: |
+  You are generating **stage prompts** for harnext — the pipeline that
+  processes GitHub issues on this repo. Each stage is a single run of
+  the coding agent; the prompts you write are what the agent sees when
+  that stage fires.
+
+  Tailor each prompt to this codebase using the TechStack below.
+  Reference the exact `testCommand` / `lintCommand` / `buildCommand` /
+  `typecheckCommand` when relevant. Mention the monorepo package paths
+  when appropriate. Keep prompts tight — aim for 8–20 lines each, no
+  filler. Write in the imperative ("Read the issue body…"), not the
+  descriptive.
+
+  Stage-by-stage guidance:
+    - triage    : no code changes. Post one GitHub comment classifying
+                  the issue (severity, scope, ready-to-plan).
+    - plan      : no code changes. Post one GitHub comment with an
+                  implementation plan (summary, files to change,
+                  approach, risks, test plan).
+    - implement : create a branch `issue/<num>-<slug>`, make the
+                  changes, open a DRAFT PR that closes the issue. Do
+                  not merge.
+    - verify    : check out the PR branch, run tests / lint /
+                  typecheck, post one PR comment with exit codes.
+                  Commit mechanical fixes only.
+                  The prompt MUST instruct the agent to post a
+                  stub "running" comment to the PR before any
+                  gates/browser work begins (capture its id via
+                  `gh api -X POST .../issues/<pr>/comments -q .id`)
+                  and to UPDATE that comment in place at the end
+                  (`gh api -X PATCH .../issues/comments/<id>
+                  --field body=@<path>`). Do NOT create a second
+                  comment on completion. This makes in-flight
+                  runs visible on the PR and keeps the discussion
+                  tidy — a verify run is 10–15 min and without
+                  this pattern the PR looks idle the whole time.
+                  **UI verification is MANDATORY** when any
+                  TechStack package has `hasUI: true` AND the PR
+                  diff (`gh pr diff --name-only`) touches a file
+                  under one of those packages' paths. The verify
+                  prompt MUST state this as a hard requirement
+                  with NO escape hatch. Specifically:
+                    1. The prompt MUST name the bundled
+                       `browser-verify` skill as the sole
+                       mechanism — not "preferred" with a
+                       fallback. The skill is pre-installed.
+                    2. The prompt MUST forbid these excuses
+                       verbatim: "requires authenticated
+                       workspace", "skipped: tool missing",
+                       "change is too small/trivial to test",
+                       "no reproduction available". When the
+                       app redirects to `/sign-in`, `/login`, or
+                       `/auth`, the prompt MUST tell the agent
+                       to log in with the init skill's documented
+                       test user (read it from
+                       `.claude/skills/init/SKILL.md`) before
+                       asserting — NOT accept the sign-in page
+                       as the scenario's end state. A run that
+                       ends on `/sign-in` and "passes" is a
+                       failure masquerading as a pass.
+                    3. The prompt MUST frame the scenario as
+                       verifying that the fix actually delivers
+                       what the LINKED ISSUE asked for — not as
+                       a health check. Explicitly:
+                         - Find the linked issue from `Closes #N`
+                           / `Fixes #N` in the PR body (fallback:
+                           `gh pr view <PR> --json closingIssuesReferences`)
+                           and read it.
+                         - Derive the assertion from the issue's
+                           behavior description + the PR diff
+                           (which DOM element, CSS class, route,
+                           or API call the change touches).
+                         - Forbid generic "body is visible" /
+                           "content length > 0" / "no crash"
+                           assertions. An assertion is acceptable
+                           only if it would FAIL on `origin/main`
+                           (pre-fix) and PASS on the PR branch —
+                           that contrast IS the point of verify.
+                       Skipping is never acceptable on a
+                       UI-touching PR.
+                    4. The prompt MUST tell the agent to copy
+                       the four artifacts (video, HAR, trace,
+                       final screenshot) out of the ephemeral
+                       worktree into `~/harnext-artifacts/<runId>/`
+                       — a NON-HIDDEN path. Do NOT use
+                       `~/.harnext/artifacts/...`: snap-confined
+                       viewers (VLC snap, Firefox snap) can't
+                       open files under dot-directories, so the
+                       PR comment's cited paths must resolve.
+                       The prompt MUST also instruct the agent
+                       to run ffmpeg (libx264, veryfast, crf 23)
+                       as a fallback to convert `recording.webm`
+                       → `recording.mp4` if the skill didn't
+                       already produce an mp4 — Playwright's
+                       webm has stream-level `duration=N/A`
+                       which the VLC snap refuses to play. The
+                       final PR comment cites whichever file
+                       actually exists on disk (`.mp4` when
+                       conversion succeeded, `.webm` only as
+                       fallback).
+                    5. The prompt MUST FAIL the stage on any of:
+                       non-zero exit from the skill, a new
+                       `pageErrors` entry (vs. main), a failing
+                       scenario assertion, OR the final
+                       scenario URL matching `/sign-in|/login|/auth`
+                       without an explicit login step earlier
+                       in the scenario (redirect to auth means
+                       the assertions ran against the wrong
+                       page).
+                  For PRs that do NOT touch a UI path, skip
+                  browser work — tests/lint/typecheck are enough.
+                  The `chrome-devtools` MCP fallback is retired:
+                  do not mention it. `browser-verify` handles
+                  all cases it previously covered.
+    - review    : `review` = post one PR review (approve / request
+                  changes / comment).
+                  `fix`    = address a changes_requested review by
+                  editing the branch.
+
+  TechStack:
+
+  {{techStackJson}}
+
+  Write a single JSON file at **exactly** this path:
+
+    {{outputPath}}
+
+  Shape:
+
+  {
+  {{stageLines}}
+  }
+
+  Include only the stage ids listed above. No extra keys. No markdown.
+  No comments. After writing the file, reply with one short sentence
+  confirming the path.
+
+  Session scratch dir (intermediate notes if needed): {{sessionDir}}
+  Repository root (cwd): {{cwd}}
