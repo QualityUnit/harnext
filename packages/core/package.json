@@ -1,6 +1,6 @@
 {
   "name": "@harnext/core",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Core library for harnext AI coding agent (bundled into the harnext CLI; not published separately).",
   "private": true,
   "type": "module",
