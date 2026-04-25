@@ -1,9 +1,51 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const APP_NAME = 'harnext';
-export const VERSION = '0.1.0';
+
+/**
+ * Resolve the running package's version from its package.json. Walking up from
+ * `import.meta.url` covers both layouts the constant is read in:
+ *
+ *   - npm-published CLI: `<install>/dist/index.js` → `<install>/package.json`
+ *     (the bundled CLI's package.json — `harnext`).
+ *   - core run from source (tests, vitest): `<core>/src/config.ts` →
+ *     `<core>/package.json` (`@harnext/core`).
+ *
+ * The previous implementation hardcoded "0.1.0" and silently drifted from the
+ * package version every release. Reading at runtime keeps a single source of
+ * truth.
+ */
+function resolveVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      join(here, '..', 'package.json'),
+      join(here, '..', '..', 'package.json'),
+    ];
+    for (const path of candidates) {
+      try {
+        const pkg = JSON.parse(readFileSync(path, 'utf-8')) as {
+          name?: string;
+          version?: string;
+        };
+        if ((pkg.name === 'harnext' || pkg.name === '@harnext/core') && pkg.version) {
+          return pkg.version;
+        }
+      } catch {
+        // Try the next candidate.
+      }
+    }
+  } catch {
+    // Fall through to the placeholder.
+  }
+  return '0.0.0';
+}
+
+export const VERSION = resolveVersion();
 export const CONFIG_DIR_NAME = '.harnext';
 
 /** Project-hash length used for deriving per-project state dirs. */
