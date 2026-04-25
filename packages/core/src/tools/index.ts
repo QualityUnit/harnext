@@ -23,6 +23,11 @@ export {
   createWriteTool,
 } from './write.js';
 export {
+  type SkillToolDetails,
+  type SkillToolInput,
+  createSkillTool,
+} from './skill.js';
+export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,

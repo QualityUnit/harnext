@@ -25,9 +25,9 @@ import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { seedBuiltinSkills } from './seed.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
-import { createCodingTools, type Tool } from './tools/index.js';
+import { createCodingTools, createSkillTool, type Tool } from './tools/index.js';
 
-export { createCodingTools, createAllTools, createBashTool, createReadTool, createEditTool, createWriteTool } from './tools/index.js';
+export { createCodingTools, createAllTools, createBashTool, createReadTool, createEditTool, createWriteTool, createSkillTool } from './tools/index.js';
 
 export interface CreateAgentSessionOptions {
   /** LLM provider name */
@@ -205,6 +205,14 @@ export async function createAgentSession(
       }
     }
     skills = loaded;
+  }
+
+  // Register the `skill` tool whenever any model-invocable skill is available.
+  // This gives the model an explicit affordance for "invoke a skill" — without
+  // it, models tend to hallucinate the skill name as a tool call.
+  const visibleSkills = skills.filter((s) => !s.disableModelInvocation);
+  if (visibleSkills.length > 0 && !tools.some((t) => t.name === 'skill')) {
+    tools.push(createSkillTool(() => skills));
   }
 
   // Build system prompt
