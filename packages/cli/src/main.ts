@@ -12,16 +12,13 @@ import { parseArgs } from './cli/args.js';
 import { runConnectGithubCommand } from './cli/github-prompt.js';
 import { ensureAuth } from './cli/onboarding.js';
 import {
-  appendGithubPollTick,
   appendHeartbeatTick,
   createAgentSession,
   getProviderById,
-  loadGithubConnection,
   loadHeartbeatConfig,
   loadPreferences,
 } from '@harnext/core';
 import {
-  runGithubPollMode,
   runHeartbeatMode,
   runInteractiveMode,
   runMcpMode,
@@ -53,11 +50,6 @@ export async function main(argv: string[]): Promise<void> {
       args.heartbeatName,
       args.thinkingLevel as ThinkingLevel,
     );
-    process.exit(exitCode);
-  }
-
-  if (args.mode === 'github-poll') {
-    const exitCode = await runGithubPoll(args.cwd, args.thinkingLevel as ThinkingLevel);
     process.exit(exitCode);
   }
 
@@ -179,66 +171,3 @@ async function runHeartbeat(
   }
 }
 
-/**
- * Cron entry point for the GitHub issue poller. Same unattended-failure
- * discipline as runHeartbeat: no prompt for auth, any failure is captured
- * as a tick log record and surfaced via exit code. Each item processed in
- * the tick runs inside its own git worktree — the session is rebuilt per
- * item with the worktree cwd — so the user's live checkout is never edited.
- */
-async function runGithubPoll(cwd: string, thinkingLevel: ThinkingLevel): Promise<number> {
-  const config = loadGithubConnection(cwd);
-  if (!config) {
-    appendGithubPollTick(cwd, {
-      ts: new Date().toISOString(),
-      itemNumber: -1,
-      itemKind: 'issue',
-      stageId: '(no-config)',
-      stageLabel: '',
-      mode: 'yolo',
-      exit: 1,
-      durationMs: 0,
-      output: '',
-      error: `no github connection config (run /connect-github first)`,
-    });
-    return 1;
-  }
-
-  // Only the in-process harnext agent needs provider/model resolution —
-  // external coding agents pick up their own model from config.codingAgentModel.
-  const prefs = loadPreferences();
-  const resolvedProvider = prefs.defaultProvider ?? FALLBACK_PROVIDER;
-  const resolvedModel =
-    prefs.defaultModels?.[resolvedProvider] ??
-    getProviderById(resolvedProvider)?.defaultModel ??
-    FALLBACK_MODEL;
-
-  try {
-    return await runGithubPollMode({
-      cwd,
-      config,
-      session:
-        config.codingAgent === 'harnext'
-          ? {
-              provider: resolvedProvider,
-              modelId: resolvedModel,
-              thinkingLevel,
-            }
-          : undefined,
-    });
-  } catch (err) {
-    appendGithubPollTick(cwd, {
-      ts: new Date().toISOString(),
-      itemNumber: -1,
-      itemKind: 'issue',
-      stageId: '(session-error)',
-      stageLabel: '',
-      mode: 'yolo',
-      exit: 1,
-      durationMs: 0,
-      output: '',
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return 1;
-  }
-}

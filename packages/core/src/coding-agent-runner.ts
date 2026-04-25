@@ -1,7 +1,7 @@
 /**
  * Drives an external coding-agent CLI (claude-code, codex) as a one-shot
- * subprocess and maps the result into the shape the GitHub poller already
- * expects from the in-process harnext runtime.
+ * subprocess and maps the result into a shape parallel to the in-process
+ * harnext runtime so callers can treat them uniformly.
  *
  * The binary, model flag, and argv shape come from {@link CodingAgentSpec};
  * the spawner is injected so tests can stub it without touching real CLIs.
@@ -10,25 +10,46 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 
 import type { CodingAgentSpec } from './coding-agents.js';
-import type { AgentRunLogEvent, AgentRunResult } from './github-poller.js';
 
 /**
- * Historical 30-minute cap — retained for back-compat. It is NOT applied
- * by default anymore: the poller's lockfile is the real serializer (see
- * `acquireLock` — atomic O_EXCL create + PID liveness check), so a
- * long-running tick naturally blocks subsequent cron ticks from starting
- * new work rather than getting SIGTERM'd mid-run.
- *
- * Live regression that drove this change: flowhunt PR #5339's verify
- * tick hit exactly 1,800,481 ms (= `30 * 60 * 1000` + rounding) and the
- * default timer SIGTERM'd the claude child right after it had posted
- * the PASS comment but before the poller could transition the label.
- * Every subsequent cron tick then saw the stale `harnext:verify` label
- * and re-ran the whole 30-minute sequence.
- *
- * Callers who genuinely need a wall-clock ceiling (tests exercising the
- * timeout path, paranoid CI usage) can still pass `timeoutMs` on the
- * options bag — opt-in, not default-on.
+ * Snapshot of a single relevant event emitted during one agent run. We
+ * intentionally flatten so a persisted log file is readable without
+ * pulling in pi-agent-core types on the reader side.
+ */
+export interface AgentRunLogEvent {
+  ts: string;
+  type:
+    | 'message_start'
+    | 'message_end'
+    | 'tool_execution_start'
+    | 'tool_execution_end'
+    | 'turn_end';
+  /** Free-form so we can carry upstream message roles (incl. "toolResult") without a type crosscut. */
+  role?: string;
+  text?: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolInput?: unknown;
+  toolOutput?: string;
+  isError?: boolean;
+}
+
+export interface AgentRunResult {
+  exit: number;
+  durationMs: number;
+  output: string;
+  error?: string;
+  /** Optional structured transcript of the run, when the runner produces one. */
+  events?: AgentRunLogEvent[];
+}
+
+/**
+ * Historical 30-minute cap retained for back-compat with tests that pin
+ * to a specific timeout. Not applied by default — concurrency is now
+ * handled by GitHub Actions' per-job locking when stages run in
+ * workflows, so we no longer enforce a wall-clock kill on the agent
+ * subprocess. Callers that genuinely need a ceiling can pass `timeoutMs`
+ * explicitly.
  */
 export const DEFAULT_EXTERNAL_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
@@ -51,9 +72,8 @@ export interface RunExternalCodingAgentOptions {
   maxTurns?: number;
   /**
    * Optional wall-clock SIGTERM deadline for the child. When unset (or
-   * zero), the child runs as long as it needs — the poller's lockfile
-   * prevents overlapping ticks, so we don't force-kill mid-run. Tests
-   * that exercise the timeout path still pass a small explicit value.
+   * zero), the child runs as long as it needs. Tests that exercise the
+   * timeout path still pass a small explicit value.
    */
   timeoutMs?: number;
   /** Override for tests. Defaults to node:child_process `spawn`. */
@@ -131,9 +151,9 @@ export function buildExternalAgentArgv(
 }
 
 /**
- * Run an external coding agent against a prompt and return the poller-shaped
- * result. stdout is treated as the agent's assistant output; stderr is
- * folded into `error` when the exit code is non-zero.
+ * Run an external coding agent against a prompt and return a uniform
+ * result shape. stdout is treated as the agent's assistant output; stderr
+ * is folded into `error` when the exit code is non-zero.
  */
 export async function runExternalCodingAgent(
   spec: CodingAgentSpec,
@@ -141,10 +161,6 @@ export async function runExternalCodingAgent(
   opts: RunExternalCodingAgentOptions,
 ): Promise<AgentRunResult> {
   const startedAt = Date.now();
-  // Opt-in timeout: a missing or zero `timeoutMs` means "let it run".
-  // The poller's lockfile serializes concurrent ticks, so we don't
-  // need a wall-clock ceiling here to prevent overlap — a long tick
-  // just blocks subsequent cron ticks until the child exits.
   const timeoutMs =
     opts.timeoutMs !== undefined && opts.timeoutMs > 0 ? opts.timeoutMs : 0;
   const spawner = opts.spawner ?? (spawn as unknown as ExternalAgentSpawner);

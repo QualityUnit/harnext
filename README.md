@@ -1,6 +1,6 @@
 # harnext
 
-An AI coding agent with harness engineering. `harnext` is an interactive terminal agent that can read, write, and edit files, run shell commands, drive MCP servers, and pick up GitHub issues on a cron-driven schedule.
+An AI coding agent with harness engineering. `harnext` is an interactive terminal agent that can read, write, and edit files, run shell commands, drive MCP servers, and pick up GitHub issues through generated GitHub Actions workflows (run on either GitHub-hosted runners or a self-hosted runner registered against your PC).
 
 It works with Anthropic, OpenAI, Google, Ollama, and 20+ other providers via [`pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai).
 

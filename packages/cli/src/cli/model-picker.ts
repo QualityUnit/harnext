@@ -5,10 +5,12 @@ import type { KnownProvider, Model } from '@mariozechner/pi-ai';
 import chalk from 'chalk';
 
 import {
+  buildNvidiaModel,
   buildOllamaModel,
   DEFAULT_OLLAMA_BASE_URL,
   getProviderConfig,
   getStoredKey,
+  listNvidiaModels,
   listOllamaModels,
   normalizeOllamaBaseUrl,
   PROVIDERS,
@@ -39,6 +41,10 @@ export async function pickModel(): Promise<ModelPickerResult | undefined> {
 
   const hasKey = await ensureProviderKey(provider);
   if (!hasKey) return undefined;
+
+  if (provider.id === 'nvidia') {
+    return pickNvidiaModel(provider);
+  }
 
   const model = await selectModel(provider);
   if (!model) return undefined;
@@ -94,6 +100,38 @@ export async function selectModel(provider: ProviderInfo): Promise<Model<string>
   });
 
   return select(items, { title: `Select a model (${provider.name})`, pageSize: 15 });
+}
+
+// ── NVIDIA NIM flow (custom model list, fixed remote base URL) ───────
+
+async function pickNvidiaModel(provider: ProviderInfo): Promise<ModelPickerResult | undefined> {
+  const apiKey = process.env[provider.envVar] ?? getStoredKey(provider.id);
+  if (!apiKey) {
+    console.log(chalk.red(`  No API key configured for ${provider.name}.`));
+    return undefined;
+  }
+  let modelIds: string[];
+  try {
+    const summaries = await listNvidiaModels(apiKey);
+    modelIds = summaries.map((s) => s.id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`  Could not fetch NVIDIA model list: ${message}`));
+    return undefined;
+  }
+  if (modelIds.length === 0) {
+    console.log(chalk.yellow(`  ${provider.name} returned no models for this key.`));
+    return undefined;
+  }
+  const picked = await select(
+    modelIds.map((id) => ({ label: id, value: id })),
+    { title: `Select a model (${provider.name})`, pageSize: 15 },
+  );
+  if (!picked) return undefined;
+  return {
+    provider: provider.id,
+    model: buildNvidiaModel(picked) as Model<string>,
+  };
 }
 
 // ── Local provider flow (ollama) ─────────────────────────────────────

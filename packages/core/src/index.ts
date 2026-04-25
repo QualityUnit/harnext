@@ -70,6 +70,7 @@ export {
 } from './workflow-prompts.js';
 
 export {
+  deriveFixWorkflowPath,
   generateStageWorkflow,
   type GenerateStageWorkflowInput,
   type GenerateStageWorkflowResult,
@@ -157,9 +158,12 @@ export {
   DEFAULT_STAGES,
   AWAITING_APPROVAL_LABEL,
   NEEDS_JUDGMENT_LABEL,
+  defaultStageWorkflowPath,
   getGithubConfigPath,
   getStageRunner,
+  getStageTrigger,
   loadGithubConnection,
+  migrateLegacyStageRunner,
   saveGithubConnection,
   deleteGithubConnection,
   runGh,
@@ -174,16 +178,15 @@ export {
   type GithubConnectionConfig,
   type GithubPollIntervalMinutes,
   type GithubIssueFilter,
-  type GithubActionsRunner,
   type IntakeStage,
-  type LocalRunner,
   type NormalStage,
   type ReviewLoopStage,
+  type RunsOn,
   type StageDefinition,
   type StageEntry,
   type StageMode,
   type StageRunner,
-  type StageRunnerKind,
+  type StageTrigger,
   type GhResult,
   type GhCommandOk,
   type GhCommandError,
@@ -192,51 +195,41 @@ export {
 } from './github-connection.js';
 
 export {
-  MAX_STAGE_CHAIN,
-  GITHUB_POLL_LOG_FILE,
-  GITHUB_POLL_LOCK_FILE,
+  PINNED_RUNNER_VERSION,
+  buildArchiveName,
+  buildTarballUrl,
+  checkPublicRepoApprovalGate,
+  defaultRunnerLabels,
+  defaultRunnerName,
+  deregisterRunner,
+  getRemoteRunnerStatus,
+  getRunnerInstallDir,
+  getRunnerMetadataPath,
+  installRunner,
+  installRunnerService,
+  loadRunnerMetadata,
+  registerRunner,
+  tryLoadRunnerMetadata,
+  type PublicRepoGate,
+  type RegisterRunnerOptions,
+  type RemoteRunnerStatus,
+  type RunnerArch,
+  type RunnerMetadata,
+  type RunnerPlatform,
+  type RunnerRelease,
+  type SelfHostedRunnerShims,
+} from './self-hosted-runner.js';
+
+export {
   GITHUB_RUNS_DIR_NAME,
-  DEFAULT_RUN_LOG_RETENTION_DAYS,
-  getGithubPollPaths,
-  getGithubPollCronTag,
   getGithubRunsDir,
-  fetchUpdatedIssues,
-  detectStageForItem,
-  detectStageEntryForItem,
-  passesFilter,
-  isPullRequest,
-  buildStagePrompt,
-  composeStagePrompt,
-  transitionLabels,
-  refetchItem,
-  fetchLatestReviewVerdict,
-  detectOpenedPr,
-  type DetectOpenedPrInput,
-  type DetectOpenedPrResult,
-  type DetectOpenedPrVia,
-  type DetectOpenedPrIO,
-  type ReviewVerdict,
-  appendGithubPollTick,
-  writeAgentRunLog,
-  pruneAgentRunLogs,
-  acquireLock,
-  releaseLock,
-  buildGithubPollCronLine,
-  runPollTick,
-  persistPointer,
-  stringifyConnectionForSave,
-  type GithubIssueItem,
-  type StageTickRecord,
-  type GithubPollPaths,
-  type LockHandle,
-  type AgentRunResult,
-  type AgentRunLogEvent,
   type AgentRunLogRecord,
-  type PollTickIO,
-  type PollTickResult,
-  type GithubPollCronLineOptions,
-  type RunAgentOptions,
-} from './github-poller.js';
+} from './run-replay.js';
+
+export {
+  type AgentRunLogEvent,
+  type AgentRunResult,
+} from './coding-agent-runner.js';
 
 export {
   listAgentRunLogs,
@@ -320,6 +313,14 @@ export {
   DEFAULT_OLLAMA_BASE_URL,
   type OllamaModelSummary,
 } from './ollama.js';
+
+export {
+  NVIDIA_BASE_URL,
+  NVIDIA_DEFAULT_MODEL,
+  buildNvidiaModel,
+  listNvidiaModels,
+  type NvidiaModelSummary,
+} from './nvidia.js';
 
 export {
   loadPreferences,

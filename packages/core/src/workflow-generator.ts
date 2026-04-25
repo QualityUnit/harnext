@@ -16,7 +16,8 @@ import { isAbsolute, join } from 'node:path';
 import { getCodingAgentSpec } from './coding-agents.js';
 import { CODE_ANALYSIS_MAX_TURNS } from './code-analysis/run-coding-agent.js';
 import { runExternalCodingAgent, type ExternalAgentSpawner } from './coding-agent-runner.js';
-import type { GithubConnectionConfig, StageEntry } from './github-connection.js';
+import { getStageRunner, type GithubConnectionConfig, type StageEntry } from './github-connection.js';
+import { defaultRunnerLabels } from './self-hosted-runner.js';
 import { createAgentSession } from './sdk.js';
 import { toStageWorkflowStage, WORKFLOW_PROMPT_BUNDLES } from './workflow-prompts.js';
 import type { StageWorkflowInput } from './workflow-prompts.js';
@@ -48,8 +49,24 @@ export interface GenerateStageWorkflowInput {
    * for the full rationale.
    */
   nextWorkflowFilename?: string;
-  /** GHA trigger — `issues`, `pull_request`, or `both` (safe default). */
-  triggerOn: 'issues' | 'pull_request' | 'both';
+  /** GHA trigger spec. See `StageWorkflowInput.triggerOn`. */
+  triggerOn: 'issues' | 'pull_request' | 'both' | 'pr-merged';
+  /**
+   * For review-loop stages, indicates which workflow file is being
+   * generated. The wizard generates two workflows per review-loop stage
+   * (review entry + fix companion). Must be set when `stage.kind ===
+   * 'review-loop'`; ignored otherwise.
+   */
+  phase?: 'review' | 'fix';
+  /**
+   * Filename (basename) of the companion workflow in a review-loop pair.
+   * Required when `phase` is set:
+   *  - phase='review' → companion is the fix workflow this review
+   *    workflow dispatches when the verdict is changes_requested.
+   *  - phase='fix'    → companion is the review workflow this fix
+   *    workflow dispatches after pushing fixup commits.
+   */
+  companionWorkflowFilename?: string;
   /** Override for tests — skips the real `claude`/`codex` subprocess. */
   spawner?: ExternalAgentSpawner;
   /**
@@ -90,6 +107,11 @@ export async function generateStageWorkflow(
     );
   }
 
+  const runner = getStageRunner(input.stage);
+  const runsOnYaml =
+    runner.runsOn === 'self-hosted'
+      ? `[${defaultRunnerLabels(input.cwd).map((l) => `'${l}'`).join(', ')}]`
+      : 'ubuntu-latest';
   const promptInput: StageWorkflowInput = {
     stage: toStageWorkflowStage(input.stage),
     repo: input.cfg.repo,
@@ -101,6 +123,9 @@ export async function generateStageWorkflow(
     codingAgent: input.cfg.codingAgent,
     codingAgentModel: input.cfg.codingAgentModel,
     workflowPath,
+    runsOnYaml,
+    phase: input.phase,
+    companionWorkflowFilename: input.companionWorkflowFilename,
   };
   const promptSent = bundle.buildGeneratorPrompt(promptInput);
 
@@ -185,4 +210,18 @@ export async function generateStageWorkflow(
   }
 
   return { workflowPath, agentOutput, wroteFile, promptSent, workflowContent, error };
+}
+
+/**
+ * Derive the fix workflow path from a review workflow path. Convention:
+ * `<dir>/<basename-without-ext>-fix.<ext>`. Used by the wizard so the
+ * pair is always named consistently and tests can predict the fix path
+ * without a second user prompt.
+ */
+export function deriveFixWorkflowPath(reviewWorkflowPath: string): string {
+  const dotIdx = reviewWorkflowPath.lastIndexOf('.');
+  if (dotIdx < 0) return `${reviewWorkflowPath}-fix`;
+  const base = reviewWorkflowPath.slice(0, dotIdx);
+  const ext = reviewWorkflowPath.slice(dotIdx);
+  return `${base}-fix${ext}`;
 }

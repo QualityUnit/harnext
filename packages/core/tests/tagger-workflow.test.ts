@@ -16,43 +16,21 @@ function firstStage(overrides: Partial<StageEntry> = {}): StageEntry {
 }
 
 describe('buildTaggerWorkflow', () => {
-  it('emits a dispatch step + actions:write when the first stage runs on github-actions', () => {
-    // Live observation: on flowhunt's urlslab-app setup, the tagger
-    // applied `harnext:triage` via GITHUB_TOKEN, the triage workflow
-    // was supposed to fire on `issues.labeled`, and it stayed silent
-    // because GitHub suppresses the `labeled` event for that actor.
-    // The fix is an explicit `gh workflow run` on the first stage.
+  it('always emits a dispatch step + actions:write (every stage is a workflow now)', () => {
+    // Live observation that originally drove the dispatch step: on
+    // flowhunt's urlslab-app setup, the tagger applied `harnext:triage`
+    // via GITHUB_TOKEN, the triage workflow was supposed to fire on
+    // `issues.labeled`, and it stayed silent because GitHub suppresses
+    // the `labeled` event for that actor. Every stage runs in a
+    // workflow now, so the dispatch is always required.
     const yaml = buildTaggerWorkflow({
-      firstStage: firstStage({
-        runner: {
-          kind: 'github-actions',
-          workflowPath: '.github/workflows/harnext-triage.yml',
-          origin: 'generated',
-        },
-      }),
+      firstStage: firstStage(),
       filter: { kind: 'none' },
     });
     expect(yaml).toContain('Dispatch first-stage workflow');
     expect(yaml).toContain('gh workflow run "harnext-triage.yml"');
     expect(yaml).toContain('--field issue_number=');
-    // `actions: write` is required for cross-workflow dispatch; we
-    // only grant it in the GHA-first-stage case to keep the token
-    // footprint minimal when it's not needed.
     expect(yaml).toContain('actions: write');
-  });
-
-  it('omits the dispatch step (and actions:write) when the first stage runs locally', () => {
-    // Local first stage = cron poller handles the label-to-run
-    // transition; the tagger just applies the label and stops. No
-    // cross-workflow dispatch needed, so we keep the permissions
-    // narrow (no `actions: write`).
-    const yaml = buildTaggerWorkflow({
-      firstStage: firstStage(), // no runner → getStageRunner → local
-      filter: { kind: 'none' },
-    });
-    expect(yaml).not.toContain('Dispatch first-stage workflow');
-    expect(yaml).not.toContain('gh workflow run');
-    expect(yaml).not.toContain('actions: write');
   });
 
   it('computes the dispatch target filename from the stage id (not the runner workflowPath)', () => {
@@ -68,9 +46,9 @@ describe('buildTaggerWorkflow', () => {
         id: 'custom-gate',
         label: 'harnext:custom-gate',
         runner: {
-          kind: 'github-actions',
           workflowPath: '.github/workflows/some-custom-file.yml',
           origin: 'connected',
+          runsOn: 'github-hosted',
         },
       } as StageEntry,
       filter: { kind: 'none' },

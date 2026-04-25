@@ -7,30 +7,32 @@ import {
   AWAITING_APPROVAL_LABEL,
   DEFAULT_INTAKE,
   DEFAULT_STAGES,
-  GITHUB_POLL_INTERVAL_PRESETS,
   NEEDS_JUDGMENT_LABEL,
-  buildCronSchedule,
-  buildGithubPollCronLine,
   buildHarnextLabelSpecs,
+  checkPublicRepoApprovalGate,
+  defaultStageWorkflowPath,
   deleteGithubConnection,
+  deregisterRunner,
+  deriveFixWorkflowPath,
   ensureRepoLabels,
-  findCronLine,
   generateStageWorkflow,
   getCodingAgentSpec,
   getGithubConfigPath,
-  getGithubPollCronTag,
   getRepoFromCwd,
   getStageRunner,
+  getStageTrigger,
   getTechStackPath,
-  installCronLine,
+  installRunner,
+  installRunnerService,
   listCodingAgents,
   listRepoAssignableUsers,
   listRepoLabels,
   loadGithubConnection,
   loadTechStack,
-  removeCronLine,
+  registerRunner,
   runCodeAnalysisPipeline,
   saveGithubConnection,
+  tryLoadRunnerMetadata,
   writeTaggerWorkflow,
   TAGGER_WORKFLOW_PATH,
   setDefault,
@@ -38,13 +40,12 @@ import {
   type AnalysisEvent,
   type CodingAgentId,
   type GhResult,
-  type GithubActionsRunner,
   type GithubConnectionConfig,
   type GithubIssueFilter,
-  type GithubPollIntervalMinutes,
   type IntakeStage,
   type NormalStage,
   type ReviewLoopStage,
+  type RunsOn,
   type StageEntry,
   type StageMode,
   type StageRunner,
@@ -72,13 +73,6 @@ async function confirm(question: string, defaultYes = false): Promise<boolean> {
   if (answer.length === 0) return defaultYes;
   if (defaultYes) return !/^n(o)?$/i.test(answer);
   return /^y(es)?$/i.test(answer);
-}
-
-function formatInterval(minutes: number): string {
-  if (minutes < 60) return `every ${minutes} min`;
-  if (minutes === 60) return 'hourly';
-  if (minutes < 1440) return `every ${minutes / 60}h`;
-  return 'daily';
 }
 
 function formatFilter(filter: GithubIssueFilter): string {
@@ -110,8 +104,8 @@ function describeEntryMode(s: StageEntry): string {
 
 function describeRunner(s: StageEntry): string {
   const r = getStageRunner(s);
-  if (r.kind === 'local') return 'local';
-  return `gha:${basename(r.workflowPath)}`;
+  const where = r.runsOn === 'self-hosted' ? 'self-hosted' : 'gh-hosted';
+  return `${where}:${basename(r.workflowPath || defaultStageWorkflowPath(s.id))}`;
 }
 
 function renderStagesTable(stages: StageEntry[]): void {
@@ -126,7 +120,8 @@ function renderStagesTable(stages: StageEntry[]): void {
     const kindColored = s.kind === 'review-loop' ? chalk.magenta(kind) : chalk.blue(kind);
     const r = getStageRunner(s);
     const runnerRaw = describeRunner(s).padEnd(19);
-    const runnerColored = r.kind === 'local' ? chalk.dim(runnerRaw) : chalk.yellow(runnerRaw);
+    const runnerColored =
+      r.runsOn === 'self-hosted' ? chalk.cyan(runnerRaw) : chalk.yellow(runnerRaw);
     console.log(
       chalk.dim(`  ${idx} `) +
         kindColored +
@@ -224,40 +219,42 @@ async function editStage(
 }
 
 /**
- * Simple runner toggle used inside the stage editors. Switches between
- * `local` and `github-actions`; for GHA the user picks (or types) a
- * workflow file path. Deeper "generate via agent" lives in `runRunnersStep`.
+ * Stage-runner toggle. Picks `runsOn` ('self-hosted' = workflow targets a
+ * runner registered against the user's PC, 'github-hosted' = ubuntu-latest)
+ * and a workflow file path. Every stage produces a workflow now — the
+ * "generate via agent" deep-dive still lives in `runRunnersStep`.
  */
 async function editStageRunner(stage: StageEntry, cwd: string): Promise<boolean> {
   const current = getStageRunner(stage);
-  type Choice = { kind: 'local' } | { kind: 'gha' };
-  const items: SelectItem<Choice>[] = [
+  const items: SelectItem<RunsOn>[] = [
     {
-      label: 'Local',
-      value: { kind: 'local' },
-      hint: current.kind === 'local' ? 'current — poller runs this stage' : 'poller runs this stage',
+      label: 'This PC (self-hosted)',
+      value: 'self-hosted',
+      hint:
+        current.runsOn === 'self-hosted'
+          ? 'current — workflow runs on a runner registered to your machine'
+          : 'workflow runs on a runner registered to your machine',
     },
     {
-      label: 'GitHub Actions',
-      value: { kind: 'gha' },
+      label: 'GitHub-hosted runners',
+      value: 'github-hosted',
       hint:
-        current.kind === 'github-actions'
-          ? `current — ${current.workflowPath}`
-          : 'workflow file owns agent invocation + label transition',
+        current.runsOn === 'github-hosted'
+          ? 'current — workflow runs on ubuntu-latest'
+          : 'workflow runs on ubuntu-latest (billed against the repo)',
     },
   ];
-  const picked = await select(items, { title: 'Where should this stage run?' });
-  if (!picked) return false;
-  if (picked.kind === 'local') {
-    if (current.kind === 'local') return false;
-    delete (stage as { runner?: StageRunner }).runner;
-    return true;
-  }
+  const runsOn = await select(items, { title: 'Where should this stage run?' });
+  if (!runsOn) return false;
+
   const existing = listExistingWorkflows(cwd);
   let workflowPath =
-    current.kind === 'github-actions' ? current.workflowPath : defaultWorkflowPath(stage.id);
+    current.workflowPath && current.workflowPath.length > 0
+      ? current.workflowPath
+      : defaultWorkflowPath(stage.id);
   if (existing.length > 0) {
     const pathItems: SelectItem<string>[] = existing.map((p) => ({ label: p, value: p }));
+    pathItems.push({ label: 'Use the harnext default', value: defaultWorkflowPath(stage.id) });
     pathItems.push({ label: 'Enter a path manually…', value: '__manual__' });
     const sel = await select(pathItems, { title: 'Which workflow file handles this stage?' });
     if (!sel) return false;
@@ -273,13 +270,16 @@ async function editStageRunner(stage: StageEntry, cwd: string): Promise<boolean>
     }
     workflowPath = answer;
   }
-  const prevOrigin =
-    current.kind === 'github-actions' ? current.origin : 'connected';
-  (stage as { runner?: StageRunner }).runner = {
-    kind: 'github-actions',
-    workflowPath,
-    origin: prevOrigin,
-  } satisfies GithubActionsRunner;
+  const origin: StageRunner['origin'] = existing.includes(workflowPath) ? 'connected' : 'generated';
+  const next: StageRunner = { workflowPath, origin, runsOn };
+  if (
+    current.workflowPath === next.workflowPath &&
+    current.origin === next.origin &&
+    current.runsOn === next.runsOn
+  ) {
+    return false;
+  }
+  (stage as { runner?: StageRunner }).runner = next;
   return true;
 }
 
@@ -315,7 +315,7 @@ async function editNormalStage(
       {
         label: 'Edit runner',
         value: { kind: 'runner' },
-        hint: 'local (poller runs it) or github-actions (workflow runs it)',
+        hint: 'this PC (self-hosted) or GitHub-hosted',
       },
       { label: 'Done', value: { kind: 'done' } },
     ];
@@ -407,7 +407,7 @@ async function editReviewLoopStage(
       {
         label: 'Edit runner',
         value: { kind: 'runner' },
-        hint: 'local (poller runs the loop) or github-actions (workflow runs it)',
+        hint: 'this PC (self-hosted) or GitHub-hosted',
       },
       { label: 'Done', value: { kind: 'done' } },
     ];
@@ -680,16 +680,21 @@ async function runRunnersStep(
 
   for (let i = 0; i < stages.length; i += 1) {
     const stage = stages[i];
-    const nextStage = stages[i + 1];
-    const nextLabel = nextStage?.label;
+    // The labeled cascade only chains to the next labeled stage. Stages
+    // with non-labeled triggers (e.g. doc-gardening on pr-merged) live
+    // outside the cascade — they fire on their own event and never
+    // receive a label-add from the previous stage. Skip past them when
+    // computing the "next" stage for transition specs.
+    const nextLabeledStage = stages.slice(i + 1).find((s) => getStageTrigger(s) === 'labeled');
+    const nextLabel = nextLabeledStage?.label;
     // Terminal mode for this stage: normal stages use `mode`, review-loop
     // stages use `onExit`. We only bake a dispatch hint into the generated
     // workflow for yolo transitions — human-approval hands off to a
     // human so no automatic next-stage firing is wanted.
     const exitMode = stage.kind === 'review-loop' ? stage.onExit : stage.mode;
     const nextWorkflowFilename =
-      exitMode === 'yolo' && nextStage
-        ? basename(defaultWorkflowPath(nextStage.id))
+      exitMode === 'yolo' && nextLabeledStage
+        ? basename(defaultWorkflowPath(nextLabeledStage.id))
         : undefined;
     console.log();
     console.log(
@@ -698,90 +703,93 @@ async function runRunnersStep(
         chalk.dim(` (${stage.label})`),
     );
 
-    type Choice =
-      | { kind: 'local' }
-      | { kind: 'connect' }
-      | { kind: 'generate' }
-      | { kind: 'skip' };
     const current = getStageRunner(stage);
-    const localItem: SelectItem<Choice> = {
-      label: 'Keep local',
-      value: { kind: 'local' },
-      hint: current.kind === 'local' ? 'current — poller runs this stage' : 'poller runs this stage',
-    };
-    const generateItem: SelectItem<Choice> = {
-      label: 'Generate a new GitHub Actions workflow',
+
+    // First decision: where does this stage run?
+    type WhereChoice = { kind: 'self-hosted' } | { kind: 'github-hosted' } | { kind: 'skip' };
+    const whereItems: SelectItem<WhereChoice>[] = [
+      {
+        label: 'This PC (self-hosted)',
+        value: { kind: 'self-hosted' },
+        hint:
+          current.runsOn === 'self-hosted'
+            ? 'current — workflow targets a runner registered on your machine'
+            : 'workflow targets a runner registered on your machine',
+      },
+      {
+        label: 'GitHub-hosted runners',
+        value: { kind: 'github-hosted' },
+        hint:
+          current.runsOn === 'github-hosted'
+            ? 'current — workflow runs on ubuntu-latest'
+            : 'workflow runs on ubuntu-latest (billed against the repo)',
+      },
+      { label: 'Skip (keep as-is)', value: { kind: 'skip' } },
+    ];
+    // `verify` runs on the user's PC by default (it tends to need their
+    // local toolchain — node modules, browser binaries, etc.). Every
+    // other stage defaults to GitHub-hosted so users don't need to
+    // register a runner just to ship the pipeline.
+    if (stage.id !== 'verify') {
+      [whereItems[0], whereItems[1]] = [whereItems[1], whereItems[0]];
+    }
+    const where = await select(whereItems, { title: 'How should this stage run?' });
+    if (!where || where.kind === 'skip') continue;
+    const runsOn: RunsOn = where.kind === 'self-hosted' ? 'self-hosted' : 'github-hosted';
+
+    // Second decision: connect to an existing workflow file, or generate one?
+    type SourceChoice = { kind: 'connect' } | { kind: 'generate' };
+    const generateItem: SelectItem<SourceChoice> = {
+      label: 'Generate a fresh workflow',
       value: { kind: 'generate' },
-      hint: `ask ${cfg.codingAgent} to write .github/workflows/harnext-${stage.id}.yml`,
+      hint: `ask ${cfg.codingAgent} to write ${defaultWorkflowPath(stage.id)}`,
     };
-    const connectItem: SelectItem<Choice> = {
-      label: 'Connect existing GitHub Actions workflow',
+    const connectItem: SelectItem<SourceChoice> = {
+      label: 'Connect an existing workflow',
       value: { kind: 'connect' },
       hint: 'point at a workflow file you already authored',
     };
-    const skipItem: SelectItem<Choice> = { label: 'Skip (keep as-is)', value: { kind: 'skip' } };
+    const source = await select([generateItem, connectItem], {
+      title: 'Where does the workflow file come from?',
+    });
+    if (!source) continue;
 
-    // Default preference per stage: `verify` runs local by default (it's
-    // the CI-style validation stage and tends to need the user's node
-    // env, browser, etc.). Every other stage defaults to GitHub Actions
-    // so the pipeline ships to the remote workflow without the user
-    // having to flip each one. The picker still offers all four — we
-    // just reorder so the first item (the `select` widget's initial
-    // highlight) matches the preferred default.
-    const items: SelectItem<Choice>[] =
-      stage.id === 'verify'
-        ? [localItem, generateItem, connectItem, skipItem]
-        : [generateItem, connectItem, localItem, skipItem];
-    const choice = await select(items, { title: 'How should this stage run?' });
-    if (!choice || choice.kind === 'skip') continue;
-
-    if (choice.kind === 'local') {
-      delete (stage as { runner?: StageRunner }).runner;
-      continue;
-    }
-
-    if (choice.kind === 'connect') {
-      const existing = listExistingWorkflows(cwd);
-      let workflowPath: string | undefined;
-      if (existing.length > 0) {
-        const pathItems: SelectItem<string>[] = existing.map((p) => ({
-          label: p,
-          value: p,
-        }));
-        pathItems.push({ label: 'Enter a path manually…', value: '__manual__' });
-        const picked = await select(pathItems, {
-          title: 'Which workflow file handles this stage?',
-        });
-        if (!picked) continue;
-        workflowPath = picked === '__manual__' ? undefined : picked;
-      }
-      if (!workflowPath) {
-        const answer = (
-          await readLine(
-            chalk.cyan(`  workflow path [${defaultWorkflowPath(stage.id)}]: `),
-          )
-        ).trim() || defaultWorkflowPath(stage.id);
-        if (!isValidWorkflowPath(answer)) {
-          console.log(
-            chalk.red(
-              '  must start with .github/workflows/ and end with .yml or .yaml',
-            ),
-          );
-          continue;
-        }
-        workflowPath = answer;
-      }
+    if (source.kind === 'connect') {
+      const reviewPath = await pickConnectedWorkflowPath(stage, cwd);
+      if (!reviewPath) continue;
       (stage as { runner?: StageRunner }).runner = {
-        kind: 'github-actions',
-        workflowPath,
+        workflowPath: reviewPath,
         origin: 'connected',
-      } satisfies GithubActionsRunner;
-      console.log(chalk.green(`  Connected → ${workflowPath}`));
+        runsOn,
+      } satisfies StageRunner;
+      if (stage.kind === 'review-loop') {
+        const fixPath = deriveFixWorkflowPath(reviewPath);
+        console.log(
+          chalk.green(`  Connected → ${reviewPath} (review) + ${fixPath} (fix) [${runsOn}]`),
+        );
+      } else {
+        console.log(chalk.green(`  Connected → ${reviewPath} (${runsOn})`));
+      }
       continue;
     }
 
     // generate
     const relPath = defaultWorkflowPath(stage.id);
+    if (stage.kind === 'review-loop') {
+      const fixRel = deriveFixWorkflowPath(relPath);
+      const wrote = await generateReviewLoopPair({
+        cwd,
+        stage,
+        cfg,
+        runsOn,
+        reviewRelPath: relPath,
+        fixRelPath: fixRel,
+        nextLabel,
+        nextWorkflowFilename,
+      });
+      if (wrote) wroteAnyFile = true;
+      continue;
+    }
     const absTarget = join(cwd, relPath);
     if (existsSync(absTarget)) {
       console.log(chalk.yellow(`  ${relPath} already exists.`));
@@ -789,76 +797,26 @@ async function runRunnersStep(
         continue;
       }
     }
-    console.log(
-      chalk.dim(
-        `  Spinning up ${cfg.codingAgent} to write ${relPath} (this may take 1–2 minutes)…`,
-      ),
-    );
-    try {
-      const result = await generateStageWorkflow({
-        cwd,
-        stage,
-        cfg: {
-          repo: cfg.repo,
-          pollIntervalMinutes: 15,
-          filter: { kind: 'none' },
-          intake: { runner: { kind: 'local' } },
-          stages: [],
-          codingAgent: cfg.codingAgent,
-          codingAgentModel: cfg.codingAgentModel,
-          updatedAt: Date.now(),
-        },
-        relativeWorkflowPath: relPath,
-        nextLabel,
-        awaitingLabel: AWAITING_APPROVAL_LABEL,
-        needsJudgmentLabel: NEEDS_JUDGMENT_LABEL,
-        nextWorkflowFilename,
-        triggerOn: 'both',
-      });
-      if (!result.wroteFile || !result.workflowContent) {
-        console.log(chalk.red('  Agent did not write the expected workflow file.'));
-        if (result.error) console.log(chalk.dim(`    ${result.error}`));
-        continue;
-      }
-      console.log();
-      console.log(chalk.bold(`  Generated ${relPath}:`));
-      console.log(chalk.dim('  ' + '─'.repeat(70)));
-      for (const line of result.workflowContent.split('\n')) {
-        console.log('  ' + line);
-      }
-      console.log(chalk.dim('  ' + '─'.repeat(70)));
-      console.log();
-      const keep = await confirm('Keep this workflow?', true);
-      if (!keep) {
-        try {
-          unlinkSync(result.workflowPath);
-          console.log(chalk.dim('  Discarded.'));
-        } catch (err) {
-          console.log(
-            chalk.yellow(
-              `  Could not remove ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
-        }
-        continue;
-      }
-      (stage as { runner?: StageRunner }).runner = {
-        kind: 'github-actions',
-        workflowPath: relPath,
-        origin: 'generated',
-      } satisfies GithubActionsRunner;
+    (stage as { runner?: StageRunner }).runner = {
+      workflowPath: relPath,
+      origin: 'generated',
+      runsOn,
+    } satisfies StageRunner;
+    const ok = await generateAndPreviewWorkflow({
+      cwd,
+      stage,
+      cfg,
+      relPath,
+      nextLabel,
+      nextWorkflowFilename,
+    });
+    if (ok) {
       wroteAnyFile = true;
-      console.log(chalk.green(`  Connected → ${relPath}`));
-    } catch (err) {
-      console.log(
-        chalk.red('  Generator failed: ') +
-          (err instanceof Error ? err.message : String(err)),
-      );
+      console.log(chalk.green(`  Connected → ${relPath} (${runsOn})`));
     }
   }
 
-  const anyGha = stages.some((s) => getStageRunner(s).kind === 'github-actions');
-  if (anyGha) {
+  if (stages.length > 0) {
     console.log();
     console.log(chalk.bold('  Reminder:'));
     if (wroteAnyFile) {
@@ -869,6 +827,210 @@ async function runRunnersStep(
     printAgentSecretsReminder(cfg.codingAgent, cfg.repo);
     console.log();
   }
+}
+
+/**
+ * Pick (or type in) a workflow path for the "connect existing workflow"
+ * branch. Returns the validated repo-relative path, or undefined if the
+ * user cancelled.
+ */
+async function pickConnectedWorkflowPath(
+  stage: StageEntry,
+  cwd: string,
+): Promise<string | undefined> {
+  const existing = listExistingWorkflows(cwd);
+  let workflowPath: string | undefined;
+  if (existing.length > 0) {
+    const pathItems: SelectItem<string>[] = existing.map((p) => ({
+      label: p,
+      value: p,
+    }));
+    pathItems.push({ label: 'Enter a path manually…', value: '__manual__' });
+    const picked = await select(pathItems, {
+      title: 'Which workflow file handles this stage?',
+    });
+    if (!picked) return undefined;
+    workflowPath = picked === '__manual__' ? undefined : picked;
+  }
+  if (!workflowPath) {
+    const answer = (
+      await readLine(chalk.cyan(`  workflow path [${defaultWorkflowPath(stage.id)}]: `))
+    ).trim() || defaultWorkflowPath(stage.id);
+    if (!isValidWorkflowPath(answer)) {
+      console.log(chalk.red('  must start with .github/workflows/ and end with .yml or .yaml'));
+      return undefined;
+    }
+    workflowPath = answer;
+  }
+  return workflowPath;
+}
+
+/**
+ * Generate, preview, and confirm a single workflow. Returns true iff the
+ * user kept the file. Caller is responsible for setting `stage.runner`
+ * before calling so the generator can read `runsOn` off the stage.
+ */
+async function generateAndPreviewWorkflow(args: {
+  cwd: string;
+  stage: StageEntry;
+  cfg: { codingAgent: CodingAgentId; codingAgentModel?: string; repo: string };
+  relPath: string;
+  nextLabel: string | undefined;
+  nextWorkflowFilename: string | undefined;
+  phase?: 'review' | 'fix';
+  companionWorkflowFilename?: string;
+}): Promise<boolean> {
+  const { cwd, stage, cfg, relPath, nextLabel, nextWorkflowFilename } = args;
+  const phaseTag = args.phase ? ` [${args.phase}]` : '';
+  console.log(
+    chalk.dim(
+      `  Spinning up ${cfg.codingAgent} to write ${relPath}${phaseTag} (this may take 1–2 minutes)…`,
+    ),
+  );
+  try {
+    const result = await generateStageWorkflow({
+      cwd,
+      stage,
+      cfg: {
+        repo: cfg.repo,
+        pollIntervalMinutes: 15,
+        filter: { kind: 'none' },
+        intake: { enabled: true },
+        stages: [],
+        codingAgent: cfg.codingAgent,
+        codingAgentModel: cfg.codingAgentModel,
+        updatedAt: Date.now(),
+      },
+      relativeWorkflowPath: relPath,
+      nextLabel,
+      awaitingLabel: AWAITING_APPROVAL_LABEL,
+      needsJudgmentLabel: NEEDS_JUDGMENT_LABEL,
+      nextWorkflowFilename,
+      // post-merge stages (e.g. doc-gardening) emit a `pull_request: [closed]`
+      // trigger; everything else uses the default labeled cascade.
+      triggerOn: getStageTrigger(stage) === 'pr-merged' ? 'pr-merged' : 'both',
+      phase: args.phase,
+      companionWorkflowFilename: args.companionWorkflowFilename,
+    });
+    if (!result.wroteFile || !result.workflowContent) {
+      console.log(chalk.red('  Agent did not write the expected workflow file.'));
+      if (result.error) console.log(chalk.dim(`    ${result.error}`));
+      return false;
+    }
+    console.log();
+    console.log(chalk.bold(`  Generated ${relPath}${phaseTag}:`));
+    console.log(chalk.dim('  ' + '─'.repeat(70)));
+    for (const line of result.workflowContent.split('\n')) {
+      console.log('  ' + line);
+    }
+    console.log(chalk.dim('  ' + '─'.repeat(70)));
+    console.log();
+    const keep = await confirm(`Keep ${relPath}?`, true);
+    if (!keep) {
+      try {
+        unlinkSync(result.workflowPath);
+        console.log(chalk.dim(`  Discarded ${relPath}.`));
+      } catch (err) {
+        console.log(
+          chalk.yellow(
+            `  Could not remove ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+      }
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.log(
+      chalk.red('  Generator failed: ') + (err instanceof Error ? err.message : String(err)),
+    );
+    return false;
+  }
+}
+
+/**
+ * Generate the review + fix workflow pair for a review-loop stage. They
+ * are kept/discarded as a unit — a half-applied pair would leave the loop
+ * broken. Returns true iff at least one file was kept.
+ */
+async function generateReviewLoopPair(args: {
+  cwd: string;
+  stage: StageEntry;
+  cfg: { codingAgent: CodingAgentId; codingAgentModel?: string; repo: string };
+  runsOn: RunsOn;
+  reviewRelPath: string;
+  fixRelPath: string;
+  nextLabel: string | undefined;
+  nextWorkflowFilename: string | undefined;
+}): Promise<boolean> {
+  const { cwd, stage, cfg, runsOn, reviewRelPath, fixRelPath, nextLabel, nextWorkflowFilename } = args;
+  for (const p of [reviewRelPath, fixRelPath]) {
+    if (existsSync(join(cwd, p))) {
+      console.log(chalk.yellow(`  ${p} already exists.`));
+      if (!(await confirm(`Overwrite ${p}?`))) return false;
+    }
+  }
+  // Set the runner on the stage so the generator emits the right `runs-on:`.
+  // The wizard treats the review workflow path as the canonical one stored
+  // in the config; the fix path is derived from it via `deriveFixWorkflowPath`.
+  (stage as { runner?: StageRunner }).runner = {
+    workflowPath: reviewRelPath,
+    origin: 'generated',
+    runsOn,
+  } satisfies StageRunner;
+
+  const reviewKept = await generateAndPreviewWorkflow({
+    cwd,
+    stage,
+    cfg,
+    relPath: reviewRelPath,
+    nextLabel,
+    nextWorkflowFilename,
+    phase: 'review',
+    companionWorkflowFilename: basename(fixRelPath),
+  });
+  const fixKept = await generateAndPreviewWorkflow({
+    cwd,
+    stage,
+    cfg,
+    relPath: fixRelPath,
+    nextLabel,
+    nextWorkflowFilename,
+    phase: 'fix',
+    companionWorkflowFilename: basename(reviewRelPath),
+  });
+
+  if (!reviewKept && !fixKept) return false;
+  if (reviewKept && !fixKept) {
+    console.log(
+      chalk.yellow(
+        `  Heads-up: kept ${reviewRelPath} but discarded ${fixRelPath} — the loop will`,
+      ),
+    );
+    console.log(
+      chalk.yellow(
+        `  fail to dispatch the fix step until you author ${fixRelPath} yourself.`,
+      ),
+    );
+  }
+  if (!reviewKept && fixKept) {
+    console.log(
+      chalk.yellow(
+        `  Heads-up: discarded ${reviewRelPath} but kept ${fixRelPath} — nothing will`,
+      ),
+    );
+    console.log(
+      chalk.yellow(
+        `  trigger the fix workflow until you author the review entry yourself.`,
+      ),
+    );
+  }
+  console.log(
+    chalk.green(
+      `  Connected → ${reviewRelPath} (review) + ${fixRelPath} (fix) [${runsOn}]`,
+    ),
+  );
+  return true;
 }
 
 /**
@@ -1077,9 +1239,9 @@ export async function runConnectGithubCommand(opts: ConnectGithubOptions): Promi
 }
 
 function formatIntake(intake: IntakeStage): string {
-  return intake.runner.kind === 'local'
-    ? 'local (poller auto-labels)'
-    : `github-actions (${intake.runner.workflowPath})`;
+  return intake.enabled
+    ? 'auto-tag new issues with the first stage label'
+    : 'manual (humans label issues themselves)';
 }
 
 function printConfig(cfg: GithubConnectionConfig): void {
@@ -1088,24 +1250,22 @@ function printConfig(cfg: GithubConnectionConfig): void {
     : cfg.codingAgent;
   console.log(chalk.dim(`    agent:    `) + chalk.cyan(agentLine));
   console.log(chalk.dim(`    repo:     `) + chalk.cyan(cfg.repo));
-  console.log(chalk.dim(`    interval: `) + formatInterval(cfg.pollIntervalMinutes));
   console.log(chalk.dim(`    filter:   `) + formatFilter(cfg.filter));
   console.log(chalk.dim(`    intake:   `) + formatIntake(cfg.intake));
   console.log(
     chalk.dim(`    stages:   `) +
       `${cfg.stages.length} (${cfg.stages.map((s) => s.id).join(' → ')})`,
   );
-  const ghaCount = cfg.stages.filter((s) => getStageRunner(s).kind === 'github-actions').length;
-  if (ghaCount > 0) {
+  const selfHostedCount = cfg.stages.filter(
+    (s) => getStageRunner(s).runsOn === 'self-hosted',
+  ).length;
+  if (selfHostedCount > 0) {
     console.log(
       chalk.dim(`    runners:  `) +
-        chalk.yellow(`${ghaCount}`) +
-        chalk.dim(` stage${ghaCount === 1 ? '' : 's'} on github-actions, `) +
-        `${cfg.stages.length - ghaCount} local`,
+        chalk.cyan(`${selfHostedCount}`) +
+        chalk.dim(` stage${selfHostedCount === 1 ? '' : 's'} on this PC (self-hosted), `) +
+        `${cfg.stages.length - selfHostedCount} on github-hosted`,
     );
-  }
-  if (cfg.lastSeenUpdatedAt) {
-    console.log(chalk.dim(`    pointer:  `) + cfg.lastSeenUpdatedAt);
   }
 }
 
@@ -1211,15 +1371,27 @@ async function removeFlow(opts: ConnectGithubOptions): Promise<void> {
     console.log();
     return;
   }
-  const tag = getGithubPollCronTag(opts.cwd);
-  try {
-    removeCronLine(tag);
-  } catch (err) {
-    console.log(
-      chalk.red('  Failed to update crontab: ') +
-        (err instanceof Error ? err.message : String(err)),
-    );
+
+  const meta = tryLoadRunnerMetadata(opts.cwd);
+  if (meta) {
+    if (
+      await confirm(
+        `Also deregister the self-hosted runner (${meta.runnerName}) and uninstall its service?`,
+        true,
+      )
+    ) {
+      console.log(chalk.dim('  Deregistering runner…'));
+      const result = await deregisterRunner(opts.cwd);
+      if (result.errors.length > 0) {
+        for (const err of result.errors) {
+          console.log(chalk.yellow(`    ${err}`));
+        }
+      } else {
+        console.log(chalk.green('  Runner deregistered.'));
+      }
+    }
   }
+
   const removed = deleteGithubConnection(opts.cwd);
   if (removed) {
     console.log(chalk.green('  GitHub connection removed.'));
@@ -1304,17 +1476,18 @@ function makeAnalysisProgressPrinter(): (e: AnalysisEvent) => void {
 }
 
 /**
- * Pre-populate every non-verify stage's `runner` field with a
- * github-actions entry pointing at the conventional workflow path, so
- * the stages table renders with the intended default before the user
- * hits the runner picker. The `verify` stage stays local (by leaving
- * its `runner` field undefined — `getStageRunner` resolves to local).
+ * Pre-populate every stage's `runner` field with a generated-workflow
+ * entry pointing at the conventional path so the stages table renders
+ * with the intended default before the user hits the runner picker.
+ * The `verify` stage defaults to self-hosted (CI-style validation tends
+ * to need the user's local toolchain); every other stage defaults to
+ * GitHub-hosted.
  *
  * Stages that already have an explicit `runner` (e.g. a saved config
  * being edited) are left alone — user intent wins over defaults.
  *
  * When the TechStack detected a non-GitHub CI provider (GitLab,
- * CircleCI, etc.) we bail entirely and leave every stage local, since
+ * CircleCI, etc.) we bail entirely and leave every stage as-is, since
  * harnext doesn't yet author workflows for those providers.
  */
 function applyDefaultRunners(
@@ -1326,16 +1499,17 @@ function applyDefaultRunners(
   if (!supportsGHA) return stages;
 
   return stages.map((stage) => {
-    if (stage.id === 'verify') return stage;
     if (stage.runner) return stage;
-    return {
-      ...stage,
-      runner: {
-        kind: 'github-actions',
-        workflowPath: `.github/workflows/harnext-${stage.id}.yml`,
-        origin: 'generated',
-      },
-    } as StageEntry;
+    const runsOn: RunsOn = stage.id === 'verify' ? 'self-hosted' : 'github-hosted';
+    const next: StageRunner = {
+      workflowPath: `.github/workflows/harnext-${stage.id}.yml`,
+      origin: 'generated',
+      runsOn,
+    };
+    if (stage.kind === 'review-loop') {
+      return { ...stage, runner: next };
+    }
+    return { ...(stage as NormalStage), runner: next };
   });
 }
 
@@ -1634,16 +1808,10 @@ async function createFlow(
   }
   console.log();
 
-  // Step 3b: Stage 0 / intake runner. Explicit because it decides whether
-  // the local poller is still needed at all. Previously we inferred this
-  // from the first stage's runner — that tangled the "who applies the
-  // first label" question with "where does stage 1 run," and made it
-  // impossible to run a fully-GHA pipeline when the first stage happened
-  // to be local.
-  console.log(chalk.bold('  Step 3b: Stage 0 — intake runner'));
-  console.log(
-    chalk.dim('    Who applies the first stage label to new issues?'),
-  );
+  // Step 3b: Stage 0 / intake. Decides whether the harnext-tagger
+  // workflow is written. When enabled, new issues that match the filter
+  // get the first stage's label automatically, kicking off the pipeline.
+  console.log(chalk.bold('  Step 3b: Stage 0 — intake (auto-tag new issues)'));
   const intake = await pickIntake(current?.intake ?? DEFAULT_INTAKE);
   if (!intake) {
     console.log(chalk.dim('  Cancelled.'));
@@ -1652,12 +1820,8 @@ async function createFlow(
   }
   console.log();
 
-  // Bootstrap tagger workflow. Only written when intake runs on
-  // github-actions — otherwise the poller handles auto-labeling on its
-  // next tick, and emitting a tagger workflow would create a second
-  // writer on the same label boundary.
   const firstStage = stages[0];
-  if (intake.runner.kind === 'github-actions' && firstStage) {
+  if (intake.enabled && firstStage) {
     const { path, existed } = writeTaggerWorkflow({
       cwd: opts.cwd,
       firstStage,
@@ -1670,94 +1834,100 @@ async function createFlow(
     );
     console.log(
       chalk.dim(
-        `    (intake runs on github-actions — this workflow tags new issues`,
+        `    (auto-tags new issues matching the filter with ${firstStage.label})`,
       ),
     );
-    console.log(
-      chalk.dim(
-        `     matching the filter with ${firstStage.label}.)`,
-      ),
-    );
-    // Reference `path` just to prove we held onto the absolute location
-    // for any future pre-save validation. `TAGGER_WORKFLOW_PATH` is what
-    // we surface to the user since it's git-relative.
     void path;
     console.log();
   }
 
-  // Step 4: polling interval — needed when the poller has any job to do.
-  // The poller has two jobs: apply the first-stage label to unlabeled
-  // issues (when intake is local) and execute local stages (when any
-  // stage runs locally). Skip the prompt and cron install only when
-  // intake is GHA *and* every stage is GHA — in that case the
-  // label-triggered workflows handle everything and polling is pointless.
-  const needsPolling =
-    intake.runner.kind === 'local' ||
-    stages.some((s) => getStageRunner(s).kind === 'local');
-  let interval: GithubPollIntervalMinutes;
-  if (needsPolling) {
-    console.log(chalk.bold('  Step 4: polling interval'));
-    const picked = await pickInterval(current?.pollIntervalMinutes);
-    if (!picked) {
-      console.log(chalk.dim('  Cancelled.'));
-      console.log();
+  // Step 4: self-hosted runner check. If any stage runs on this PC, we
+  // refuse setup until the public-repo approval gate is in good shape
+  // and then install + register the actions/runner so workflows can
+  // dispatch to it.
+  const selfHostedStages = stages.filter(
+    (s) => getStageRunner(s).runsOn === 'self-hosted',
+  );
+  if (selfHostedStages.length > 0) {
+    console.log(chalk.bold('  Step 4: self-hosted runner safety check'));
+    const gate = checkPublicRepoApprovalGate(detectedRepo);
+    if (!gate.ok) {
+      console.log(chalk.red(`  Could not query repo permissions: ${gate.message}`));
       return;
     }
-    interval = picked;
-    console.log();
-  } else {
-    // Keep the config field populated with a sensible default so the
-    // stored shape is unchanged — nothing reads it when there's no cron.
-    interval = current?.pollIntervalMinutes ?? 60;
-    console.log(
-      chalk.dim(
-        '  All stages run on GitHub Actions — skipping poll interval and cron install.',
-      ),
-    );
+    if (gate.value.isPublic && !gate.value.approvalGateEnabled) {
+      console.log(
+        chalk.red(
+          '  This is a PUBLIC repository and the fork-PR approval gate is not enabled.',
+        ),
+      );
+      console.log(
+        chalk.dim(
+          '  Without the approval gate, anyone can fork the repo, edit the workflow YAML,',
+        ),
+      );
+      console.log(
+        chalk.dim(
+          '  and run arbitrary code on your PC by submitting a PR. Harnext refuses to set',
+        ),
+      );
+      console.log(
+        chalk.dim(
+          '  up self-hosted runners on public repos in this state — flip Settings →',
+        ),
+      );
+      console.log(
+        chalk.dim(
+          '  Actions → "Require approval for first-time/outside contributors" and re-run setup.',
+        ),
+      );
+      return;
+    }
+    if (gate.value.isPublic) {
+      console.log(
+        chalk.yellow(
+          '  Public repo with approval gate enabled — fork PRs will require maintainer',
+        ),
+      );
+      console.log(
+        chalk.yellow(
+          '  approval before any workflow runs on your PC. Treat every approval as a',
+        ),
+      );
+      console.log(
+        chalk.yellow(
+          '  code-review checkpoint: an approved PR can run any commands the workflow says.',
+        ),
+      );
+      if (!(await confirm('Continue with self-hosted runner setup?', true))) {
+        console.log(chalk.dim('  Cancelled.'));
+        return;
+      }
+    } else {
+      console.log(chalk.dim('  Private repo — fork-PR risk does not apply.'));
+    }
     console.log();
   }
 
   const cfg: GithubConnectionConfig = {
     repo: detectedRepo,
-    pollIntervalMinutes: interval,
+    pollIntervalMinutes: current?.pollIntervalMinutes ?? 60,
     filter,
     intake,
     stages,
-    lastSeenUpdatedAt: current?.lastSeenUpdatedAt,
     codingAgent,
     codingAgentModel,
     updatedAt: Date.now(),
   };
 
-  const tag = getGithubPollCronTag(opts.cwd);
-  let cronLine: string | null = null;
-  let existingCron: string | null = null;
-  if (needsPolling) {
-    const schedule = buildCronSchedule(cfg.pollIntervalMinutes);
-    cronLine = buildGithubPollCronLine({
-      schedule,
-      cliPath: opts.cliPath,
-      cwd: opts.cwd,
-      tag,
-      nodePath: opts.nodePath,
-      path: process.env.PATH,
-      sshAuthSock: process.env.SSH_AUTH_SOCK,
-    });
-    existingCron = findCronLine(tag);
-  }
-
   console.log(chalk.bold('  Ready to save:'));
   printConfig(cfg);
   console.log();
-  if (cronLine) {
-    console.log(chalk.dim(`    cron ${existingCron ? '(replace)' : '(install)'}:`));
-    console.log(chalk.dim(`      ${cronLine}`));
-    console.log();
-  }
 
-  const confirmPrompt = cronLine
-    ? 'Save this connection and install the cron line?'
-    : 'Save this connection?';
+  const confirmPrompt =
+    selfHostedStages.length > 0
+      ? 'Save this connection and register a self-hosted runner on this PC?'
+      : 'Save this connection?';
   if (!(await confirm(confirmPrompt, true))) {
     console.log(chalk.dim('  Cancelled.'));
     console.log();
@@ -1766,13 +1936,39 @@ async function createFlow(
 
   try {
     saveGithubConnection(opts.cwd, cfg);
-    if (cronLine) {
-      installCronLine(cronLine, tag);
+
+    if (selfHostedStages.length > 0) {
+      console.log(chalk.dim('  Installing the actions/runner on this PC…'));
+      try {
+        const installResult = await installRunner(opts.cwd);
+        console.log(
+          chalk.dim(
+            `    runner ${installResult.alreadyInstalled ? 'already on disk' : 'downloaded'} (v${installResult.release.version})`,
+          ),
+        );
+        console.log(chalk.dim('  Registering it against the repo…'));
+        const meta = await registerRunner({ cwd: opts.cwd, repo: cfg.repo });
+        console.log(chalk.green(`    registered as ${meta.runnerName}`));
+        console.log(chalk.dim('  Installing the runner as a background service…'));
+        await installRunnerService(opts.cwd);
+        console.log(chalk.green('    runner service started — workflows can dispatch to it now'));
+      } catch (err) {
+        console.log(
+          chalk.red(
+            `  self-hosted runner setup failed: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        console.log(
+          chalk.dim(
+            '  Connection config was saved; re-run `harnext setup` after fixing to retry runner setup.',
+          ),
+        );
+      }
     } else {
-      // Previous setup may have written a cron line that's now stale
-      // (e.g. the user moved every stage to GitHub Actions). Drop it so we
-      // don't keep polling for work that's dispatched elsewhere.
-      removeCronLine(tag);
+      // No self-hosted stages — if a runner was previously registered for
+      // this project, leave it in place. The user can `harnext setup`
+      // again or remove it manually; we don't want to silently uninstall
+      // their daemon out from under them.
     }
 
     console.log(chalk.dim('  Ensuring pipeline labels exist on the repo…'));
@@ -1793,84 +1989,53 @@ async function createFlow(
       );
     }
 
-    const savedMsg = cronLine
-      ? '  GitHub connection saved and poller scheduled.'
-      : '  GitHub connection saved (no poller — all stages on GitHub Actions).';
+    const savedMsg =
+      selfHostedStages.length > 0
+        ? '  GitHub connection saved; self-hosted runner registered for this PC.'
+        : '  GitHub connection saved (every stage runs on GitHub-hosted runners).';
     console.log(chalk.green(savedMsg));
     console.log(chalk.dim(`    config: ${getGithubConfigPath(opts.cwd)}`));
-    if (cronLine) {
-      console.log(chalk.dim(`    cron tag: ${tag}`));
-    }
     console.log();
   } catch (err) {
     console.log(
       chalk.red('  Failed to save config: ') +
         (err instanceof Error ? err.message : String(err)),
     );
-    console.log(chalk.dim('  If this machine has no `crontab`, install cron first.'));
     console.log();
   }
 }
 
 /**
- * Pick where Stage 0 (intake) runs.
+ * Pick whether Stage 0 (intake) is enabled.
  *
  * "Intake" is the label-apply step that pulls fresh, unlabeled issues into
- * the pipeline. We don't ask for a prompt or mode here — intake runs no
- * agent. The only choice is *who* applies the first-stage label:
- *   - `local`: the cron poller, on its next tick. Matches the historical
- *     default before intake became an explicit field.
- *   - `github-actions`: a deterministic tagger workflow we generate from
- *     `tagger-workflow.ts`. When this is picked the poller MUST stay out
- *     of the auto-label codepath; the poller code enforces that via
- *     `cfg.intake.runner.kind === 'local'`.
+ * the pipeline. When enabled, harnext writes a deterministic tagger
+ * workflow that listens for issue events and applies the first stage's
+ * label on matching issues, then dispatches the first stage's workflow.
+ * When disabled, humans label issues themselves.
  */
 async function pickIntake(current: IntakeStage): Promise<IntakeStage | undefined> {
-  type Choice = { kind: 'local' } | { kind: 'gha' };
-  const currentKind = current.runner.kind;
-  const items: SelectItem<Choice>[] = [
+  const items: SelectItem<boolean>[] = [
     {
-      label: 'Local',
-      value: { kind: 'local' },
+      label: 'Auto-tag new issues',
+      value: true,
       hint:
-        currentKind === 'local'
-          ? 'current — poller auto-labels new issues on its next tick'
-          : 'poller auto-labels new issues on its next tick',
+        current.enabled
+          ? `current — tagger workflow at ${TAGGER_WORKFLOW_PATH}`
+          : `harnext writes ${TAGGER_WORKFLOW_PATH} that auto-labels matching issues`,
     },
     {
-      label: 'GitHub Actions',
-      value: { kind: 'gha' },
+      label: 'Manual labeling',
+      value: false,
       hint:
-        currentKind === 'github-actions'
-          ? `current — ${TAGGER_WORKFLOW_PATH}`
-          : 'generated tagger workflow applies the first-stage label on issue events',
+        current.enabled
+          ? 'humans add the first stage label themselves'
+          : 'current — humans add the first stage label themselves',
     },
   ];
-  const picked = await select(items, {
-    title: 'Stage 0 — where should intake (apply first-stage label) run?',
-  });
-  if (!picked) return undefined;
-  if (picked.kind === 'local') {
-    return { runner: { kind: 'local' } };
-  }
-  return {
-    runner: {
-      kind: 'github-actions',
-      workflowPath: TAGGER_WORKFLOW_PATH,
-      origin: 'generated',
-    },
-  };
-}
-
-async function pickInterval(
-  current?: GithubPollIntervalMinutes,
-): Promise<GithubPollIntervalMinutes | undefined> {
-  const items: SelectItem<GithubPollIntervalMinutes>[] = GITHUB_POLL_INTERVAL_PRESETS.map((m) => ({
-    label: formatInterval(m),
-    value: m,
-    hint: current === m ? 'current' : `${m} min`,
-  }));
-  return select(items, { title: 'Pick how often to poll for new tasks (esc to cancel)' });
+  const picked = await select(items, { title: 'Should harnext auto-tag new issues?' });
+  if (picked === undefined) return undefined;
+  return { enabled: picked };
 }
 
 async function pickFilter(

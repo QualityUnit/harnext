@@ -4,10 +4,12 @@ import { join } from 'node:path';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { getGithubRunsDir, type AgentRunLogEvent, type AgentRunLogRecord } from '../src/github-poller.js';
+import type { AgentRunLogEvent } from '../src/coding-agent-runner.js';
 import {
+  getGithubRunsDir,
   listAgentRunLogs,
   reconstructMessagesFromEvents,
+  type AgentRunLogRecord,
 } from '../src/run-replay.js';
 
 let harnextHome: string;

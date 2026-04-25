@@ -6,8 +6,22 @@ export interface ProviderInfo {
   defaultModel: string;
   /** True for local inference servers (ollama, etc.) — no API key, configured via baseUrl. */
   local?: boolean;
-  /** Default base URL for local providers. */
+  /**
+   * Default base URL. For `local` providers (ollama) this is the on-box
+   * inference server's address; for hosted OpenAI-compatible providers
+   * that pi-ai doesn't ship in its model registry (NVIDIA NIM), this is
+   * the fixed remote endpoint that custom Model builders point at.
+   */
   defaultBaseUrl?: string;
+  /**
+   * True for providers whose model catalog isn't in pi-ai's static
+   * registry — harnext builds a `Model<'openai-completions'>` by hand
+   * from the provider's `/v1/models` listing (or accepts a free-form
+   * model id). NVIDIA NIM is the canonical case. `local` providers are
+   * implicitly customResolution; setting it explicitly lets hosted
+   * providers (with API keys + fixed remote URLs) opt in too.
+   */
+  customResolution?: boolean;
 }
 
 /**
@@ -24,11 +38,20 @@ export const PROVIDERS: ProviderInfo[] = [
   { id: 'mistral', name: 'Mistral', envVar: 'MISTRAL_API_KEY', defaultModel: 'mistral-large-latest' },
   { id: 'cerebras', name: 'Cerebras', envVar: 'CEREBRAS_API_KEY', defaultModel: 'qwen-3-235b-a22b-instruct-2507' },
   {
+    id: 'nvidia',
+    name: 'NVIDIA NIM',
+    envVar: 'NVIDIA_API_KEY',
+    defaultModel: 'deepseek-ai/deepseek-v4-pro',
+    defaultBaseUrl: 'https://integrate.api.nvidia.com/v1',
+    customResolution: true,
+  },
+  {
     id: 'ollama',
     name: 'Ollama (local)',
     envVar: '',
     defaultModel: 'llama3.1',
     local: true,
+    customResolution: true,
     defaultBaseUrl: 'http://localhost:11434',
   },
 ];

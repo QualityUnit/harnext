@@ -4,7 +4,6 @@ export type Mode =
   | 'interactive'
   | 'print'
   | 'heartbeat'
-  | 'github-poll'
   | 'mcp'
   | 'setup'
   | 'status'
@@ -75,9 +74,6 @@ export function parseArgs(argv: string[]): Args {
       case '--heartbeat':
         args.mode = 'heartbeat';
         args.heartbeatName = argv[++i];
-        break;
-      case '--github-poll':
-        args.mode = 'github-poll';
         break;
       case '--provider':
         args.provider = argv[++i] ?? args.provider;
@@ -318,7 +314,6 @@ Usage:
 Options:
   -p, --print              Run in non-interactive (single-shot) mode
   --heartbeat <name>       Run the named heartbeat prompt once (for cron)
-  --github-poll            Run the GitHub issue poller once (for cron)
   --provider <provider>    LLM provider (anthropic, openai, google) [default: anthropic]
   -m, --model <model>      Model ID [default: claude-sonnet-4-6]
   --thinking <level>       Thinking level (off, low, medium, high) [default: off]

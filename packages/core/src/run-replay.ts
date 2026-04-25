@@ -9,11 +9,35 @@ import type {
   UserMessage,
 } from '@mariozechner/pi-ai';
 
-import {
-  getGithubRunsDir,
-  type AgentRunLogEvent,
-  type AgentRunLogRecord,
-} from './github-poller.js';
+import type { AgentRunLogEvent } from './coding-agent-runner.js';
+import { getProjectStateDir } from './config.js';
+import type { StageMode } from './github-connection.js';
+
+export const GITHUB_RUNS_DIR_NAME = 'github-runs';
+
+export function getGithubRunsDir(cwd: string): string {
+  return join(getProjectStateDir(cwd), GITHUB_RUNS_DIR_NAME);
+}
+
+/**
+ * Full transcript of a single stage run, persisted by historical poller
+ * runs. Read-only here — no new records are written after the cron poller
+ * was retired in favour of self-hosted GitHub Actions runners. The viewer
+ * still works against archived files for debugging past runs.
+ */
+export interface AgentRunLogRecord {
+  ts: string;
+  itemNumber: number;
+  itemKind: 'issue' | 'pr';
+  stageId: string;
+  stageLabel: string;
+  mode: StageMode;
+  exit: number;
+  durationMs: number;
+  prompt: string;
+  events: AgentRunLogEvent[];
+  error?: string;
+}
 
 export interface AgentRunLogSummary {
   path: string;

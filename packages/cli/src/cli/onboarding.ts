@@ -4,9 +4,11 @@ import chalk from 'chalk';
 
 import {
   DEFAULT_OLLAMA_BASE_URL,
+  NVIDIA_DEFAULT_MODEL,
   getProviderById,
   getProviderConfig,
   getStoredKey,
+  listNvidiaModels,
   listOllamaModels,
   normalizeOllamaBaseUrl,
   PROVIDERS,
@@ -95,6 +97,15 @@ async function runOnboarding(): Promise<{ provider: string; model: string }> {
   saveProviderKey(provider.id, key);
   setProviderEnv(provider, key);
 
+  // NVIDIA: pi-ai's static registry doesn't list NIM models, so go through
+  // the dedicated picker that hits NVIDIA's `/v1/models` endpoint.
+  if (provider.id === 'nvidia') {
+    const modelId = await onboardNvidiaModel(provider, key);
+    setDefault(provider.id, modelId);
+    console.log(chalk.green(`\n  Saved! Using ${provider.name} / ${modelId}\n`));
+    return { provider: provider.id, model: modelId };
+  }
+
   // Let the user pick a model now that we know the provider is reachable.
   // Fall back to the provider's default if the registry lookup fails or the user cancels.
   let modelId = provider.defaultModel;
@@ -108,6 +119,37 @@ async function runOnboarding(): Promise<{ provider: string; model: string }> {
   setDefault(provider.id, modelId);
   console.log(chalk.green(`\n  Saved! Using ${provider.name} / ${modelId}\n`));
   return { provider: provider.id, model: modelId };
+}
+
+/**
+ * NVIDIA NIM picker — fetches the live model list from `/v1/models`. If the
+ * fetch fails (offline, bad key) we fall back to the curated default so the
+ * user isn't blocked at onboarding; they can re-pick later via /model.
+ */
+async function onboardNvidiaModel(provider: ProviderInfo, apiKey: string): Promise<string> {
+  let summaries;
+  try {
+    summaries = await listNvidiaModels(apiKey);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.yellow(`  Could not fetch NVIDIA model list: ${message}`));
+    console.log(chalk.dim(`  Falling back to ${NVIDIA_DEFAULT_MODEL}; pick another via /model.`));
+    return provider.defaultModel;
+  }
+  if (summaries.length === 0) {
+    console.log(chalk.yellow(`  NVIDIA returned no models for this key. Using ${NVIDIA_DEFAULT_MODEL}.`));
+    return provider.defaultModel;
+  }
+  const items: SelectItem<string>[] = summaries.map((s) => ({
+    label: s.id,
+    value: s.id,
+    hint: s.ownedBy,
+  }));
+  const picked = await select(items, {
+    title: `Select an ${provider.name} model`,
+    pageSize: 15,
+  });
+  return picked ?? summaries[0].id;
 }
 
 async function selectOnboardingProvider(): Promise<ProviderInfo | undefined> {

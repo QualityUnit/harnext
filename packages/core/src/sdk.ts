@@ -21,6 +21,7 @@ import {
 import { wrapMcpToolAsAgentTool } from './mcp-direct-tool.js';
 import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
+import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { seedBuiltinSkills } from './seed.js';
 import { loadSkills, type Skill } from './skills.js';
@@ -83,12 +84,15 @@ export async function createAgentSession(
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
 
-  // Resolve model: ollama uses a custom Model built from stored baseUrl;
-  // all other providers come from the pi-ai registry.
+  // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
+  // catalogs aren't in pi-ai's static registry); every other provider goes
+  // through the registry.
   let model: Model<string>;
   if (provider === 'ollama') {
     const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
     model = buildOllamaModel(modelId, baseUrl) as Model<string>;
+  } else if (provider === 'nvidia') {
+    model = buildNvidiaModel(modelId) as Model<string>;
   } else {
     const registryModel = getModel(provider as KnownProvider, modelId as never) as Model<string>;
     if (!registryModel) {
@@ -237,8 +241,17 @@ export async function createAgentSession(
     convertToLlm,
     transformContext,
     streamFn: async (m, ctx, opts) => {
-      // Ollama needs a non-empty API key placeholder for the OpenAI-compatible client.
-      const finalOpts = m.provider === 'ollama' ? { ...opts, apiKey: opts?.apiKey ?? 'ollama' } : opts;
+      // Inject the right apiKey for providers pi-ai doesn't recognize in
+      // its env-api-keys registry. Ollama needs a non-empty placeholder
+      // (the OpenAI-compatible client refuses empty keys); NVIDIA needs
+      // the real NVIDIA_API_KEY since `getEnvApiKey('nvidia')` returns
+      // undefined upstream.
+      let finalOpts = opts;
+      if (m.provider === 'ollama') {
+        finalOpts = { ...opts, apiKey: opts?.apiKey ?? 'ollama' };
+      } else if (m.provider === 'nvidia') {
+        finalOpts = { ...opts, apiKey: opts?.apiKey ?? process.env.NVIDIA_API_KEY ?? '' };
+      }
       return streamSimple(m, ctx, finalOpts);
     },
     toolExecution: 'parallel',

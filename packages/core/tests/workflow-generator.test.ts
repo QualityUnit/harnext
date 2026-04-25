@@ -18,7 +18,7 @@ import {
   substituteIssueNumberPlaceholders,
   toStageWorkflowStage,
 } from '../src/workflow-prompts.js';
-import { generateStageWorkflow } from '../src/workflow-generator.js';
+import { deriveFixWorkflowPath, generateStageWorkflow } from '../src/workflow-generator.js';
 
 let cwd: string;
 
@@ -38,7 +38,7 @@ function baseCfg(
     repo: 'example/repo',
     pollIntervalMinutes: 15,
     filter: { kind: 'none' },
-    intake: { runner: { kind: 'local' } },
+    intake: { enabled: true },
     stages: DEFAULT_STAGES,
     codingAgent: 'claude-code',
     codingAgentModel: 'claude-opus-4-7',
@@ -77,6 +77,24 @@ function fakeSpawner(opts: {
     return child as unknown as ChildProcessWithoutNullStreams;
   };
 }
+
+describe('deriveFixWorkflowPath', () => {
+  it('inserts -fix before the .yml extension', () => {
+    expect(deriveFixWorkflowPath('.github/workflows/harnext-review.yml')).toBe(
+      '.github/workflows/harnext-review-fix.yml',
+    );
+  });
+
+  it('preserves the .yaml extension when present', () => {
+    expect(deriveFixWorkflowPath('.github/workflows/x.yaml')).toBe(
+      '.github/workflows/x-fix.yaml',
+    );
+  });
+
+  it('falls back to a -fix suffix on extensionless paths', () => {
+    expect(deriveFixWorkflowPath('weird-no-ext')).toBe('weird-no-ext-fix');
+  });
+});
 
 describe('generateStageWorkflow', () => {
   it('reports wroteFile=true and includes file contents when the agent writes the file', async () => {
@@ -275,16 +293,42 @@ describe('WORKFLOW_PROMPT_BUNDLES', () => {
     expect(prompt).toMatch(/ANTHROPIC_API_KEY|OPENAI_API_KEY/);
   });
 
-  it('review-loop stage prompt includes both reviewer and fixer prompts', () => {
+  it('review-loop review-phase prompt embeds the reviewer prompt and the loop-control decision tree', () => {
     const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
     const loop = DEFAULT_STAGES.find((s) => s.kind === 'review-loop') as ReviewLoopStage;
     const prompt = bundle.buildGeneratorPrompt({
       ...baseInput,
       stage: toStageWorkflowStage(loop),
+      phase: 'review',
+      companionWorkflowFilename: 'harnext-review-fix.yml',
     });
     expect(prompt).toContain('BEGIN REVIEWER PROMPT');
+    // Review phase must NOT embed the fixer prompt — that lives in the fix workflow.
+    expect(prompt).not.toContain('BEGIN FIXER PROMPT');
+    // The deterministic loop-control logic must be there (verdict parse + iter counter).
+    expect(prompt).toMatch(/CHANGES_REQUESTED/);
+    expect(prompt).toMatch(/iter < 3/);
+    // The fix workflow must be the dispatch target.
+    expect(prompt).toContain('gh workflow run "harnext-review-fix.yml"');
+  });
+
+  it('review-loop fix-phase prompt embeds the fixer prompt and dispatches the review companion', () => {
+    const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
+    const loop = DEFAULT_STAGES.find((s) => s.kind === 'review-loop') as ReviewLoopStage;
+    const prompt = bundle.buildGeneratorPrompt({
+      ...baseInput,
+      stage: toStageWorkflowStage(loop),
+      phase: 'fix',
+      companionWorkflowFilename: 'harnext-review.yml',
+    });
     expect(prompt).toContain('BEGIN FIXER PROMPT');
-    expect(prompt).toContain(`up to ${loop.maxIterations} times`);
+    // Fix phase must NOT embed the reviewer prompt or the verdict parser.
+    expect(prompt).not.toContain('BEGIN REVIEWER PROMPT');
+    expect(prompt).not.toMatch(/CHANGES_REQUESTED/);
+    // After a successful fix, the workflow must dispatch the review companion back.
+    expect(prompt).toContain('gh workflow run "harnext-review.yml"');
+    // Fix is dispatch-only — no labeled trigger.
+    expect(prompt).toMatch(/workflow_dispatch ONLY/i);
   });
 
   it('terminal stage (no nextLabel) tells the agent no follow-up label to add', () => {
@@ -403,7 +447,7 @@ describe('WORKFLOW_PROMPT_BUNDLES', () => {
     );
   });
 
-  it('substitutes inside both reviewer and fixer prompts of a review-loop stage', () => {
+  it('substitutes $PR_NUMBER inside the review phase reviewer prompt', () => {
     const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
     const loop: ReviewLoopStage = {
       kind: 'review-loop',
@@ -414,25 +458,83 @@ describe('WORKFLOW_PROMPT_BUNDLES', () => {
       fix: { prompt: 'Address review comments on #${PR_NUMBER}.' },
       onExit: 'yolo',
     };
-    const prompt = bundle.buildGeneratorPrompt({
-      ...baseInput,
-      stage: toStageWorkflowStage(loop),
-    });
-    expect(prompt).not.toContain('$PR_NUMBER');
-    expect(prompt).not.toContain('${PR_NUMBER}');
-    // Both the reviewer and fixer blocks should contain the substituted
-    // expression.
     const expr =
       '${{ github.event.issue.number || github.event.pull_request.number || inputs.issue_number }}';
-    const reviewBlock = prompt.slice(
-      prompt.indexOf('BEGIN REVIEWER PROMPT'),
-      prompt.indexOf('END REVIEWER PROMPT'),
-    );
-    const fixBlock = prompt.slice(
-      prompt.indexOf('BEGIN FIXER PROMPT'),
-      prompt.indexOf('END FIXER PROMPT'),
+    const reviewPrompt = bundle.buildGeneratorPrompt({
+      ...baseInput,
+      stage: toStageWorkflowStage(loop),
+      phase: 'review',
+      companionWorkflowFilename: 'harnext-review-fix.yml',
+    });
+    const reviewBlock = reviewPrompt.slice(
+      reviewPrompt.indexOf('BEGIN REVIEWER PROMPT'),
+      reviewPrompt.indexOf('END REVIEWER PROMPT'),
     );
     expect(reviewBlock).toContain(expr);
+    expect(reviewBlock).not.toContain('$PR_NUMBER');
+  });
+
+  it('substitutes ${PR_NUMBER} inside the fix phase fixer prompt', () => {
+    const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
+    const loop: ReviewLoopStage = {
+      kind: 'review-loop',
+      id: 'review',
+      label: 'harnext:review',
+      maxIterations: 3,
+      review: { prompt: 'Review PR $PR_NUMBER on this repo.' },
+      fix: { prompt: 'Address review comments on #${PR_NUMBER}.' },
+      onExit: 'yolo',
+    };
+    const expr =
+      '${{ github.event.issue.number || github.event.pull_request.number || inputs.issue_number }}';
+    const fixPrompt = bundle.buildGeneratorPrompt({
+      ...baseInput,
+      stage: toStageWorkflowStage(loop),
+      phase: 'fix',
+      companionWorkflowFilename: 'harnext-review.yml',
+    });
+    const fixBlock = fixPrompt.slice(
+      fixPrompt.indexOf('BEGIN FIXER PROMPT'),
+      fixPrompt.indexOf('END FIXER PROMPT'),
+    );
     expect(fixBlock).toContain(expr);
+    expect(fixBlock).not.toContain('${PR_NUMBER}');
+  });
+
+  it('throws if review-loop input is missing the phase field', () => {
+    const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
+    const loop = DEFAULT_STAGES.find((s) => s.kind === 'review-loop') as ReviewLoopStage;
+    expect(() =>
+      bundle.buildGeneratorPrompt({
+        ...baseInput,
+        stage: toStageWorkflowStage(loop),
+      }),
+    ).toThrow(/phase/);
+  });
+
+  it('pr-merged trigger emits pull_request: [closed] + merged-only guard, skips PR handoff', () => {
+    // Doc-gardening fires on `pull_request.closed` with merged==true. The
+    // generator must (a) emit the closed trigger, (b) narrow with the merged
+    // guard, (c) drop the PR-handoff guidance (we ARE the post-merge run, no
+    // issue→PR handoff possible), (d) describe the stage as terminal with no
+    // label transitions.
+    const bundle = WORKFLOW_PROMPT_BUNDLES['claude-code'];
+    const docGardening = DEFAULT_STAGES.find(
+      (s) => s.kind === 'normal' && s.id === 'doc-gardening',
+    ) as NormalStage;
+    expect(docGardening).toBeDefined();
+    const prompt = bundle.buildGeneratorPrompt({
+      ...baseInput,
+      triggerOn: 'pr-merged',
+      stage: toStageWorkflowStage(docGardening),
+    });
+    expect(prompt).toMatch(/on\.pull_request\.types: \[closed\]/);
+    expect(prompt).toMatch(/github\.event\.pull_request\.merged == true/);
+    expect(prompt).toMatch(/Post-merge terminal stage: NO label transitions/);
+    // PR handoff guidance is for issue-triggered stages that may open a PR
+    // mid-flight; doc-gardening is post-merge so it should NOT appear.
+    expect(prompt).not.toMatch(/If the stage runs on an issue and the agent opens a pull request/);
+    // No workflow_dispatch trigger — post-merge stages are not chained.
+    expect(prompt).toMatch(/Do NOT add a workflow_dispatch trigger/);
   });
 });

@@ -11,6 +11,7 @@ import {
   NEEDS_JUDGMENT_LABEL,
   buildHarnextLabelSpecs,
   getStageRunner,
+  getStageTrigger,
   loadGithubConnection,
   saveGithubConnection,
   type GithubConnectionConfig,
@@ -78,7 +79,7 @@ describe('GithubConnectionConfig save/load round-trip', () => {
       repo: 'example/repo',
       pollIntervalMinutes: 15,
       filter: { kind: 'none' },
-      intake: { runner: { kind: 'local' } },
+      intake: { enabled: true },
       stages: DEFAULT_STAGES.map((s) => ({ ...s })),
       codingAgent: 'harnext',
       updatedAt: Date.now(),
@@ -118,129 +119,119 @@ describe('GithubConnectionConfig save/load round-trip', () => {
     expect(loaded!.codingAgentModel).toBeUndefined();
   });
 
-  it('treats stages without a runner field as local (back-compat)', () => {
+  it('migrates legacy stages without a runner to a self-hosted default workflow path', () => {
     const cfg = baseConfig();
     saveGithubConnection(projectCwd, cfg);
     const loaded = loadGithubConnection(projectCwd);
     expect(loaded).not.toBeNull();
     for (const stage of loaded!.stages) {
-      expect(stage.runner).toBeUndefined();
-      expect(getStageRunner(stage)).toEqual({ kind: 'local' });
+      const r = getStageRunner(stage);
+      expect(r.runsOn).toBe('self-hosted');
+      expect(r.workflowPath).toBe(`.github/workflows/harnext-${stage.id}.yml`);
+      expect(r.origin).toBe('generated');
     }
   });
 
-  it('round-trips a valid github-actions runner on a normal stage', () => {
+  it('migrates legacy `kind: github-actions` runners to runsOn: github-hosted', () => {
     const stage: NormalStage = {
       ...(DEFAULT_STAGES[0] as NormalStage),
       runner: {
+        // Legacy shape with `kind` discriminator. Loader rewrites it.
         kind: 'github-actions',
         workflowPath: '.github/workflows/harnext-triage.yml',
         origin: 'generated',
-      },
+      } as unknown as NormalStage['runner'],
     };
     const cfg = baseConfig({ stages: [stage, ...DEFAULT_STAGES.slice(1)] });
     saveGithubConnection(projectCwd, cfg);
     const loaded = loadGithubConnection(projectCwd);
     expect(loaded).not.toBeNull();
     expect(loaded!.stages[0].runner).toEqual({
-      kind: 'github-actions',
       workflowPath: '.github/workflows/harnext-triage.yml',
       origin: 'generated',
+      runsOn: 'github-hosted',
     });
-    expect(getStageRunner(loaded!.stages[0]).kind).toBe('github-actions');
   });
 
-  it('round-trips a valid github-actions runner on a review-loop stage', () => {
+  it('round-trips a self-hosted runner on a normal stage', () => {
+    const stage: NormalStage = {
+      ...(DEFAULT_STAGES[0] as NormalStage),
+      runner: {
+        workflowPath: '.github/workflows/harnext-triage.yml',
+        origin: 'generated',
+        runsOn: 'self-hosted',
+      },
+    };
+    const cfg = baseConfig({ stages: [stage, ...DEFAULT_STAGES.slice(1)] });
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded!.stages[0].runner).toEqual({
+      workflowPath: '.github/workflows/harnext-triage.yml',
+      origin: 'generated',
+      runsOn: 'self-hosted',
+    });
+    expect(getStageRunner(loaded!.stages[0]).runsOn).toBe('self-hosted');
+  });
+
+  it('round-trips a runner on a review-loop stage', () => {
     const loopStage = DEFAULT_STAGES.find((s) => s.kind === 'review-loop') as ReviewLoopStage;
     const stage: ReviewLoopStage = {
       ...loopStage,
       runner: {
-        kind: 'github-actions',
         workflowPath: '.github/workflows/harnext-review.yaml',
         origin: 'connected',
+        runsOn: 'github-hosted',
       },
     };
     const stages = DEFAULT_STAGES.map((s) => (s.kind === 'review-loop' ? stage : s));
     const cfg = baseConfig({ stages });
     saveGithubConnection(projectCwd, cfg);
     const loaded = loadGithubConnection(projectCwd);
-    expect(loaded).not.toBeNull();
     const reloaded = loaded!.stages.find((s) => s.kind === 'review-loop');
     expect(reloaded?.runner).toEqual({
-      kind: 'github-actions',
       workflowPath: '.github/workflows/harnext-review.yaml',
       origin: 'connected',
+      runsOn: 'github-hosted',
     });
   });
 
-  it('rejects stages with an invalid runner shape (falls back to DEFAULT_STAGES)', () => {
-    // A runner missing workflowPath is not a valid github-actions runner.
-    // The loader treats the whole stages array as invalid and falls back to
-    // DEFAULT_STAGES rather than silently resolving the bad runner to local.
-    const bogus = {
-      ...baseConfig(),
-      stages: [
-        {
-          ...(DEFAULT_STAGES[0] as NormalStage),
-          runner: { kind: 'github-actions', origin: 'generated' },
-        },
-      ],
-    };
-    saveGithubConnection(projectCwd, bogus as GithubConnectionConfig);
-    const loaded = loadGithubConnection(projectCwd);
-    expect(loaded).not.toBeNull();
-    expect(loaded!.stages).toEqual(DEFAULT_STAGES);
-  });
-
-  it('rejects stages with a bad runner origin', () => {
+  it('rejects stages with a bad runner origin (falls back to DEFAULT_STAGES)', () => {
     const bogus = {
       ...baseConfig(),
       stages: [
         {
           ...(DEFAULT_STAGES[0] as NormalStage),
           runner: {
-            kind: 'github-actions',
             workflowPath: '.github/workflows/x.yml',
             origin: 'handwritten',
+            runsOn: 'github-hosted',
           },
         },
       ],
     };
-    saveGithubConnection(projectCwd, bogus as GithubConnectionConfig);
+    saveGithubConnection(projectCwd, bogus as unknown as GithubConnectionConfig);
     const loaded = loadGithubConnection(projectCwd);
     expect(loaded!.stages).toEqual(DEFAULT_STAGES);
   });
 
-  it('round-trips a local intake runner', () => {
-    const cfg = baseConfig({ intake: { runner: { kind: 'local' } } });
-    saveGithubConnection(projectCwd, cfg);
+  it('migrates legacy intake `{ runner: { kind: local } }` to enabled=true', () => {
+    const bogus = {
+      ...baseConfig(),
+      intake: { runner: { kind: 'local' } },
+    };
+    saveGithubConnection(projectCwd, bogus as unknown as GithubConnectionConfig);
     const loaded = loadGithubConnection(projectCwd);
-    expect(loaded).not.toBeNull();
-    expect(loaded!.intake).toEqual({ runner: { kind: 'local' } });
+    expect(loaded!.intake).toEqual({ enabled: true });
   });
 
-  it('round-trips a github-actions intake runner', () => {
-    const cfg = baseConfig({
-      intake: {
-        runner: {
-          kind: 'github-actions',
-          workflowPath: '.github/workflows/harnext-tagger.yml',
-          origin: 'generated',
-        },
-      },
-    });
+  it('round-trips intake.enabled', () => {
+    const cfg = baseConfig({ intake: { enabled: false } });
     saveGithubConnection(projectCwd, cfg);
     const loaded = loadGithubConnection(projectCwd);
-    expect(loaded).not.toBeNull();
-    expect(loaded!.intake.runner).toEqual({
-      kind: 'github-actions',
-      workflowPath: '.github/workflows/harnext-tagger.yml',
-      origin: 'generated',
-    });
+    expect(loaded!.intake).toEqual({ enabled: false });
   });
 
   it('backfills intake to DEFAULT_INTAKE when the field is missing (legacy configs)', () => {
-    // Simulate a pre-issue-65 on-disk config that has no intake field.
     const cfg = baseConfig();
     const withoutIntake = { ...cfg } as Partial<GithubConnectionConfig>;
     delete (withoutIntake as Record<string, unknown>).intake;
@@ -248,19 +239,65 @@ describe('GithubConnectionConfig save/load round-trip', () => {
     const loaded = loadGithubConnection(projectCwd);
     expect(loaded).not.toBeNull();
     expect(loaded!.intake).toEqual(DEFAULT_INTAKE);
-    expect(loaded!.intake.runner.kind).toBe('local');
   });
 
-  it('rejects configs with a malformed intake runner', () => {
-    // intake.runner with kind="github-actions" but missing workflowPath is
-    // invalid and must fail to load — otherwise the poller would silently
-    // treat it as "not local" and the tagger path wouldn't fire either.
+  it('round-trips a stage with trigger="pr-merged"', () => {
+    const stage: NormalStage = {
+      kind: 'normal',
+      id: 'doc-gardening',
+      label: 'harnext:doc-gardening',
+      mode: 'yolo',
+      trigger: 'pr-merged',
+      prompt: 'do the thing',
+    };
+    const cfg = baseConfig({ stages: [stage] });
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    const reloaded = loaded!.stages[0] as NormalStage;
+    expect(reloaded.trigger).toBe('pr-merged');
+    expect(getStageTrigger(reloaded)).toBe('pr-merged');
+  });
+
+  it('defaults trigger to "labeled" when the field is absent (back-compat)', () => {
+    const cfg = baseConfig();
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    // DEFAULT_STAGES has triage/plan/implement/verify on the labeled
+    // cascade plus doc-gardening on pr-merged. Spot-check both shapes.
+    const triage = loaded!.stages.find((s) => s.id === 'triage')!;
+    expect(getStageTrigger(triage)).toBe('labeled');
+    const docGardening = loaded!.stages.find((s) => s.id === 'doc-gardening');
+    expect(docGardening).toBeDefined();
+    expect(getStageTrigger(docGardening!)).toBe('pr-merged');
+  });
+
+  it('rejects stages with a bogus trigger value', () => {
     const bogus = {
       ...baseConfig(),
-      intake: { runner: { kind: 'github-actions', origin: 'generated' } },
+      stages: [
+        {
+          kind: 'normal',
+          id: 'weird',
+          label: 'harnext:weird',
+          mode: 'yolo',
+          trigger: 'pre-rebase',
+          prompt: 'x',
+        },
+      ],
     };
-    saveGithubConnection(projectCwd, bogus as GithubConnectionConfig);
+    saveGithubConnection(projectCwd, bogus as unknown as GithubConnectionConfig);
     const loaded = loadGithubConnection(projectCwd);
-    expect(loaded).toBeNull();
+    // Bad trigger → whole stages array rejected → falls back to DEFAULT_STAGES.
+    expect(loaded!.stages).toEqual(DEFAULT_STAGES);
+  });
+
+  it('DEFAULT_STAGES includes doc-gardening as the terminal pr-merged stage', () => {
+    const docGardening = DEFAULT_STAGES.find((s) => s.id === 'doc-gardening');
+    expect(docGardening).toBeDefined();
+    expect(docGardening!.kind).toBe('normal');
+    expect((docGardening as NormalStage).trigger).toBe('pr-merged');
+    // Doc-gardening must be the LAST entry so the labeled-cascade
+    // calculation in the wizard naturally treats verify as terminal.
+    expect(DEFAULT_STAGES[DEFAULT_STAGES.length - 1].id).toBe('doc-gardening');
   });
 });

@@ -61,18 +61,50 @@ export interface StageWorkflowInput {
    */
   nextWorkflowFilename?: string;
   /**
-   * Which event the workflow should trigger on. `issues` for issue-only
-   * stages (triage, plan), `pull_request` for PR-only stages (verify,
-   * review), `both` when the stage can fire for either (implement during
-   * local→PR handoff).
+   * Which event the workflow should trigger on.
+   *  - `issues` for issue-only stages (triage, plan)
+   *  - `pull_request` for PR-only stages (verify, review)
+   *  - `both` when the stage can fire for either (implement during
+   *    issue→PR handoff)
+   *  - `pr-merged` for terminal post-merge stages (doc-gardening) that
+   *    fire on `pull_request.closed` filtered to `merged == true`. These
+   *    stages have no label cascade — no transitions, no PR handoff,
+   *    no next-stage dispatch.
    */
-  triggerOn: 'issues' | 'pull_request' | 'both';
+  triggerOn: 'issues' | 'pull_request' | 'both' | 'pr-merged';
   /** The coding agent that will run inside the workflow (same binary as the bundle). */
   codingAgent: CodingAgentId;
   /** Model id if the agent needs one (claude-code, codex). */
   codingAgentModel?: string;
   /** Absolute path the agent must write the YAML to. */
   workflowPath: string;
+  /**
+   * YAML fragment for `runs-on:` — already formatted as either
+   * `ubuntu-latest` (GitHub-hosted) or a label array like
+   * `['self-hosted', 'harnext', 'harnext-<projectHash>']`. The generator
+   * computes this from the stage runner so prompts don't have to know
+   * about runner shapes.
+   */
+  runsOnYaml: string;
+  /**
+   * For review-loop stages, indicates which workflow file is being
+   * generated. The pair pattern (review entry + fix companion) is
+   * deliberate — one workflow per phase keeps GitHub Actions logs
+   * one-job-one-purpose and lets a human interrupt the loop by simply
+   * removing the loop label or the iter counter label.
+   *
+   * Only set when stage.kind === 'review-loop'.
+   */
+  phase?: 'review' | 'fix';
+  /**
+   * Filename (basename) of the companion workflow in a review-loop pair.
+   * Required when `phase` is set:
+   *  - phase='review' → companion is the fix workflow that this review
+   *    workflow dispatches when the verdict is changes_requested.
+   *  - phase='fix'    → companion is the review workflow that this fix
+   *    workflow dispatches after pushing fixup commits.
+   */
+  companionWorkflowFilename?: string;
 }
 
 export interface WorkflowPromptBundle {
@@ -86,9 +118,29 @@ export interface WorkflowPromptBundle {
 
 // ── Shared prompt scaffolding ───────────────────────────────────────
 
+function reviewIterLabelPrefix(stageId: string): string {
+  return `harnext:${stageId}-iter-`;
+}
+
 function transitionSpec(input: StageWorkflowInput): string {
-  const mode =
-    input.stage.kind === 'normal' ? input.stage.mode : input.stage.onExit;
+  if (input.stage.kind === 'review-loop') {
+    return input.phase === 'fix'
+      ? fixPhaseTransitionSpec(input)
+      : reviewPhaseTransitionSpec(input);
+  }
+  if (input.triggerOn === 'pr-merged') {
+    // Post-merge terminal stages own no labels and dispatch nothing —
+    // the merged PR is closed, the pipeline is over. The agent's job is
+    // a self-contained side-effect (e.g. opening a doc-update PR).
+    return [
+      '- Post-merge terminal stage: NO label transitions on success.',
+      '- Do NOT add or remove any harnext:* labels on the merged PR.',
+      '- Do NOT dispatch any other workflow.',
+      `- On agent failure, post a single PR comment on the merged PR noting the failure ("${input.stage.label} failed: <one-line>").`,
+      '  Do NOT add `' + input.needsJudgmentLabel + '` — there is no labeled-cascade owner for this stage.',
+    ].join('\n');
+  }
+  const mode = input.stage.mode;
   const lines: string[] = [];
   lines.push(`- On agent success, remove the stage label "${input.stage.label}".`);
   if (mode === 'human-approval') {
@@ -104,14 +156,158 @@ function transitionSpec(input: StageWorkflowInput): string {
   return lines.join('\n');
 }
 
-function triggerSpec(triggerOn: 'issues' | 'pull_request' | 'both'): string {
-  switch (triggerOn) {
+/**
+ * Transition spec for the **review** workflow in a review-loop pair. After
+ * the reviewer agent finishes the workflow MUST run a deterministic step
+ * that reads the latest PR review verdict + the iteration counter label and
+ * takes exactly one of four actions. The actions are spelled out so the
+ * generated YAML is consistent across agents — this logic is the safety
+ * gate for the loop and we don't want it phrased differently each run.
+ */
+function reviewPhaseTransitionSpec(input: StageWorkflowInput): string {
+  if (input.stage.kind !== 'review-loop') {
+    throw new Error('reviewPhaseTransitionSpec called on non-review-loop stage');
+  }
+  const stage = input.stage;
+  const iterPrefix = reviewIterLabelPrefix(stage.id);
+  const fixFilename = input.companionWorkflowFilename;
+  const onExit = stage.onExit;
+  const lines: string[] = [];
+  lines.push('After the reviewer agent step, this workflow MUST include a deterministic');
+  lines.push('"loop control" step that runs the decision tree below. Implement it as a');
+  lines.push('single bash step using `gh` API calls. NUM is the PR number, available as:');
+  lines.push('  NUM: ${{ github.event.pull_request.number || inputs.issue_number }}');
+  lines.push('');
+  lines.push(`Iteration counter is a PR label "${iterPrefix}<N>" where N starts at 1.`);
+  lines.push('Read it like this (default 1 when no such label exists):');
+  lines.push('  labels=$(gh api "repos/${{ github.repository }}/issues/$NUM/labels" --jq \'.[].name\')');
+  lines.push(
+    `  iter=$(printf '%s\\n' "$labels" | grep -oE '^${iterPrefix}[0-9]+$' | head -n1 | grep -oE '[0-9]+$' || echo "")`,
+  );
+  lines.push('  if [ -z "$iter" ]; then iter=1; fi');
+  lines.push('');
+  lines.push('Latest PR review verdict (after the reviewer agent posts its review):');
+  lines.push(
+    '  state=$(gh api "repos/${{ github.repository }}/pulls/$NUM/reviews" --jq \'.[].state\' | tail -n1)',
+  );
+  lines.push('  Possible values: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING, or empty.');
+  lines.push('');
+  lines.push(`Decision tree — run in order, first match wins (max iterations: ${stage.maxIterations}):`);
+  lines.push('');
+  lines.push(`  A. state == CHANGES_REQUESTED AND iter < ${stage.maxIterations}:`);
+  lines.push(`       gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${iterPrefix}$iter" || true`);
+  lines.push('       next=$((iter + 1))');
+  lines.push(`       gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${iterPrefix}$next"`);
+  if (fixFilename) {
+    lines.push(`       gh workflow run "${fixFilename}" --field issue_number="$NUM"`);
+  }
+  lines.push(`     Do NOT remove the loop label "${stage.label}". Do NOT do onExit handoff.`);
+  lines.push('     Do NOT add awaiting-approval or any next-stage label.');
+  lines.push('');
+  lines.push(`  B. state == CHANGES_REQUESTED AND iter >= ${stage.maxIterations}:`);
+  lines.push(`       gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${iterPrefix}$iter" || true`);
+  lines.push(`       gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${stage.label}" || true`);
+  lines.push(
+    `       gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${input.needsJudgmentLabel}"`,
+  );
+  lines.push('     Loop budget exhausted — do NOT dispatch the fix workflow.');
+  lines.push('');
+  lines.push('  C. state is APPROVED / COMMENTED / DISMISSED / PENDING / empty:');
+  lines.push(`       gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${iterPrefix}$iter" || true`);
+  lines.push(`       gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${stage.label}" || true`);
+  if (onExit === 'human-approval') {
+    lines.push(
+      `       gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${input.awaitingLabel}"`,
+    );
+  } else if (input.nextLabel) {
+    lines.push(
+      `       gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${input.nextLabel}"`,
+    );
+    if (input.nextWorkflowFilename) {
+      lines.push(
+        `       gh workflow run "${input.nextWorkflowFilename}" --field issue_number="$NUM" || true`,
+      );
+    }
+  } else {
+    lines.push('       (terminal stage — no follow-up label to add.)');
+  }
+  lines.push('     Do NOT dispatch the fix workflow.');
+  lines.push('');
+  lines.push('On reviewer agent failure (non-zero exit / timeout) — guard with `if: failure()`:');
+  lines.push(`     gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${iterPrefix}$iter" || true`);
+  lines.push(`     gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${stage.label}" || true`);
+  lines.push(
+    `     gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${input.needsJudgmentLabel}"`,
+  );
+  lines.push('');
+  lines.push('Replace `{repo}` in the snippets above with `${{ github.repository }}` in the YAML.');
+  return lines.join('\n');
+}
+
+/**
+ * Transition spec for the **fix** workflow in a review-loop pair. The fix
+ * workflow only does two things: run the fixer agent (which pushes
+ * commits) and, on success, dispatch the review workflow back to
+ * re-evaluate. It does not touch the iteration counter or the loop label
+ * — the review workflow owns all loop-control transitions.
+ */
+function fixPhaseTransitionSpec(input: StageWorkflowInput): string {
+  if (input.stage.kind !== 'review-loop') {
+    throw new Error('fixPhaseTransitionSpec called on non-review-loop stage');
+  }
+  const stage = input.stage;
+  const iterPrefix = reviewIterLabelPrefix(stage.id);
+  const reviewFilename = input.companionWorkflowFilename;
+  const lines: string[] = [];
+  lines.push('On fixer agent success — guard with `if: success()`:');
+  if (reviewFilename) {
+    lines.push(
+      `  gh workflow run "${reviewFilename}" --field issue_number="$NUM"`,
+    );
+    lines.push('  This re-runs the review workflow against the freshly-pushed commits.');
+  } else {
+    lines.push('  (No companion review workflow filename was provided — verify generator wiring.)');
+  }
+  lines.push(
+    '  Do NOT modify the iteration counter label or the loop label. The review workflow',
+  );
+  lines.push('  owns those transitions; the fix workflow is just the implementer.');
+  lines.push('');
+  lines.push('On fixer agent failure (non-zero exit / timeout) — guard with `if: failure()`:');
+  lines.push(`  iter=$(gh api "repos/{repo}/issues/$NUM/labels" --jq '.[].name' | \\`);
+  lines.push(`        grep -oE '^${iterPrefix}[0-9]+$' | head -n1 || echo "")`);
+  lines.push(`  if [ -n "$iter" ]; then`);
+  lines.push(`    gh api -X DELETE "repos/{repo}/issues/$NUM/labels/$iter" || true`);
+  lines.push(`  fi`);
+  lines.push(`  gh api -X DELETE "repos/{repo}/issues/$NUM/labels/${stage.label}" || true`);
+  lines.push(
+    `  gh api -X POST "repos/{repo}/issues/$NUM/labels" -f labels[]="${input.needsJudgmentLabel}"`,
+  );
+  lines.push('  Do NOT dispatch the review workflow.');
+  lines.push('');
+  lines.push('NUM is the PR number: ${{ github.event.pull_request.number || inputs.issue_number }}');
+  lines.push('Replace `{repo}` in the snippets above with `${{ github.repository }}` in the YAML.');
+  return lines.join('\n');
+}
+
+function triggerSpec(input: StageWorkflowInput): string {
+  if (input.stage.kind === 'review-loop' && input.phase === 'fix') {
+    // Fix is dispatch-only: it never fires from a `labeled` event because
+    // there is no "fix label" — review dispatches it explicitly.
+    return 'on.workflow_dispatch ONLY (no `issues:` or `pull_request:` triggers — fix is dispatch-only)';
+  }
+  switch (input.triggerOn) {
     case 'issues':
       return 'on.issues.types: [labeled]';
     case 'pull_request':
       return 'on.pull_request.types: [labeled]';
     case 'both':
       return 'on.issues.types: [labeled] AND on.pull_request.types: [labeled]';
+    case 'pr-merged':
+      // Post-merge terminal stage. Fires when a PR closes; the job guard
+      // narrows further to `merged == true` so PRs that close without
+      // merging do not trigger the agent.
+      return 'on.pull_request.types: [closed]';
   }
 }
 
@@ -162,21 +358,36 @@ function stagePromptBlock(input: StageWorkflowInput): string {
       '----- END STAGE PROMPT -----',
     ].join('\n');
   }
-  return [
-    'Review-loop stage — two prompts to hand the agent within one run.',
-    `Loop up to ${input.stage.maxIterations} times: run reviewer, if the`,
-    'review verdict is `changes_requested` then run fixer and loop; otherwise exit.',
-    '',
-    'Reviewer prompt:',
-    '----- BEGIN REVIEWER PROMPT -----',
-    substituteIssueNumberPlaceholders(input.stage.reviewPrompt),
-    '----- END REVIEWER PROMPT -----',
-    '',
-    'Fixer prompt:',
-    '----- BEGIN FIXER PROMPT -----',
-    substituteIssueNumberPlaceholders(input.stage.fixPrompt),
-    '----- END FIXER PROMPT -----',
-  ].join('\n');
+  if (input.phase === 'review') {
+    return [
+      'Review-loop **review phase** — this workflow runs the reviewer agent and,',
+      'after the agent finishes, runs the deterministic loop-control step from the',
+      'transition spec (which decides whether to dispatch the companion fix',
+      'workflow or terminate the loop). Do not run the fixer agent here.',
+      '',
+      'Reviewer prompt to hand the agent verbatim:',
+      '----- BEGIN REVIEWER PROMPT -----',
+      substituteIssueNumberPlaceholders(input.stage.reviewPrompt),
+      '----- END REVIEWER PROMPT -----',
+    ].join('\n');
+  }
+  if (input.phase === 'fix') {
+    return [
+      'Review-loop **fix phase** — this workflow runs ONLY the fixer agent (which',
+      'addresses the most recent review feedback by pushing commits to the PR',
+      'branch), then dispatches the companion review workflow back to re-evaluate.',
+      'Do not run the reviewer agent here, do not parse review verdicts, do not',
+      'modify the iteration counter or the loop label.',
+      '',
+      'Fixer prompt to hand the agent verbatim:',
+      '----- BEGIN FIXER PROMPT -----',
+      substituteIssueNumberPlaceholders(input.stage.fixPrompt),
+      '----- END FIXER PROMPT -----',
+    ].join('\n');
+  }
+  throw new Error(
+    `review-loop stage requires phase='review' or 'fix' on the workflow input (got ${String(input.phase)})`,
+  );
 }
 
 function prHandoffSpec(): string {
@@ -218,28 +429,65 @@ function secretsSpec(agent: CodingAgentId): string {
 }
 
 function commonRequirements(input: StageWorkflowInput): string {
-  return [
+  const isReviewLoop = input.stage.kind === 'review-loop';
+  const isPrMerged = input.triggerOn === 'pr-merged';
+  const phaseSuffix = isReviewLoop ? `-${input.phase ?? 'review'}` : '';
+  const concurrencyGroup = `harnext-${input.stage.id}${phaseSuffix}-\${{ github.event.issue.number || github.event.pull_request.number || inputs.issue_number }}`;
+  let guardLine: string;
+  if (isReviewLoop && input.phase === 'fix') {
+    guardLine = `2. Guard the job with: if: github.event_name == 'workflow_dispatch' (the fix workflow never fires from a labeled event).`;
+  } else if (isPrMerged) {
+    // Post-merge stages MUST narrow `pull_request.closed` to merged-only,
+    // otherwise the agent runs on every closed-without-merging PR too.
+    guardLine = `2. Guard the job with: if: github.event.pull_request.merged == true (skip closed-without-merge PRs entirely).`;
+  } else {
+    guardLine = `2. Guard the job with: if: github.event_name == 'workflow_dispatch' || github.event.label.name == '${input.stage.label}'`;
+  }
+  const triggerLine = isPrMerged
+    ? `1. Trigger on ${triggerSpec(input)}. Do NOT add a workflow_dispatch trigger — post-merge stages are not part of any chain.`
+    : `1. Trigger on ${triggerSpec(input)}. Always include a workflow_dispatch trigger with a string\n   \`issue_number\` input alongside any labeled trigger so chained dispatches work.`;
+  const lines: string[] = [
     `Write ONE file at exactly: ${input.workflowPath}`,
     'Do not modify any other file. Do not commit or push. Do not create branches.',
     '',
     'The workflow YAML must:',
-    `1. Trigger on ${triggerSpec(input.triggerOn)}.`,
-    `2. Guard the job with: if: github.event.label.name == '${input.stage.label}'`,
-    `3. Set concurrency.group to: harnext-${input.stage.id}-\${{ github.event.issue.number || github.event.pull_request.number }}`,
+    triggerLine,
+    guardLine,
+    `3. Set concurrency.group to: ${concurrencyGroup}`,
     '   and concurrency.cancel-in-progress: false.',
-    '4. Check out the repository with fetch-depth: 0.',
-    '5. Run the configured coding agent against the stage prompt below.',
+    `4. Use \`runs-on: ${input.runsOnYaml}\` EXACTLY (do not substitute ubuntu-latest if a label`,
+    '   array is specified — that array targets the user\'s self-hosted runner, and using',
+    '   `ubuntu-latest` instead would silently re-route the job to a GitHub-hosted runner).',
+    '5. Check out the repository with fetch-depth: 0.',
+    '6. Run the configured coding agent against the stage prompt below.',
     secretsSpec(input.codingAgent)
       .split('\n')
       .map((line) => '   ' + line)
       .join('\n'),
-    '6. Perform the label transition below via `gh` API calls:',
+    isPrMerged
+      ? '7. Post-merge stage — there are no label transitions to perform:'
+      : '7. Perform the label transition below via `gh` API calls:',
     transitionSpec(input),
-    '',
-    prHandoffSpec(),
-    '',
-    stagePromptBlock(input),
-  ].join('\n');
+  ];
+  // PR-handoff only applies to issue-triggered stages that may open a PR
+  // mid-flight. Review-loop and pr-merged stages already operate on a
+  // PR — including the handoff guidance just confuses the model.
+  if (!isReviewLoop && !isPrMerged) {
+    lines.push('');
+    lines.push(prHandoffSpec());
+  }
+  lines.push('');
+  lines.push(stagePromptBlock(input));
+  return lines.join('\n');
+}
+
+/**
+ * Apply the per-stage substitutions the reference YAMLs carry as
+ * placeholder tokens. Currently just `<RUNS_ON>` — kept as a function so
+ * future placeholders (e.g. concurrency group overrides) plug in here.
+ */
+function applyReferenceSubstitutions(reference: string, input: StageWorkflowInput): string {
+  return reference.replace(/<RUNS_ON>/g, input.runsOnYaml);
 }
 
 /**
@@ -248,11 +496,15 @@ function commonRequirements(input: StageWorkflowInput): string {
  * turns every Edit/Write/Bash into a silent permission-denied, which is
  * indistinguishable from a stage that just chose not to write anything.
  * Pin read-only stages to Read,Glob,Grep,Bash and add Edit,Write for
- * stages that have to change code.
+ * stages that have to change code (including the fix phase of a
+ * review-loop, which pushes commits to the PR branch).
  */
-function claudeCodeToolAllowlist(stageId: string): string {
+function claudeCodeToolAllowlist(input: StageWorkflowInput): string {
+  if (input.stage.kind === 'review-loop') {
+    return input.phase === 'fix' ? 'Read,Glob,Grep,Bash,Edit,Write' : 'Read,Glob,Grep,Bash';
+  }
   const writeStages = new Set(['implement', 'fix', 'verify']);
-  return writeStages.has(stageId)
+  return writeStages.has(input.stage.id)
     ? 'Read,Glob,Grep,Bash,Edit,Write'
     : 'Read,Glob,Grep,Bash';
 }
@@ -282,7 +534,7 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.label.name == 'harnext:<STAGE_ID>'
-    runs-on: ubuntu-latest
+    runs-on: <RUNS_ON>
     permissions:
       contents: write
       pull-requests: write
@@ -351,8 +603,13 @@ jobs:
 `;
 
 function buildClaudeCodePrompt(input: StageWorkflowInput): string {
-  const tools = claudeCodeToolAllowlist(input.stage.id);
-  const dispatchConstraint = input.nextWorkflowFilename
+  const tools = claudeCodeToolAllowlist(input);
+  // Skip the legacy `dispatchConstraint` reminder for review-loop stages —
+  // their dispatch logic is fully spelled out in transitionSpec, and adding
+  // the same idea twice (with subtly different framing) causes the agent
+  // to merge them into one confused step.
+  const isReviewLoop = input.stage.kind === 'review-loop';
+  const dispatchConstraint = !isReviewLoop && input.nextWorkflowFilename
     ? [
         `  h) After adding \`${input.nextLabel}\` on a successful yolo chain,`,
         '     you MUST also dispatch the next workflow:',
@@ -360,9 +617,7 @@ function buildClaudeCodePrompt(input: StageWorkflowInput): string {
         '     Label-add alone is not enough — GitHub suppresses `labeled`',
         '     events for labels added via GITHUB_TOKEN, so the next',
         `     workflow (${input.nextWorkflowFilename}) will never fire without`,
-        '     an explicit dispatch. The `|| true` tolerates the case where the',
-        '     next stage is actually local on the user\'s machine — the file',
-        '     simply does not exist and the cron poller picks up by label.',
+        '     an explicit dispatch.',
       ].join('\n')
     : null;
   return [
@@ -371,7 +626,7 @@ function buildClaudeCodePrompt(input: StageWorkflowInput): string {
     '',
     'Reference workflow to model the shape on (trigger, guard, concurrency, checkout, action usage):',
     '----- BEGIN REFERENCE YAML -----',
-    CLAUDE_CODE_REFERENCE,
+    applyReferenceSubstitutions(CLAUDE_CODE_REFERENCE, input),
     '----- END REFERENCE YAML -----',
     '',
     `Target repo: ${input.repo}`,
@@ -391,10 +646,20 @@ function buildClaudeCodePrompt(input: StageWorkflowInput): string {
     '  c) Set `allowed_bots: \'github-actions\'` on the claude-code-action step.',
     '     When another workflow hands off to this one via `gh workflow run`, the actor',
     '     becomes github-actions[bot], which the action rejects unless allowlisted.',
-    '  d) Add a `workflow_dispatch` trigger alongside the `labeled` trigger, with an',
-    '     `issue_number` input. GitHub suppresses `labeled` events for labels added by',
-    '     GITHUB_TOKEN, so any chained workflow must accept `gh workflow run` fallbacks.',
-    '     The job guard should allow both paths: `github.event_name == \'workflow_dispatch\' || github.event.label.name == \'<stage-label>\'`.',
+    isReviewLoop && input.phase === 'fix'
+      ? [
+          '  d) Triggers: `workflow_dispatch` ONLY. Do NOT include `issues:` or',
+          '     `pull_request:` triggers — the fix workflow is invoked exclusively',
+          '     from the review workflow via `gh workflow run`. Define an `issue_number`',
+          '     string input. The job guard should be:',
+          '         `if: github.event_name == \'workflow_dispatch\'`',
+        ].join('\n')
+      : [
+          '  d) Add a `workflow_dispatch` trigger alongside the `labeled` trigger, with an',
+          '     `issue_number` input. GitHub suppresses `labeled` events for labels added by',
+          '     GITHUB_TOKEN, so any chained workflow must accept `gh workflow run` fallbacks.',
+          '     The job guard should allow both paths: `github.event_name == \'workflow_dispatch\' || github.event.label.name == \'<stage-label>\'`.',
+        ].join('\n'),
     '  e) To read Claude\'s textual output (e.g. post a plan comment), parse the',
     '     `execution_file` output with jq. The action has NO `result` output; the',
     '     file is a JSON ARRAY of turn objects (not JSONL — do NOT use `jq -s`).',
@@ -430,7 +695,7 @@ on:
 jobs:
   codex:
     if: github.event.label.name == 'harnext:<STAGE_ID>'
-    runs-on: ubuntu-latest
+    runs-on: <RUNS_ON>
     permissions:
       contents: write
       pull-requests: write
@@ -462,7 +727,7 @@ function buildCodexPrompt(input: StageWorkflowInput): string {
     '',
     'Rough reference shape:',
     '----- BEGIN REFERENCE YAML -----',
-    CODEX_REFERENCE,
+    applyReferenceSubstitutions(CODEX_REFERENCE, input),
     '----- END REFERENCE YAML -----',
     '',
     `Target repo: ${input.repo}`,
@@ -490,7 +755,7 @@ on:
 jobs:
   harnext:
     if: github.event.label.name == 'harnext:<STAGE_ID>'
-    runs-on: ubuntu-latest
+    runs-on: <RUNS_ON>
     permissions:
       contents: write
       pull-requests: write
@@ -530,7 +795,7 @@ function buildHarnextPrompt(input: StageWorkflowInput): string {
     '',
     'Rough reference shape:',
     '----- BEGIN REFERENCE YAML -----',
-    HARNEXT_REFERENCE,
+    applyReferenceSubstitutions(HARNEXT_REFERENCE, input),
     '----- END REFERENCE YAML -----',
     '',
     `Target repo: ${input.repo}`,
