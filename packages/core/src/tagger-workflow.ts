@@ -127,8 +127,11 @@ export function buildTaggerWorkflow(input: BuildTaggerWorkflowInput): string {
     `          # Label-add via GITHUB_TOKEN does not fire \`issues.labeled\`,`,
     `          # so the first stage's workflow will not auto-trigger from`,
     `          # the label alone. Dispatch it explicitly via workflow_dispatch.`,
+    `          # Pass --ref so gh doesn't query the default branch via`,
+    `          # GraphQL (would require contents:read, which this job omits).`,
     `          gh workflow run "${firstStageFilename}" \\`,
     `            --repo "\${{ github.repository }}" \\`,
+    `            --ref "\${{ github.event.repository.default_branch }}" \\`,
     `            --field issue_number="\${{ github.event.issue.number }}"`,
     ``,
   ].join('\n');
