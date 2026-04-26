@@ -41,7 +41,7 @@ export const PROVIDERS: ProviderInfo[] = [
     id: 'nvidia',
     name: 'NVIDIA NIM',
     envVar: 'NVIDIA_API_KEY',
-    defaultModel: 'deepseek-ai/deepseek-v4-pro',
+    defaultModel: 'moonshotai/kimi-k2.5',
     defaultBaseUrl: 'https://integrate.api.nvidia.com/v1',
     customResolution: true,
   },

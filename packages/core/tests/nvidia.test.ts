@@ -36,7 +36,7 @@ describe('buildNvidiaModel', () => {
   });
 
   it('exports a default model id matching the wizard\'s onboarding placeholder', () => {
-    expect(NVIDIA_DEFAULT_MODEL).toBe('deepseek-ai/deepseek-v4-pro');
+    expect(NVIDIA_DEFAULT_MODEL).toBe('moonshotai/kimi-k2.5');
     expect(NVIDIA_BASE_URL).toBe('https://integrate.api.nvidia.com/v1');
   });
 });
@@ -119,7 +119,7 @@ describe('PROVIDERS registry — nvidia entry', () => {
     const nvidia = getProviderById('nvidia');
     expect(nvidia).toBeDefined();
     expect(nvidia!.envVar).toBe('NVIDIA_API_KEY');
-    expect(nvidia!.defaultModel).toBe('deepseek-ai/deepseek-v4-pro');
+    expect(nvidia!.defaultModel).toBe('moonshotai/kimi-k2.5');
     expect(nvidia!.defaultBaseUrl).toBe('https://integrate.api.nvidia.com/v1');
     // Hosted (not local) — NVIDIA needs an API key, unlike ollama.
     expect(nvidia!.local).toBeUndefined();
