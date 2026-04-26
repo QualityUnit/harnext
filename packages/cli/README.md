@@ -28,6 +28,8 @@ harnext -p "list the files in this directory"    # one-shot prompt
 harnext --provider openai -m gpt-4o              # different provider/model
 harnext setup                                    # configure project pipeline
 harnext status                                   # show active agent runs
+harnext runner status                            # inspect the self-hosted runner daemon
+harnext runner logs                              # tail the runner's diag log
 harnext mcp --help                               # manage MCP servers
 ```
 

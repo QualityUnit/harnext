@@ -23,6 +23,7 @@ import {
   runInteractiveMode,
   runMcpMode,
   runPrintMode,
+  runRunnerMode,
   runStatusMode,
   runUpgradeMode,
 } from './modes/index.js';
@@ -67,6 +68,16 @@ export async function main(argv: string[]): Promise<void> {
     const exitCode = await runUpgradeMode({
       check: args.upgradeCheck,
       force: args.upgradeForce,
+    });
+    process.exit(exitCode);
+  }
+
+  if (args.mode === 'runner') {
+    const exitCode = await runRunnerMode({
+      cwd: args.cwd,
+      verb: args.runnerVerb,
+      logLines: args.runnerLogLines,
+      logNoFollow: args.runnerLogNoFollow,
     });
     process.exit(exitCode);
   }

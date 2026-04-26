@@ -5,11 +5,13 @@ export type Mode =
   | 'print'
   | 'heartbeat'
   | 'mcp'
+  | 'runner'
   | 'setup'
   | 'status'
   | 'upgrade';
 export type McpVerb = 'add' | 'remove' | 'list' | 'reconnect';
 export type McpScopeArg = 'user' | 'project';
+export type RunnerVerb = 'status' | 'logs';
 
 export interface Args {
   mode: Mode;
@@ -37,6 +39,12 @@ export interface Args {
   upgradeCheck?: boolean;
   /** `harnext upgrade --force` — reinstall even when already on latest. */
   upgradeForce?: boolean;
+  /** Runner subcommand verb — only set when mode === 'runner'. */
+  runnerVerb?: RunnerVerb;
+  /** `harnext runner logs --lines N` — tail buffer size; default 50. */
+  runnerLogLines?: number;
+  /** `harnext runner logs --no-follow` — dump and exit instead of `tail -f`. */
+  runnerLogNoFollow?: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -61,6 +69,10 @@ export function parseArgs(argv: string[]): Args {
 
   if (argv[0] === 'upgrade') {
     return parseUpgradeArgs(argv.slice(1), args);
+  }
+
+  if (argv[0] === 'runner') {
+    return parseRunnerArgs(argv.slice(1), args);
   }
 
   let i = 0;
@@ -186,6 +198,67 @@ Options:
 
 Runs 'npm install -g harnext@<latest>' under the hood, so the user's existing
 global prefix, registry, and auth settings are respected.
+`);
+}
+
+function parseRunnerArgs(rest: string[], args: Args): Args {
+  args.mode = 'runner';
+  if (rest[0] === '-h' || rest[0] === '--help') {
+    printRunnerHelp();
+    process.exit(0);
+  }
+  const verbRaw = rest[0];
+  if (!verbRaw || verbRaw.startsWith('-')) {
+    return args; // missing verb — handled downstream
+  }
+  args.runnerVerb = verbRaw as RunnerVerb;
+  let i = 1;
+  while (i < rest.length) {
+    const arg = rest[i];
+    switch (arg) {
+      case '--cwd':
+        args.cwd = rest[++i] ?? args.cwd;
+        break;
+      case '-n':
+      case '--lines': {
+        const n = Number(rest[++i]);
+        if (Number.isFinite(n) && n > 0) args.runnerLogLines = Math.floor(n);
+        break;
+      }
+      case '--no-follow':
+        args.runnerLogNoFollow = true;
+        break;
+      case '-h':
+      case '--help':
+        printRunnerHelp();
+        process.exit(0);
+        break;
+      default:
+        break;
+    }
+    i++;
+  }
+  return args;
+}
+
+export function printRunnerHelp(): void {
+  console.log(`
+harnext runner - Inspect this project's self-hosted GitHub Actions runner
+
+Usage:
+  harnext runner status [--cwd <directory>]
+  harnext runner logs   [--cwd <directory>] [-n N | --lines N] [--no-follow]
+
+Verbs:
+  status                   Show local registration, daemon state (systemd/launchd),
+                           and how GitHub currently sees the runner.
+  logs                     Tail the latest <installDir>/_diag/Runner_*.log
+                           (default: follow with -n 50; use --no-follow for a
+                           one-shot dump).
+
+The runner is registered automatically by \`harnext setup\` when any pipeline
+stage is set to "self-hosted". These commands are read-only — they never
+start, stop, or reconfigure the daemon.
 `);
 }
 
@@ -327,5 +400,6 @@ Subcommands:
   status                   Show active coding-agent runs (worktrees + processes)
   upgrade                  Install the latest harnext from npm
   mcp                      Manage MCP servers (run \`harnext mcp --help\`)
+  runner                   Inspect the self-hosted runner (run \`harnext runner --help\`)
 `);
 }
