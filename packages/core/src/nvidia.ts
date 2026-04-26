@@ -17,7 +17,13 @@ export const NVIDIA_BASE_URL = 'https://integrate.api.nvidia.com/v1';
  * Surfaces in the wizard as the placeholder; the user can override via the
  * model picker (which fetches the live list from `/v1/models`).
  */
-export const NVIDIA_DEFAULT_MODEL = 'deepseek-ai/deepseek-v4-pro';
+/**
+ * NVIDIA NIM advertises some models in `/v1/models` whose chat-completions
+ * endpoints stall with no response (e.g. `deepseek-v4-pro`, `deepseek-v4-flash`).
+ * Pick a model whose streaming endpoint is verified working so first-run users
+ * don't get stuck in an infinite loading state.
+ */
+export const NVIDIA_DEFAULT_MODEL = 'moonshotai/kimi-k2.5';
 
 export interface NvidiaModelSummary {
   id: string;
