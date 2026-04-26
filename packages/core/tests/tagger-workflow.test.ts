@@ -33,6 +33,20 @@ describe('buildTaggerWorkflow', () => {
     expect(yaml).toContain('actions: write');
   });
 
+  it('passes --ref to the dispatch so gh does not need contents:read', () => {
+    // Live observation from flowhunt-amicited install: without --ref, gh
+    // CLI tries to resolve the default branch via GraphQL
+    // (repository.defaultBranchRef), which fails with "Resource not
+    // accessible by integration" because the tagger job only requests
+    // issues:write + actions:write. Sourcing the branch from the event
+    // payload keeps the token scope minimal.
+    const yaml = buildTaggerWorkflow({
+      firstStage: firstStage(),
+      filter: { kind: 'none' },
+    });
+    expect(yaml).toContain('--ref "${{ github.event.repository.default_branch }}"');
+  });
+
   it('computes the dispatch target filename from the stage id (not the runner workflowPath)', () => {
     // Sanity: the tagger uses the convention `harnext-<id>.yml`,
     // which is also what the setup wizard writes to. This keeps the
