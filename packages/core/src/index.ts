@@ -195,6 +195,12 @@ export {
 } from './github-connection.js';
 
 export {
+  createAndSwitchBranch,
+  getCurrentGitBranch,
+  type GitBranchResult,
+} from './git-branch.js';
+
+export {
   PINNED_RUNNER_VERSION,
   buildArchiveName,
   buildTarballUrl,

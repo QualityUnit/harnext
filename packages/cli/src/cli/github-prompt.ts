@@ -10,6 +10,7 @@ import {
   NEEDS_JUDGMENT_LABEL,
   buildHarnextLabelSpecs,
   checkPublicRepoApprovalGate,
+  createAndSwitchBranch,
   defaultStageWorkflowPath,
   deleteGithubConnection,
   deregisterRunner,
@@ -17,6 +18,7 @@ import {
   ensureRepoLabels,
   generateStageWorkflow,
   getCodingAgentSpec,
+  getCurrentGitBranch,
   getGithubConfigPath,
   getRepoFromCwd,
   getStageRunner,
@@ -1614,6 +1616,104 @@ async function runAnalysisStep(
   return applyDefaultRunners(result.stages, result.techStack);
 }
 
+const SETUP_BRANCH_NAME = 'feat/setup-harnext';
+
+/**
+ * Warn the user when the setup wizard (`harnext setup` or `/connect-github`)
+ * is invoked on the default branch (main/master) and offer to switch to a
+ * fresh feature branch. Returns `false` if the user explicitly aborts so
+ * the caller can stop the wizard. Skipped silently outside of git repos
+ * and on any non-default branch.
+ */
+async function runBranchSafetyStep(cwd: string): Promise<boolean> {
+  const branch = getCurrentGitBranch(cwd);
+  if (branch !== 'main' && branch !== 'master') return true;
+
+  console.log(chalk.bold('  Step: working branch'));
+  console.log(
+    chalk.yellow(`  You are on the default branch (${branch}).`),
+  );
+  console.log(
+    chalk.dim(
+      '    Setup writes workflow files and configuration to this repo. We',
+    ),
+  );
+  console.log(
+    chalk.dim(
+      '    recommend doing it on a feature branch so the changes can land via PR.',
+    ),
+  );
+  console.log();
+
+  const accept = await confirm(
+    `Create branch "${SETUP_BRANCH_NAME}" and continue?`,
+    true,
+  );
+  if (!accept) {
+    console.log(
+      chalk.dim('  Continuing on ') + chalk.cyan(branch) + chalk.dim('.'),
+    );
+    console.log();
+    return true;
+  }
+
+  const result = createAndSwitchBranch(cwd, SETUP_BRANCH_NAME);
+  if (!result.ok) {
+    console.log(chalk.red(`  Could not create branch: ${result.message}`));
+    const cont = await confirm(`Continue on ${branch} anyway?`, false);
+    if (!cont) {
+      console.log(chalk.dim('  Cancelled.'));
+      console.log();
+      return false;
+    }
+    console.log();
+    return true;
+  }
+
+  console.log(
+    chalk.green('  Switched to new branch ') + chalk.cyan(SETUP_BRANCH_NAME),
+  );
+  console.log();
+  return true;
+}
+
+/**
+ * Friendly closing message after a successful save. Tailors the suggested
+ * next step to whether the user is on a feature branch (open a PR) or the
+ * default branch (commit + push directly).
+ */
+function printSetupComplete(cwd: string, cfg: GithubConnectionConfig): void {
+  const branch = getCurrentGitBranch(cwd);
+  const onDefaultBranch = branch === 'main' || branch === 'master';
+
+  console.log(chalk.green.bold('  Your harness is ready!'));
+  console.log();
+  console.log(chalk.bold('  Next steps:'));
+  console.log(
+    chalk.dim('    1. Review the generated files under ') +
+      chalk.cyan('.github/workflows/'),
+  );
+  if (onDefaultBranch || !branch) {
+    console.log(
+      chalk.dim('    2. Commit and push them to ') + chalk.cyan(cfg.repo),
+    );
+  } else {
+    console.log(
+      chalk.dim('    2. Commit them on ') +
+        chalk.cyan(branch) +
+        chalk.dim(' and open a PR to merge into main'),
+    );
+  }
+  console.log(
+    chalk.dim('    3. Label an issue with ') +
+      chalk.cyan(cfg.stages[0]?.label ?? 'the first stage label') +
+      chalk.dim(' and watch the harness run.'),
+  );
+  console.log();
+  console.log(chalk.green('  Happy harnessing!'));
+  console.log();
+}
+
 /**
  * Create (or edit) flow. When `current` is passed, its values are used as
  * defaults so the user can keep fields unchanged by accepting the default.
@@ -1629,6 +1729,10 @@ async function createFlow(
   // harnext — this is the implicit agent context of `/connect-github`, so
   // we never ask. In full mode we always ask, because `harnext setup` is
   // the place where the user chooses how the pipeline runs.
+  if (!(await runBranchSafetyStep(opts.cwd))) {
+    return;
+  }
+
   let codingAgent: CodingAgentId = current?.codingAgent ?? 'harnext';
   let codingAgentModel: string | undefined = current?.codingAgentModel;
 
@@ -1996,6 +2100,8 @@ async function createFlow(
     console.log(chalk.green(savedMsg));
     console.log(chalk.dim(`    config: ${getGithubConfigPath(opts.cwd)}`));
     console.log();
+
+    printSetupComplete(opts.cwd, cfg);
   } catch (err) {
     console.log(
       chalk.red('  Failed to save config: ') +
