@@ -1,6 +1,6 @@
 {
   "name": "harnext",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "AI coding agent with harness engineering — interactive REPL, MCP support, and a GitHub-issue-driven workflow runner.",
   "type": "module",
   "bin": {
@@ -26,7 +26,7 @@
     "yaml": "^2.5.0"
   },
   "devDependencies": {
-    "@harnext/core": "^1.2.1"
+    "@harnext/core": "^1.2.2"
   },
   "engines": {
     "node": ">=20"
@@ -45,12 +45,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yasha-dev1/codefactory.git",
+    "url": "git+https://github.com/QualityUnit/harnext.git",
     "directory": "packages/cli"
   },
-  "homepage": "https://github.com/yasha-dev1/codefactory#readme",
+  "homepage": "https://github.com/QualityUnit/harnext#readme",
   "bugs": {
-    "url": "https://github.com/yasha-dev1/codefactory/issues"
+    "url": "https://github.com/QualityUnit/harnext/issues"
   },
   "publishConfig": {
     "access": "public",
