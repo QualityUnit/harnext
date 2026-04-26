@@ -29,14 +29,19 @@ const { attachListeners, step, finalize } = await import(
 );
 
 const startedAt = new Date().toISOString();
-const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+// Skip Playwright's recordVideo when the verify stage was configured for
+// `s3-image` mode — the harness env signals "screenshot only, don't pay
+// the recording cost". Any other value (or unset) keeps recording on.
+const RECORD_VIDEO = process.env.BROWSER_VERIFY_NO_VIDEO === '1' ? undefined : { dir: join(RUN_DIR, 'video') };
+const contextOptions = {
   executablePath: EXECUTABLE_PATH,
   headless: HEADLESS,
   viewport: { width: 1280, height: 800 },
-  recordVideo: { dir: join(RUN_DIR, 'video') },
   recordHar: { path: join(RUN_DIR, 'network.har'), content: 'omit' },
   args: ['--disable-extensions'],
-});
+};
+if (RECORD_VIDEO) contextOptions.recordVideo = RECORD_VIDEO;
+const context = await chromium.launchPersistentContext(USER_DATA_DIR, contextOptions);
 
 await context.tracing.start({ screenshots: true, snapshots: true });
 const page = context.pages()[0] ?? (await context.newPage());

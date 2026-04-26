@@ -90,26 +90,57 @@ prompt: |
                            that contrast IS the point of verify.
                        Skipping is never acceptable on a
                        UI-touching PR.
-                    4. The prompt MUST tell the agent to copy
-                       the four artifacts (video, HAR, trace,
-                       final screenshot) out of the ephemeral
-                       worktree into `~/harnext-artifacts/<runId>/`
-                       — a NON-HIDDEN path. Do NOT use
-                       `~/.harnext/artifacts/...`: snap-confined
-                       viewers (VLC snap, Firefox snap) can't
-                       open files under dot-directories, so the
-                       PR comment's cited paths must resolve.
-                       The prompt MUST also instruct the agent
-                       to run ffmpeg (libx264, veryfast, crf 23)
-                       as a fallback to convert `recording.webm`
-                       → `recording.mp4` if the skill didn't
-                       already produce an mp4 — Playwright's
-                       webm has stream-level `duration=N/A`
-                       which the VLC snap refuses to play. The
-                       final PR comment cites whichever file
-                       actually exists on disk (`.mp4` when
-                       conversion succeeded, `.webm` only as
-                       fallback).
+                    4. Artifact destination depends on the env
+                       variable `VERIFY_ARTIFACT_KIND`:
+                         a. UNSET (or `local` — the default):
+                            Copy the four artifacts (video, HAR,
+                            trace, final screenshot) out of the
+                            ephemeral worktree into
+                            `~/harnext-artifacts/<runId>/` — a
+                            NON-HIDDEN path. Do NOT use
+                            `~/.harnext/artifacts/...`: snap-
+                            confined viewers (VLC snap, Firefox
+                            snap) can't open files under dot-
+                            directories, so the PR comment's
+                            cited paths must resolve. Also run
+                            ffmpeg (libx264, veryfast, crf 23)
+                            as a fallback to convert
+                            `recording.webm` → `recording.mp4`
+                            if the skill didn't already produce
+                            an mp4 — Playwright's webm has
+                            stream-level `duration=N/A` which
+                            the VLC snap refuses to play. The
+                            PR comment cites whichever file
+                            actually exists on disk.
+                         b. `s3-image` — upload the final
+                            screenshot only to the configured
+                            public S3 bucket (skip the recording
+                            entirely; `BROWSER_VERIFY_NO_VIDEO=1`
+                            tells the skill to disable Playwright
+                            recordVideo).
+                         c. `s3-image-and-video` — upload BOTH
+                            the final screenshot and the
+                            recording (mp4 if converted, else
+                            webm) to S3.
+                       For S3 modes, use:
+                         aws s3 cp <local> \
+                           s3://$S3_BUCKET/$S3_KEY_PREFIX/<pr>/<runId>/<file> \
+                           --acl public-read --region $S3_REGION
+                       Public URL:
+                         https://$S3_BUCKET.s3.$S3_REGION.amazonaws.com/$S3_KEY_PREFIX/<pr>/<runId>/<file>
+                       Embed in the PR comment:
+                         - Screenshot → Markdown image
+                           `![verify screenshot](URL)` (renders
+                           inline).
+                         - Recording → clickable link
+                           `[▶ recording](URL)` plus a one-line
+                           note that the file expires in
+                           $S3_RETENTION_DAYS days. (GitHub
+                           comments do not render `<video>`.)
+                       If `aws s3 cp` fails, fall back to the
+                       local-path behavior of mode (a) and note
+                       the upload error in the comment so the
+                       user can fix bucket / credentials.
                     5. The prompt MUST FAIL the stage on any of:
                        non-zero exit from the skill, a new
                        `pageErrors` entry (vs. main), a failing

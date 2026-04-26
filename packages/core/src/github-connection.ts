@@ -84,6 +84,49 @@ export interface StageRunner {
  */
 export type StageTrigger = 'labeled' | 'pr-merged';
 
+/**
+ * Where verification artifacts (screenshots, recordings) live.
+ *  - `local` (default): copied to `~/harnext-artifacts/<runId>/` on the
+ *    runner; PR comment cites the local paths. No S3 involvement.
+ *  - `s3-image`: final screenshot is uploaded to a public S3 bucket and
+ *    embedded in the PR comment. Browser recording is skipped entirely.
+ *  - `s3-image-and-video`: both screenshot and recording uploaded to S3.
+ */
+export type VerifyArtifactKind = 'local' | 's3-image' | 's3-image-and-video';
+
+/** Default key prefix used inside the configured bucket. */
+export const DEFAULT_S3_KEY_PREFIX = 'harnext-verify';
+/** Default retention surfaced by the wizard; users can override. */
+export const DEFAULT_S3_RETENTION_DAYS = 7;
+
+/**
+ * S3 bucket coords + retention. Credentials are NOT stored here — they
+ * live in GitHub repo secrets (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`)
+ * which the wizard sets via `gh secret set`.
+ */
+export interface VerifyS3Config {
+  bucket: string;
+  region: string;
+  /** Display-only — drives the wizard's "did you set the lifecycle rule?"
+   *  reminder. Bucket-level lifecycle is configured outside harnext. */
+  retentionDays: number;
+  /** Optional path prefix inside the bucket. Defaults to
+   *  `DEFAULT_S3_KEY_PREFIX` at the call site. */
+  keyPrefix?: string;
+}
+
+/**
+ * Verify-stage-specific config. Only meaningful when the stage's `id ===
+ * 'verify'`. Absent on a `NormalStage` ⇒ behave as `{ artifactKind:
+ * 'local' }` (current default — preserves pre-S3 behavior verbatim).
+ */
+export interface VerifyStageConfig {
+  artifactKind: VerifyArtifactKind;
+  /** Required when `artifactKind` starts with `s3-`; forbidden when it is
+   *  `local`. The loader rejects stages that violate this constraint. */
+  s3?: VerifyS3Config;
+}
+
 export interface NormalStage {
   kind?: 'normal';
   /** Stable identifier, e.g. 'triage'. Used in logs and reorder UI. */
@@ -94,6 +137,9 @@ export interface NormalStage {
   prompt: string;
   /** How to advance the workflow once the agent finishes. */
   mode: StageMode;
+  /** Verify-stage-specific settings. Only meaningful when `id === 'verify'`;
+   *  ignored otherwise. */
+  verify?: VerifyStageConfig;
   /**
    * The workflow file + runner-target for this stage. Required in current
    * configs; legacy configs that omit it (or carry the historical
@@ -405,6 +451,21 @@ export const DEFAULT_STAGES: StageEntry[] = [
       'short excerpt of the failing output (if any). If a check fails and',
       'the fix is mechanical (formatting, import order, obvious typos),',
       'commit the fix to the same branch and push.',
+      '',
+      'Artifact destination depends on env `VERIFY_ARTIFACT_KIND`:',
+      '  - unset / `local` (default): copy any visual artifacts to',
+      '    `~/harnext-artifacts/<runId>/` and cite local paths in the comment.',
+      '  - `s3-image`: upload the final screenshot to',
+      '    `s3://$S3_BUCKET/$S3_KEY_PREFIX/<pr>/<runId>/screenshot.png`',
+      '    via `aws s3 cp ... --acl public-read --region $S3_REGION`. Embed the',
+      '    public URL as `![verify screenshot](URL)`. Skip video recording.',
+      '  - `s3-image-and-video`: upload BOTH screenshot and recording (mp4',
+      '    if available, else webm). Embed the screenshot as Markdown image',
+      '    and link the recording as `[▶ recording](URL)` (GitHub comments',
+      "    don't render `<video>`). Note the $S3_RETENTION_DAYS-day expiry.",
+      '',
+      'If an upload fails, fall back to the local-path behavior and note the',
+      'upload error in the comment so the user can fix bucket / credentials.',
     ].join('\n'),
   },
   {
@@ -462,13 +523,40 @@ export function getGithubConfigPath(cwd: string): string {
   return join(getProjectStateDir(cwd), GITHUB_CONFIG_FILE);
 }
 
+function isValidVerifyConfigShape(raw: unknown): boolean {
+  if (raw === undefined) return true;
+  if (!raw || typeof raw !== 'object') return false;
+  const v = raw as Record<string, unknown>;
+  const kindOk =
+    v.artifactKind === 'local' ||
+    v.artifactKind === 's3-image' ||
+    v.artifactKind === 's3-image-and-video';
+  if (!kindOk) return false;
+  if (v.artifactKind === 'local') {
+    return v.s3 === undefined;
+  }
+  // s3-* artifact kinds require a complete s3 block.
+  if (!v.s3 || typeof v.s3 !== 'object') return false;
+  const s3 = v.s3 as Record<string, unknown>;
+  return (
+    typeof s3.bucket === 'string' &&
+    s3.bucket.length > 0 &&
+    typeof s3.region === 'string' &&
+    s3.region.length > 0 &&
+    typeof s3.retentionDays === 'number' &&
+    s3.retentionDays > 0 &&
+    (s3.keyPrefix === undefined || typeof s3.keyPrefix === 'string')
+  );
+}
+
 function isValidNormalStageShape(x: Record<string, unknown>): boolean {
   return (
     typeof x.id === 'string' &&
     typeof x.label === 'string' &&
     typeof x.prompt === 'string' &&
     (x.mode === 'yolo' || x.mode === 'human-approval') &&
-    (x.trigger === undefined || x.trigger === 'labeled' || x.trigger === 'pr-merged')
+    (x.trigger === undefined || x.trigger === 'labeled' || x.trigger === 'pr-merged') &&
+    isValidVerifyConfigShape(x.verify)
   );
 }
 
@@ -613,6 +701,28 @@ export function runGh(args: string[], cwd?: string): GhResult<string> {
       encoding: 'utf-8',
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { ok: true, value: stdout };
+  } catch (err: unknown) {
+    const e = err as { status?: number; stderr?: Buffer | string; message?: string };
+    const stderr = typeof e.stderr === 'string' ? e.stderr : e.stderr?.toString('utf-8') ?? '';
+    const message = stderr.trim() || e.message || 'gh command failed';
+    return { ok: false, message, exitCode: e.status ?? 1 };
+  }
+}
+
+/**
+ * Run `gh` with a string piped on stdin. Used for `gh secret set NAME` so
+ * the secret value never lands in `ps`/shell-history (a `--body <value>`
+ * argument would).
+ */
+export function runGhWithInput(args: string[], input: string, cwd?: string): GhResult<string> {
+  try {
+    const stdout = execFileSync('gh', args, {
+      encoding: 'utf-8',
+      cwd,
+      input,
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     return { ok: true, value: stdout };
   } catch (err: unknown) {

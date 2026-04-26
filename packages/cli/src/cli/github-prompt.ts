@@ -6,6 +6,8 @@ import chalk from 'chalk';
 import {
   AWAITING_APPROVAL_LABEL,
   DEFAULT_INTAKE,
+  DEFAULT_S3_KEY_PREFIX,
+  DEFAULT_S3_RETENTION_DAYS,
   DEFAULT_STAGES,
   NEEDS_JUDGMENT_LABEL,
   buildHarnextLabelSpecs,
@@ -33,6 +35,7 @@ import {
   loadTechStack,
   registerRunner,
   runCodeAnalysisPipeline,
+  runGhWithInput,
   saveGithubConnection,
   tryLoadRunnerMetadata,
   writeTaggerWorkflow,
@@ -52,6 +55,8 @@ import {
   type StageMode,
   type StageRunner,
   type TechStack,
+  type VerifyArtifactKind,
+  type VerifyS3Config,
 } from '@harnext/core';
 
 import { editPrompt } from './external-editor.js';
@@ -66,6 +71,52 @@ function readLine(prompt: string): Promise<string> {
       rl.close();
       resolve(answer);
     });
+  });
+}
+
+/**
+ * Read a line from stdin without echoing the typed characters — used for
+ * AWS access-key entry. Each printable character echoes a `*`; backspace
+ * and ctrl-c behave as expected. Falls back to `readLine` (echoing) if
+ * stdin isn't a TTY (tests, CI piping, etc.) so behavior stays scriptable.
+ */
+async function readSecret(prompt: string): Promise<string> {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return readLine(prompt);
+  process.stdout.write(prompt);
+  const wasRaw = stdin.isRaw ?? false;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf-8');
+  return new Promise<string>((resolve) => {
+    let buf = '';
+    const onData = (chunk: string): void => {
+      for (const ch of chunk) {
+        if (ch === '\r' || ch === '\n') {
+          stdin.removeListener('data', onData);
+          stdin.pause();
+          stdin.setRawMode(wasRaw);
+          process.stdout.write('\n');
+          resolve(buf);
+          return;
+        }
+        if (ch === '\u0003') {
+          // ctrl-c
+          stdin.removeListener('data', onData);
+          stdin.setRawMode(wasRaw);
+          process.exit(130);
+        } else if (ch === '\u007f' || ch === '\b') {
+          if (buf.length > 0) {
+            buf = buf.slice(0, -1);
+            process.stdout.write('\b \b');
+          }
+        } else if (ch >= ' ') {
+          buf += ch;
+          process.stdout.write('*');
+        }
+      }
+    };
+    stdin.on('data', onData);
   });
 }
 
@@ -285,6 +336,281 @@ async function editStageRunner(stage: StageEntry, cwd: string): Promise<boolean>
   return true;
 }
 
+function getVerifyArtifactKind(stage: NormalStage): VerifyArtifactKind {
+  return stage.verify?.artifactKind ?? 'local';
+}
+
+function describeVerifyArtifactKind(kind: VerifyArtifactKind): string {
+  switch (kind) {
+    case 'local':
+      return 'Local — keep artifacts on runner only';
+    case 's3-image':
+      return 'S3 — image only';
+    case 's3-image-and-video':
+      return 'S3 — image + video';
+  }
+}
+
+function describeVerifySummary(stage: NormalStage): string {
+  const kind = getVerifyArtifactKind(stage);
+  if (kind === 'local') return 'local';
+  const s3 = stage.verify?.s3;
+  if (!s3) return `${kind} (S3 bucket not configured)`;
+  const prefix = s3.keyPrefix ?? DEFAULT_S3_KEY_PREFIX;
+  return `${kind} → s3://${s3.bucket}/${prefix} (${s3.region}, ${s3.retentionDays}d)`;
+}
+
+async function pickVerifyArtifactKind(
+  current: VerifyArtifactKind,
+): Promise<VerifyArtifactKind | undefined> {
+  const items: SelectItem<VerifyArtifactKind>[] = (
+    ['local', 's3-image', 's3-image-and-video'] as const
+  ).map((kind) => ({
+    label: describeVerifyArtifactKind(kind),
+    value: kind,
+    hint: kind === current ? 'current' : undefined,
+  }));
+  return select(items, { title: 'Verification artifact handling' });
+}
+
+/**
+ * Inline editor for the S3 bucket coords on a verify stage. Mutates
+ * `stage.verify.s3` in place; returns true when at least one field changed.
+ * Caller must ensure `stage.verify.artifactKind` is an s3-* mode before
+ * invoking — this function never sets the artifact kind itself.
+ */
+async function editVerifyS3Bucket(stage: NormalStage): Promise<boolean> {
+  const existing: VerifyS3Config | undefined = stage.verify?.s3;
+  const bucketAnswer = (
+    await readLine(chalk.cyan(`  S3 bucket [${existing?.bucket ?? ''}]: `))
+  ).trim();
+  const bucket = bucketAnswer || existing?.bucket || '';
+  if (!bucket) {
+    console.log(chalk.red('  bucket is required'));
+    return false;
+  }
+  const regionAnswer = (
+    await readLine(chalk.cyan(`  AWS region [${existing?.region ?? 'us-east-1'}]: `))
+  ).trim();
+  const region = regionAnswer || existing?.region || 'us-east-1';
+  const retentionAnswer = (
+    await readLine(
+      chalk.cyan(
+        `  retention days [${existing?.retentionDays ?? DEFAULT_S3_RETENTION_DAYS}]: `,
+      ),
+    )
+  ).trim();
+  const retentionParsed = retentionAnswer.length > 0 ? Number(retentionAnswer) : NaN;
+  const retentionDays =
+    Number.isFinite(retentionParsed) && retentionParsed > 0
+      ? Math.floor(retentionParsed)
+      : existing?.retentionDays ?? DEFAULT_S3_RETENTION_DAYS;
+  const prefixAnswer = (
+    await readLine(
+      chalk.cyan(`  key prefix [${existing?.keyPrefix ?? DEFAULT_S3_KEY_PREFIX}]: `),
+    )
+  ).trim();
+  const keyPrefix = prefixAnswer || existing?.keyPrefix || DEFAULT_S3_KEY_PREFIX;
+
+  const next: VerifyS3Config = {
+    bucket,
+    region,
+    retentionDays,
+    keyPrefix: keyPrefix === DEFAULT_S3_KEY_PREFIX ? undefined : keyPrefix,
+  };
+  const changed =
+    !existing ||
+    existing.bucket !== next.bucket ||
+    existing.region !== next.region ||
+    existing.retentionDays !== next.retentionDays ||
+    (existing.keyPrefix ?? DEFAULT_S3_KEY_PREFIX) !==
+      (next.keyPrefix ?? DEFAULT_S3_KEY_PREFIX);
+  if (!stage.verify) {
+    stage.verify = { artifactKind: 's3-image', s3: next };
+  } else {
+    stage.verify.s3 = next;
+  }
+  return changed;
+}
+
+/**
+ * Prompt for AWS access key ID + secret access key (masked) and write them
+ * as repo secrets via `gh secret set`. Returns true on success so callers
+ * can update local "configured" state without re-querying GitHub.
+ */
+async function setVerifyS3Secrets(repo: string): Promise<boolean> {
+  console.log();
+  console.log(
+    chalk.dim('  AWS keys go straight to repo secrets (AWS_ACCESS_KEY_ID +'),
+  );
+  console.log(
+    chalk.dim('  AWS_SECRET_ACCESS_KEY) via `gh secret set`. Values are masked'),
+  );
+  console.log(chalk.dim('  on input and never written to disk.'));
+  const accessKey = (await readSecret(chalk.cyan('  AWS_ACCESS_KEY_ID: '))).trim();
+  if (!accessKey) {
+    console.log(chalk.red('  cancelled (no key entered)'));
+    return false;
+  }
+  const secretKey = (await readSecret(chalk.cyan('  AWS_SECRET_ACCESS_KEY: '))).trim();
+  if (!secretKey) {
+    console.log(chalk.red('  cancelled (no secret entered)'));
+    return false;
+  }
+
+  const setAccess = runGhWithInput(
+    ['secret', 'set', 'AWS_ACCESS_KEY_ID', '--repo', repo],
+    accessKey,
+  );
+  if (!setAccess.ok) {
+    console.log(chalk.red(`  gh secret set AWS_ACCESS_KEY_ID failed: ${setAccess.message}`));
+    return false;
+  }
+  const setSecret = runGhWithInput(
+    ['secret', 'set', 'AWS_SECRET_ACCESS_KEY', '--repo', repo],
+    secretKey,
+  );
+  if (!setSecret.ok) {
+    console.log(chalk.red(`  gh secret set AWS_SECRET_ACCESS_KEY failed: ${setSecret.message}`));
+    return false;
+  }
+  console.log(chalk.green(`  AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY set on ${repo}`));
+  return true;
+}
+
+/**
+ * Print the prerequisites the user must arrange in their AWS account for
+ * the verify stage's uploads to work. Harnext does not touch the user's
+ * AWS account — IAM and billing belong to them — so we just print the
+ * exact `aws` commands they can copy-paste.
+ */
+function printS3BucketPrereqs(s3: VerifyS3Config): void {
+  const lifecycleJson = JSON.stringify(
+    {
+      Rules: [
+        {
+          ID: 'harnext-verify-retention',
+          Status: 'Enabled',
+          Filter: { Prefix: `${s3.keyPrefix ?? DEFAULT_S3_KEY_PREFIX}/` },
+          Expiration: { Days: s3.retentionDays },
+        },
+      ],
+    },
+    null,
+    2,
+  );
+  console.log();
+  console.log(chalk.bold('  S3 bucket prerequisites (run in your AWS account):'));
+  console.log(
+    chalk.dim('    Harnext does not manage your bucket — these are the one-time'),
+  );
+  console.log(chalk.dim('    setup steps so verify uploads + public reads work.'));
+  console.log();
+  console.log(chalk.dim('    1. Create / confirm the bucket:'));
+  console.log(chalk.cyan(`         aws s3api create-bucket --bucket ${s3.bucket} \\`));
+  console.log(chalk.cyan(`           --region ${s3.region}`));
+  console.log();
+  console.log(chalk.dim('    2. Allow public reads (block-public-access OFF):'));
+  console.log(
+    chalk.cyan(`         aws s3api put-public-access-block --bucket ${s3.bucket} \\`),
+  );
+  console.log(
+    chalk.cyan(
+      '           --public-access-block-configuration ' +
+        '"BlockPublicAcls=false,IgnorePublicAcls=false,' +
+        'BlockPublicPolicy=false,RestrictPublicBuckets=false"',
+    ),
+  );
+  console.log();
+  console.log(chalk.dim(`    3. Lifecycle rule — delete after ${s3.retentionDays} days:`));
+  console.log(chalk.cyan(`         cat > /tmp/harnext-lifecycle.json <<'EOF'`));
+  for (const line of lifecycleJson.split('\n')) console.log(chalk.cyan(`         ${line}`));
+  console.log(chalk.cyan(`         EOF`));
+  console.log(
+    chalk.cyan(
+      `         aws s3api put-bucket-lifecycle-configuration --bucket ${s3.bucket} \\`,
+    ),
+  );
+  console.log(chalk.cyan(`           --lifecycle-configuration file:///tmp/harnext-lifecycle.json`));
+  console.log();
+}
+
+async function editVerifyConfig(stage: NormalStage, cwd: string): Promise<boolean> {
+  let changed = false;
+  for (;;) {
+    console.log();
+    console.log(chalk.dim(`    verify: ${describeVerifySummary(stage)}`));
+    type Action =
+      | { kind: 'artifact' }
+      | { kind: 's3-bucket' }
+      | { kind: 's3-secrets' }
+      | { kind: 'done' };
+    const items: SelectItem<Action>[] = [
+      {
+        label: 'Edit verification artifact',
+        value: { kind: 'artifact' },
+        hint: describeVerifyArtifactKind(getVerifyArtifactKind(stage)),
+      },
+    ];
+    const isS3Mode = getVerifyArtifactKind(stage) !== 'local';
+    if (isS3Mode) {
+      items.push({
+        label: 'Edit S3 bucket',
+        value: { kind: 's3-bucket' },
+        hint: stage.verify?.s3
+          ? `${stage.verify.s3.bucket} (${stage.verify.s3.region})`
+          : 'unset',
+      });
+      items.push({
+        label: 'Set S3 credentials (repo secrets)',
+        value: { kind: 's3-secrets' },
+        hint: 'AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY → gh secret set',
+      });
+    }
+    items.push({ label: 'Back', value: { kind: 'done' } });
+
+    const action = await select(items, { title: 'Verify stage settings' });
+    if (!action || action.kind === 'done') return changed;
+
+    if (action.kind === 'artifact') {
+      const picked = await pickVerifyArtifactKind(getVerifyArtifactKind(stage));
+      if (!picked) continue;
+      const previous = getVerifyArtifactKind(stage);
+      if (picked === previous) continue;
+      if (picked === 'local') {
+        stage.verify = undefined;
+        changed = true;
+        continue;
+      }
+      // Switching into / between s3-* modes. Preserve any existing s3
+      // coords; chain into the bucket editor when none is configured yet.
+      const existingS3 = stage.verify?.s3;
+      stage.verify = { artifactKind: picked, s3: existingS3 };
+      changed = true;
+      if (!existingS3) {
+        console.log(chalk.dim('  No S3 bucket configured yet — entering bucket editor.'));
+        const bucketChanged = await editVerifyS3Bucket(stage);
+        if (!bucketChanged && !stage.verify.s3) {
+          // Bucket entry failed — revert to local so the config stays valid.
+          console.log(chalk.red('  S3 bucket not set — reverting to local.'));
+          stage.verify = undefined;
+        }
+      }
+    } else if (action.kind === 's3-bucket') {
+      if (await editVerifyS3Bucket(stage)) changed = true;
+    } else if (action.kind === 's3-secrets') {
+      const repoResult = getRepoFromCwd(cwd);
+      if (!repoResult.ok) {
+        console.log(chalk.red(`  could not detect repo: ${repoResult.message}`));
+        continue;
+      }
+      if (await setVerifyS3Secrets(repoResult.value)) {
+        if (stage.verify?.s3) printS3BucketPrereqs(stage.verify.s3);
+      }
+    }
+  }
+}
+
 async function editNormalStage(
   stages: StageEntry[],
   index: number,
@@ -301,6 +627,9 @@ async function editNormalStage(
     console.log(chalk.dim(`    mode:   ${formatMode(stage.mode)}`));
     console.log(chalk.dim(`    runner: ${describeRunner(stage)}`));
     console.log(chalk.dim(`    prompt: ${stage.prompt.split('\n')[0].slice(0, 80)}…`));
+    if (stage.id === 'verify') {
+      console.log(chalk.dim(`    verify: ${describeVerifySummary(stage)}`));
+    }
 
     type Action =
       | { kind: 'label' }
@@ -308,6 +637,7 @@ async function editNormalStage(
       | { kind: 'mode' }
       | { kind: 'id' }
       | { kind: 'runner' }
+      | { kind: 'verify' }
       | { kind: 'done' };
     const items: SelectItem<Action>[] = [
       { label: 'Edit label', value: { kind: 'label' } },
@@ -319,8 +649,15 @@ async function editNormalStage(
         value: { kind: 'runner' },
         hint: 'this PC (self-hosted) or GitHub-hosted',
       },
-      { label: 'Done', value: { kind: 'done' } },
     ];
+    if (stage.id === 'verify') {
+      items.push({
+        label: 'Edit verify settings',
+        value: { kind: 'verify' },
+        hint: 'artifact upload (local / S3) + bucket coords + repo secrets',
+      });
+    }
+    items.push({ label: 'Done', value: { kind: 'done' } });
     const action = await select(items, { title: 'What do you want to change?' });
     if (!action || action.kind === 'done') return changed;
 
@@ -359,6 +696,8 @@ async function editNormalStage(
       changed = true;
     } else if (action.kind === 'runner') {
       if (await editStageRunner(stage, cwd)) changed = true;
+    } else if (action.kind === 'verify') {
+      if (await editVerifyConfig(stage, cwd)) changed = true;
     }
   }
 }

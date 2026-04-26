@@ -61,4 +61,5 @@ Do NOT use this skill for unit/integration tests the repo already has. Use it fo
 - **Hard 120s timeout** per scenario. If a step is slow, raise `TIMEOUT_MS` explicitly — don't remove the overall limit.
 - **Extensions are disabled** in the launched browser (`--disable-extensions`). If the bug depends on a specific extension, flag that to the user; this skill cannot reproduce it.
 - **CI**: `CI=1` forces headless. Persistent-context against a real profile has limited value in CI; warn the user when you detect `CI=1`.
-- **Artifacts stay local.** Never commit or upload `.harnext/browser-verify/` contents. The `new-run.mjs` call already gitignores them — keep it that way.
+- **Artifacts stay local.** Never commit or upload `.harnext/browser-verify/` contents. The `new-run.mjs` call already gitignores them — keep it that way. (The verify stage may be configured to upload the screenshot or recording to a public S3 bucket; that upload is the verify stage's responsibility, not this skill's.)
+- **Skip recording when asked.** If `BROWSER_VERIFY_NO_VIDEO=1` is set in the environment, `verify.template.mjs` omits Playwright's `recordVideo` option — no `video/` directory is produced. The verify stage sets this when its `artifactKind` is `s3-image` (screenshot-only upload) so we don't pay the recording cost for an artifact that will be discarded.

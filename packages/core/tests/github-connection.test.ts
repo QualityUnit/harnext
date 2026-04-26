@@ -300,4 +300,106 @@ describe('GithubConnectionConfig save/load round-trip', () => {
     // calculation in the wizard naturally treats verify as terminal.
     expect(DEFAULT_STAGES[DEFAULT_STAGES.length - 1].id).toBe('doc-gardening');
   });
+
+  it('loads cleanly when a verify stage has no `verify` field (current default)', () => {
+    const cfg = baseConfig();
+    saveGithubConnection(projectCwd, cfg);
+    const loaded = loadGithubConnection(projectCwd);
+    const verify = loaded!.stages.find((s) => s.id === 'verify') as NormalStage;
+    expect(verify).toBeDefined();
+    expect(verify.verify).toBeUndefined();
+  });
+
+  it('round-trips verify with artifactKind="local" (no s3 block)', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify' ? { ...verifyStage, verify: { artifactKind: 'local' as const } } : s,
+    );
+    saveGithubConnection(projectCwd, baseConfig({ stages }));
+    const loaded = loadGithubConnection(projectCwd);
+    const reloaded = loaded!.stages.find((s) => s.id === 'verify') as NormalStage;
+    expect(reloaded.verify).toEqual({ artifactKind: 'local' });
+  });
+
+  it('round-trips verify with artifactKind="s3-image" + S3 coords', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const verify: NormalStage['verify'] = {
+      artifactKind: 's3-image',
+      s3: {
+        bucket: 'my-verify-bucket',
+        region: 'eu-west-1',
+        retentionDays: 7,
+        keyPrefix: 'harnext-verify',
+      },
+    };
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify' ? { ...verifyStage, verify } : s,
+    );
+    saveGithubConnection(projectCwd, baseConfig({ stages }));
+    const loaded = loadGithubConnection(projectCwd);
+    const reloaded = loaded!.stages.find((s) => s.id === 'verify') as NormalStage;
+    expect(reloaded.verify).toEqual(verify);
+  });
+
+  it('round-trips verify with artifactKind="s3-image-and-video" without an explicit keyPrefix', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const verify: NormalStage['verify'] = {
+      artifactKind: 's3-image-and-video',
+      s3: { bucket: 'b', region: 'us-east-1', retentionDays: 14 },
+    };
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify' ? { ...verifyStage, verify } : s,
+    );
+    saveGithubConnection(projectCwd, baseConfig({ stages }));
+    const loaded = loadGithubConnection(projectCwd);
+    const reloaded = loaded!.stages.find((s) => s.id === 'verify') as NormalStage;
+    expect(reloaded.verify).toEqual(verify);
+  });
+
+  it('rejects verify with an s3-* artifactKind but no s3 block (falls back to DEFAULT_STAGES)', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify'
+        ? { ...verifyStage, verify: { artifactKind: 's3-image' as const } }
+        : s,
+    );
+    saveGithubConnection(projectCwd, baseConfig({ stages }));
+    const loaded = loadGithubConnection(projectCwd);
+    // Whole stages array is rejected because one entry's shape was bad,
+    // matching the behavior used elsewhere (e.g. bogus trigger).
+    expect(loaded!.stages).toEqual(DEFAULT_STAGES);
+  });
+
+  it('rejects verify with artifactKind="local" plus a stray s3 block', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify'
+        ? {
+            ...verifyStage,
+            verify: {
+              artifactKind: 'local' as const,
+              s3: { bucket: 'x', region: 'us-east-1', retentionDays: 7 },
+            },
+          }
+        : s,
+    );
+    saveGithubConnection(projectCwd, baseConfig({ stages }));
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded!.stages).toEqual(DEFAULT_STAGES);
+  });
+
+  it('rejects verify with a bogus artifactKind value', () => {
+    const verifyStage = DEFAULT_STAGES.find((s) => s.id === 'verify') as NormalStage;
+    const stages = DEFAULT_STAGES.map((s) =>
+      s.id === 'verify'
+        ? { ...verifyStage, verify: { artifactKind: 'cloudfront' } }
+        : s,
+    );
+    saveGithubConnection(
+      projectCwd,
+      baseConfig({ stages: stages as unknown as NormalStage[] }),
+    );
+    const loaded = loadGithubConnection(projectCwd);
+    expect(loaded!.stages).toEqual(DEFAULT_STAGES);
+  });
 });

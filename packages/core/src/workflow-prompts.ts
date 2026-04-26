@@ -11,7 +11,13 @@
  */
 
 import type { CodingAgentId } from './coding-agents.js';
-import type { ReviewLoopStage, NormalStage, StageMode } from './github-connection.js';
+import {
+  DEFAULT_S3_KEY_PREFIX,
+  type ReviewLoopStage,
+  type NormalStage,
+  type StageMode,
+  type VerifyStageConfig,
+} from './github-connection.js';
 
 /**
  * Everything the generator needs to describe a single stage to the coding
@@ -26,6 +32,9 @@ export interface StageWorkflowInput {
         label: string;
         prompt: string;
         mode: StageMode;
+        /** Verify-stage-specific config; only meaningful when `id === 'verify'`.
+         *  Drives the S3 env block injected into the generated workflow. */
+        verify?: VerifyStageConfig;
       }
     | {
         kind: 'review-loop';
@@ -428,6 +437,39 @@ function secretsSpec(agent: CodingAgentId): string {
   }
 }
 
+/**
+ * When the stage is a verify stage configured for S3 upload, instruct the
+ * workflow generator to expose AWS creds + bucket coords as job-level env
+ * vars so every step inherits them. Returns an empty string when no S3
+ * env is needed (local default, or non-verify stage) so the caller can
+ * unconditionally include the result.
+ */
+function verifyS3EnvSpec(input: StageWorkflowInput): string {
+  if (input.stage.kind !== 'normal') return '';
+  if (input.stage.id !== 'verify') return '';
+  const verify = input.stage.verify;
+  if (!verify || verify.artifactKind === 'local' || !verify.s3) return '';
+  const { bucket, region, retentionDays } = verify.s3;
+  const keyPrefix = verify.s3.keyPrefix ?? DEFAULT_S3_KEY_PREFIX;
+  const lines: string[] = [
+    'Expose these job-level env vars (so every step inherits them) — they drive',
+    'the verify stage\'s S3 upload of screenshots and recordings:',
+    '  AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}',
+    '  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}',
+    `  S3_BUCKET:             ${bucket}`,
+    `  S3_REGION:             ${region}`,
+    `  S3_KEY_PREFIX:         ${keyPrefix}`,
+    `  S3_RETENTION_DAYS:     "${retentionDays}"`,
+    `  VERIFY_ARTIFACT_KIND:  ${verify.artifactKind}`,
+  ];
+  if (verify.artifactKind === 's3-image') {
+    // Tell the browser-verify skill to skip Playwright's recordVideo so we
+    // don't pay the recording cost for an artifact we won't upload.
+    lines.push('  BROWSER_VERIFY_NO_VIDEO: "1"');
+  }
+  return lines.join('\n');
+}
+
 function commonRequirements(input: StageWorkflowInput): string {
   const isReviewLoop = input.stage.kind === 'review-loop';
   const isPrMerged = input.triggerOn === 'pr-merged';
@@ -469,6 +511,11 @@ function commonRequirements(input: StageWorkflowInput): string {
       : '7. Perform the label transition below via `gh` API calls:',
     transitionSpec(input),
   ];
+  const verifyEnv = verifyS3EnvSpec(input);
+  if (verifyEnv) {
+    lines.push('');
+    lines.push(verifyEnv);
+  }
   // PR-handoff only applies to issue-triggered stages that may open a PR
   // mid-flight. Review-loop and pr-merged stages already operate on a
   // PR — including the handoff guidance just confuses the model.
@@ -854,5 +901,6 @@ export function toStageWorkflowStage(
     label: stage.label,
     prompt: stage.prompt,
     mode: stage.mode,
+    verify: stage.verify,
   };
 }
