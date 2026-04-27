@@ -383,6 +383,18 @@ const LOADING_MESSAGES = [
   'Scheming...',
   'Plotting...',
   'Crunching...',
+  'Supercalifragilisticexpialidocious-ing...',
+  'Discombobulating...',
+  'Flibbertigibbeting...',
+  'Bamboozling...',
+  'Hullabalooing...',
+  'Collywobbling...',
+  'Lollygagging...',
+  'Persnicketing...',
+  'Gobbledygooking...',
+  'Higgledy-piggledying...',
+  'Snickersnacking...',
+  'Whippersnappering...',
 ];
 
 function randomMessage(): string {
