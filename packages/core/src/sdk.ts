@@ -7,6 +7,7 @@ import { AgentSession } from './agent-session.js';
 import { getProviderConfig } from './auth.js';
 import { createCompaction } from './compaction.js';
 import type { CompactionOptions } from './compaction.js';
+import { loadSettings } from './settings.js';
 import {
   computeServerConfigHash,
   isServerCacheValid,
@@ -226,9 +227,17 @@ export async function createAgentSession(
     skills,
   });
 
-  // Set up compaction (enabled by default)
-  const transformContext =
-    options.compaction !== false ? createCompaction(model, options.compaction ?? {}) : undefined;
+  // Resolve compaction settings: defaults < settings.json < SDK options.
+  // SDK options (`options.compaction`) win to give programmatic callers an
+  // escape hatch over file-based config.
+  const settings = loadSettings(cwd);
+  const compactionEnabled =
+    options.compaction === false ? false : settings.compaction.enabled;
+  const compactionOptions: CompactionOptions = {
+    reserveTokens: settings.compaction.reserveTokens,
+    keepRecentTokens: settings.compaction.keepRecentTokens,
+    ...(options.compaction === false ? {} : options.compaction ?? {}),
+  };
 
   // Create the agent
   const agent = new Agent({
@@ -239,7 +248,6 @@ export async function createAgentSession(
       tools,
     },
     convertToLlm,
-    transformContext,
     streamFn: async (m, ctx, opts) => {
       // Inject the right apiKey for providers pi-ai doesn't recognize in
       // its env-api-keys registry. Ollama needs a non-empty placeholder
@@ -256,6 +264,14 @@ export async function createAgentSession(
     },
     toolExecution: 'parallel',
   });
+
+  // Wire compaction after the Agent exists so the transform can mutate
+  // `agent.state.messages` directly when it triggers — pi-agent-core's
+  // transformContext is otherwise transient (its return is used only for
+  // the next LLM call, the persistent state.messages keeps growing).
+  if (compactionEnabled) {
+    agent.transformContext = createCompaction(agent, model, compactionOptions);
+  }
 
   const session = new AgentSession(agent, {
     model,

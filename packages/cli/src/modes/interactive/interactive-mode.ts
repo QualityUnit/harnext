@@ -5,7 +5,7 @@ import type { AgentEvent } from '@mariozechner/pi-agent-core';
 import {
   compactNow,
   ensureBundledSkills,
-  estimateTotalTokens,
+  getContextTokens,
   listAgentRunLogs,
   reconstructMessagesFromRunLog,
   setDefault,
@@ -38,7 +38,9 @@ interface SlashCommand {
   description: string;
   /** If false, the textarea stays live during the action (default true pauses it for interactive prompts). */
   pause?: boolean;
-  action: (ctx: CommandContext) => Promise<boolean>; // true = continue, false = exit
+  /** When true, accept arguments after the command name (e.g. `/compact focus on auth`). */
+  acceptsArgs?: boolean;
+  action: (ctx: CommandContext, args: string) => Promise<boolean>; // true = continue, false = exit
 }
 
 interface CommandContext {
@@ -73,11 +75,15 @@ const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: '/compact',
-    description: 'Compact conversation history',
-    action: async (ctx) => {
+    description: 'Compact conversation history (optional: /compact <focus instructions>)',
+    acceptsArgs: true,
+    action: async (ctx, args) => {
       const spinner = render.startSpinner('Compacting...');
       try {
-        const result = await compactNow(ctx.session.agent);
+        const trimmed = args.trim();
+        const result = await compactNow(ctx.session.agent, {
+          instructions: trimmed.length > 0 ? trimmed : undefined,
+        });
         spinner.stop();
         if (result.compacted) {
           console.log(
@@ -88,11 +94,14 @@ const SLASH_COMMANDS: SlashCommand[] = [
               ),
           );
         } else {
-          console.log(chalk.dim('  Not enough messages to compact.'));
+          console.log(chalk.dim('  Nothing to compact yet.'));
         }
-      } catch {
+      } catch (err) {
         spinner.stop();
-        console.log(chalk.red('  Compaction failed.'));
+        console.log(
+          chalk.red('  Compaction failed: ') +
+            (err instanceof Error ? err.message : String(err)),
+        );
       }
       console.log();
       return true;
@@ -338,8 +347,24 @@ async function selectSlashCommandOrSkill(
   return select(items, { title: 'Select a command' });
 }
 
-function findSlashCommand(input: string): SlashCommand | undefined {
-  return SLASH_COMMANDS.find((cmd) => cmd.name === input);
+interface SlashCommandMatch {
+  cmd: SlashCommand;
+  args: string;
+}
+
+/**
+ * Match a slash-command input. Exact name (`/foo`) always matches.
+ * Commands flagged `acceptsArgs: true` also match `/foo <rest>` and
+ * return the trimmed remainder as args.
+ */
+function findSlashCommand(input: string): SlashCommandMatch | undefined {
+  const exact = SLASH_COMMANDS.find((cmd) => cmd.name === input);
+  if (exact) return { cmd: exact, args: '' };
+  const argCmd = SLASH_COMMANDS.find(
+    (cmd) => cmd.acceptsArgs && input.startsWith(cmd.name + ' '),
+  );
+  if (argCmd) return { cmd: argCmd, args: input.slice(argCmd.name.length + 1) };
+  return undefined;
 }
 
 function findSkill(skills: Skill[], name: string): Skill | undefined {
@@ -522,7 +547,7 @@ export async function runInteractiveMode(
       return `\n${body}`;
     },
     getBottomBorder: () => {
-      const ctxTokens = estimateTotalTokens(session.messages);
+      const ctxTokens = getContextTokens(session.messages);
       const ctxWindow = session.agent.state.model.contextWindow;
       const ctxPercent = ctxWindow ? (ctxTokens / ctxWindow) * 100 : undefined;
       const { input, output } = sumSessionUsage(session.messages);
@@ -692,8 +717,10 @@ export async function runInteractiveMode(
     // Run a command action. Commands with pause:false stay live on the textarea
     // (needed when the action triggers an agent run via invokeSkill); otherwise
     // the textarea is torn down so the command can own stdin for its own UI.
-    const runCommand = (cmd: SlashCommand): Promise<boolean> =>
-      cmd.pause === false ? cmd.action(cmdCtx) : runWithPause(() => cmd.action(cmdCtx));
+    const runCommand = (match: SlashCommandMatch): Promise<boolean> =>
+      match.cmd.pause === false
+        ? match.cmd.action(cmdCtx, match.args)
+        : runWithPause(() => match.cmd.action(cmdCtx, match.args));
 
     textarea.on('submit', async (input: string) => {
       if (!input) return;
@@ -711,7 +738,7 @@ export async function runInteractiveMode(
               commandToRun = selected.command;
               return true;
             }
-            return selected.command.action(cmdCtx);
+            return selected.command.action(cmdCtx, '');
           }
           skillToInvoke = selected.skill;
           return true;
@@ -723,7 +750,7 @@ export async function runInteractiveMode(
           return;
         }
         if (commandToRun) {
-          const cont = await commandToRun.action(cmdCtx);
+          const cont = await commandToRun.action(cmdCtx, '');
           if (!cont) {
             stopSpinner();
             textarea.close();
@@ -757,9 +784,9 @@ export async function runInteractiveMode(
       }
 
       if (input.startsWith('/') && !agentBusy) {
-        const cmd = findSlashCommand(input);
-        if (cmd) {
-          const shouldContinue = await runCommand(cmd);
+        const match = findSlashCommand(input);
+        if (match) {
+          const shouldContinue = await runCommand(match);
           if (!shouldContinue) {
             stopSpinner();
             textarea.close();
