@@ -18,13 +18,21 @@ export default defineConfig({
   sourcemap: true,
   dts: false,
   noExternal: [/@harnext\/core/],
-  external: ['@modelcontextprotocol/sdk', 'cross-spawn'],
+  // `@huggingface/transformers` and `onnxruntime-node` ship native binaries
+  // (the ORT C++ runtime) loaded via prebuilt .node files at runtime — bundling
+  // them through tsup would break the dynamic require + asset-resolution paths.
+  // They're listed in cli/package.json so npm install pulls them at install time.
+  external: [
+    '@modelcontextprotocol/sdk',
+    'cross-spawn',
+    '@huggingface/transformers',
+    'onnxruntime-node',
+  ],
   banner: {
     js: '#!/usr/bin/env node',
   },
   onSuccess:
     'rm -rf dist/skills dist/prompts && ' +
     'cp -r ../core/skills dist/skills && ' +
-    'cp -r ../core/src/code-analysis/prompts dist/prompts && ' +
-    'cp ../core/src/pii/pii-masker.py dist/pii-masker.py',
+    'cp -r ../core/src/code-analysis/prompts dist/prompts',
 });

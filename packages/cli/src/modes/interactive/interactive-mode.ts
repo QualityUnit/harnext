@@ -464,18 +464,22 @@ export async function runInteractiveMode(
   let agentBusy = false;
 
   // ── Mode state (toggled with shift+tab) ───────────────────────────
-  // Lazy-init the PII masker the first time the user enters secure mode —
-  // it spawns a Python child that loads a transformer model, which on the
-  // first run also downloads ~200MB from HuggingFace. We never want that
-  // cost paid at startup for users who never touch secure mode.
-  // Held in a single object so closures elsewhere can mutate it without
-  // tripping TypeScript's control-flow narrowing into `never`.
+  // Toggling to secure is free — we don't allocate the masker until the user
+  // *submits* their first message in secure mode. That first submit triggers
+  // the model download (~165 MB int8 ONNX) into ~/.harnext/models/. Users who
+  // toggle in/out of secure mode without sending anything pay nothing.
+  // Held in an object so closures elsewhere can mutate it without tripping
+  // TypeScript's control-flow narrowing into `never`.
   const MODES: render.Mode[] = ['normal', 'secure'];
   let mode: render.Mode = 'normal';
   const pii: { masker: PiiMasker | null; ready: Promise<void> | null } = {
     masker: null,
     ready: null,
   };
+  // When set, the spinner shows this label instead of the cycling whimsical
+  // word. Used to surface "Downloading PII Anonymizer 45 / 165 MB" while the
+  // model is being fetched on first use.
+  let spinnerOverride: string | null = null;
 
   // Assistant-text streaming state. `asstPendingNewlines` holds trailing
   // newlines from recent chunks so we don't emit them yet — if the stream
@@ -524,15 +528,23 @@ export async function runInteractiveMode(
 
   function tickSpinner() {
     const CYCLE_MS = 3000;
-    if (Date.now() - spinnerLastCycle >= CYCLE_MS) {
-      let next = randomMessage();
-      while (next === spinnerMsg && LOADING_MESSAGES.length > 1) next = randomMessage();
-      spinnerMsg = next;
-      spinnerLastCycle = Date.now();
+    // spinnerOverride pins a fixed label (e.g. download progress) and skips
+    // the random-message cycling for as long as it's set.
+    let label: string;
+    if (spinnerOverride != null) {
+      label = spinnerOverride;
+    } else {
+      if (Date.now() - spinnerLastCycle >= CYCLE_MS) {
+        let next = randomMessage();
+        while (next === spinnerMsg && LOADING_MESSAGES.length > 1) next = randomMessage();
+        spinnerMsg = next;
+        spinnerLastCycle = Date.now();
+      }
+      label = spinnerMsg;
     }
     const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
     spinnerFrame++;
-    spinnerPrefix = `  ${chalk.cyan(frame)} ${chalk.dim(spinnerMsg)}`;
+    spinnerPrefix = `  ${chalk.cyan(frame)} ${chalk.dim(label)}`;
     textarea.redraw();
   }
 
@@ -579,27 +591,9 @@ export async function runInteractiveMode(
     onShiftTab: () => {
       const idx = MODES.indexOf(mode);
       mode = MODES[(idx + 1) % MODES.length];
-      // First entry into secure mode kicks off model loading silently in the
-      // background. The first prompt in secure mode awaits `pii.ready`. On
-      // load failure we surface the error and revert to normal — without
-      // that fallback the user would be silently blocked from sending.
-      if (mode === 'secure' && !pii.masker) {
-        const masker = createPiiMasker();
-        pii.masker = masker;
-        pii.ready = masker.ready().catch((err) => {
-          textarea.writeAbove(
-            chalk.red('  Failed to load PII model: ') +
-              (err instanceof Error ? err.message : String(err)) +
-              '\n\n',
-          );
-          masker.dispose();
-          pii.masker = null;
-          pii.ready = null;
-          mode = 'normal';
-          textarea.redraw();
-          throw err;
-        });
-      }
+      // Toggling is free — no allocation. The masker is created lazily by
+      // ensurePiiReady() the first time the user submits a message while in
+      // secure mode, so users who toggle in/out without sending pay nothing.
     },
     completions,
   });
@@ -689,13 +683,48 @@ export async function runInteractiveMode(
       resolve();
     });
 
+    /**
+     * Lazy-init the PII masker on first secure-mode submit. Subsequent calls
+     * just await the cached `pii.ready` promise. Pins a "Downloading PII
+     * Anonymizer X / Y MB" label on the spinner during the initial download
+     * (~165 MB int8 ONNX from HuggingFace), then releases it back to the
+     * normal cycling messages once the model is ready.
+     */
+    const ensurePiiReady = async (): Promise<PiiMasker> => {
+      if (pii.masker && pii.ready) {
+        await pii.ready;
+        return pii.masker;
+      }
+      const fmtMB = (n: number) => (n / 1024 / 1024).toFixed(0);
+      const masker = createPiiMasker({
+        onProgress: (s) => {
+          if (s.type === 'downloading' && s.total > 0) {
+            spinnerOverride = `Downloading PII Anonymizer ${fmtMB(s.loaded)} / ${fmtMB(s.total)} MB`;
+          } else if (s.type === 'ready' || s.type === 'error') {
+            spinnerOverride = null;
+          }
+        },
+      });
+      pii.masker = masker;
+      pii.ready = masker.ready().catch((err) => {
+        spinnerOverride = null;
+        masker.dispose();
+        pii.masker = null;
+        pii.ready = null;
+        throw err;
+      });
+      await pii.ready;
+      return masker;
+    };
+
     // Submit `text` to the agent as a user prompt, echoing `echo` above the
     // textarea (defaults to echoing `text` itself). Handles spinner + busy flag.
     //
     // In secure mode masking happens silently between the user echo and the
-    // LLM call — the UI is identical to normal mode. If masking fails we
-    // refuse to send (the whole point of secure mode is that PII never leaks
-    // to the provider). Slash commands and skills bypass masking by passing
+    // LLM call — the UI is identical to normal mode except for the one-time
+    // download progress on the spinner. If masking fails we refuse to send
+    // (the whole point of secure mode is that PII never leaks to the
+    // provider). Slash commands and skills bypass masking by passing
     // skipMask: true so harnext-controlled templates aren't corrupted.
     const runPrompt = async (
       text: string,
@@ -709,14 +738,7 @@ export async function runInteractiveMode(
       try {
         let payload = text;
         if (mode === 'secure' && !opts.skipMask) {
-          const masker = pii.masker;
-          if (!masker || !pii.ready) {
-            textarea.writeAbove(
-              chalk.red('  Secure mode active but PII masker is not initialized.') + '\n\n',
-            );
-            return;
-          }
-          await pii.ready;
+          const masker = await ensurePiiReady();
           payload = (await masker.mask(text)).masked;
         }
         await session.prompt(payload);
@@ -875,15 +897,8 @@ export async function runInteractiveMode(
         textarea.writeAbove(render.userMessage(input) + '\n');
         let payload = input;
         if (mode === 'secure') {
-          const masker = pii.masker;
-          if (!masker || !pii.ready) {
-            textarea.writeAbove(
-              chalk.red('  Secure mode active but PII masker is not initialized.') + '\n\n',
-            );
-            return;
-          }
           try {
-            await pii.ready;
+            const masker = await ensurePiiReady();
             payload = (await masker.mask(input)).masked;
           } catch (err) {
             textarea.writeAbove(

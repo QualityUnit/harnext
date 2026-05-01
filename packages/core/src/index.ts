@@ -363,6 +363,7 @@ export {
   type MaskResult,
   type PiiEntity,
   type PiiMasker,
+  type PiiMaskerProgress,
 } from './pii/masker.js';
 
 export {

@@ -23,6 +23,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@mariozechner/pi-agent-core": "^0.67.68",
     "@mariozechner/pi-ai": "^0.67.68",
     "@modelcontextprotocol/sdk": "^1.0.0",
