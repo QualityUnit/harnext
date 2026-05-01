@@ -4,13 +4,14 @@ import { dirname, join } from 'node:path';
 import type { AgentEvent } from '@mariozechner/pi-agent-core';
 import {
   compactNow,
+  createPiiMasker,
   ensureBundledSkills,
   getContextTokens,
   listAgentRunLogs,
   reconstructMessagesFromRunLog,
   setDefault,
 } from '@harnext/core';
-import type { AgentRunLogSummary, EnsureResult } from '@harnext/core';
+import type { AgentRunLogSummary, EnsureResult, PiiMasker } from '@harnext/core';
 import chalk from 'chalk';
 
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
@@ -462,6 +463,24 @@ export async function runInteractiveMode(
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
 
+  // ── Mode state (toggled with shift+tab) ───────────────────────────
+  // Toggling to secure is free — we don't allocate the masker until the user
+  // *submits* their first message in secure mode. That first submit triggers
+  // the model download (~165 MB int8 ONNX) into ~/.harnext/models/. Users who
+  // toggle in/out of secure mode without sending anything pay nothing.
+  // Held in an object so closures elsewhere can mutate it without tripping
+  // TypeScript's control-flow narrowing into `never`.
+  const MODES: render.Mode[] = ['normal', 'secure'];
+  let mode: render.Mode = 'normal';
+  const pii: { masker: PiiMasker | null; ready: Promise<void> | null } = {
+    masker: null,
+    ready: null,
+  };
+  // When set, the spinner shows this label instead of the cycling whimsical
+  // word. Used to surface "Downloading PII Anonymizer 45 / 165 MB" while the
+  // model is being fetched on first use.
+  let spinnerOverride: string | null = null;
+
   // Assistant-text streaming state. `asstPendingNewlines` holds trailing
   // newlines from recent chunks so we don't emit them yet — if the stream
   // ends with more trailing newlines than we want, we just drop them.
@@ -509,15 +528,23 @@ export async function runInteractiveMode(
 
   function tickSpinner() {
     const CYCLE_MS = 3000;
-    if (Date.now() - spinnerLastCycle >= CYCLE_MS) {
-      let next = randomMessage();
-      while (next === spinnerMsg && LOADING_MESSAGES.length > 1) next = randomMessage();
-      spinnerMsg = next;
-      spinnerLastCycle = Date.now();
+    // spinnerOverride pins a fixed label (e.g. download progress) and skips
+    // the random-message cycling for as long as it's set.
+    let label: string;
+    if (spinnerOverride != null) {
+      label = spinnerOverride;
+    } else {
+      if (Date.now() - spinnerLastCycle >= CYCLE_MS) {
+        let next = randomMessage();
+        while (next === spinnerMsg && LOADING_MESSAGES.length > 1) next = randomMessage();
+        spinnerMsg = next;
+        spinnerLastCycle = Date.now();
+      }
+      label = spinnerMsg;
     }
     const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
     spinnerFrame++;
-    spinnerPrefix = `  ${chalk.cyan(frame)} ${chalk.dim(spinnerMsg)}`;
+    spinnerPrefix = `  ${chalk.cyan(frame)} ${chalk.dim(label)}`;
     textarea.redraw();
   }
 
@@ -558,7 +585,15 @@ export async function runInteractiveMode(
         ctxPercent,
         input,
         output,
+        mode,
       );
+    },
+    onShiftTab: () => {
+      const idx = MODES.indexOf(mode);
+      mode = MODES[(idx + 1) % MODES.length];
+      // Toggling is free — no allocation. The masker is created lazily by
+      // ensurePiiReady() the first time the user submits a message while in
+      // secure mode, so users who toggle in/out without sending pay nothing.
     },
     completions,
   });
@@ -628,6 +663,7 @@ export async function runInteractiveMode(
     }
   });
 
+  try {
   await new Promise<void>((resolve) => {
     // Run a command with full terminal control: tear down the sticky textarea,
     // let the command's own UI (select menus, prompts) own stdin, then restore.
@@ -647,14 +683,65 @@ export async function runInteractiveMode(
       resolve();
     });
 
+    /**
+     * Lazy-init the PII masker on first secure-mode submit. Subsequent calls
+     * just await the cached `pii.ready` promise. Pins a "Downloading PII
+     * Anonymizer X / Y MB" label on the spinner during the initial download
+     * (~165 MB int8 ONNX from HuggingFace), then releases it back to the
+     * normal cycling messages once the model is ready.
+     */
+    const ensurePiiReady = async (): Promise<PiiMasker> => {
+      if (pii.masker && pii.ready) {
+        await pii.ready;
+        return pii.masker;
+      }
+      const fmtMB = (n: number) => (n / 1024 / 1024).toFixed(0);
+      const masker = createPiiMasker({
+        onProgress: (s) => {
+          if (s.type === 'downloading' && s.total > 0) {
+            spinnerOverride = `Downloading PII Anonymizer ${fmtMB(s.loaded)} / ${fmtMB(s.total)} MB`;
+          } else if (s.type === 'ready' || s.type === 'error') {
+            spinnerOverride = null;
+          }
+        },
+      });
+      pii.masker = masker;
+      pii.ready = masker.ready().catch((err) => {
+        spinnerOverride = null;
+        masker.dispose();
+        pii.masker = null;
+        pii.ready = null;
+        throw err;
+      });
+      await pii.ready;
+      return masker;
+    };
+
     // Submit `text` to the agent as a user prompt, echoing `echo` above the
     // textarea (defaults to echoing `text` itself). Handles spinner + busy flag.
-    const runPrompt = async (text: string, echo?: string): Promise<void> => {
+    //
+    // In secure mode masking happens silently between the user echo and the
+    // LLM call — the UI is identical to normal mode except for the one-time
+    // download progress on the spinner. If masking fails we refuse to send
+    // (the whole point of secure mode is that PII never leaks to the
+    // provider). Slash commands and skills bypass masking by passing
+    // skipMask: true so harnext-controlled templates aren't corrupted.
+    const runPrompt = async (
+      text: string,
+      echo?: string,
+      opts: { skipMask?: boolean } = {},
+    ): Promise<void> => {
       textarea.writeAbove(render.userMessage(echo ?? text) + '\n');
+
       agentBusy = true;
       startSpinner();
       try {
-        await session.prompt(text);
+        let payload = text;
+        if (mode === 'secure' && !opts.skipMask) {
+          const masker = await ensurePiiReady();
+          payload = (await masker.mask(text)).masked;
+        }
+        await session.prompt(payload);
       } catch (error) {
         textarea.writeAbove(
           chalk.red('  Error: ') +
@@ -679,7 +766,9 @@ export async function runInteractiveMode(
         );
         return;
       }
-      await runPrompt(expanded, echoLabel);
+      // Skills are harnext-controlled templates — masking their bodies would
+      // corrupt instructions and file paths. Skill args bypass masking too.
+      await runPrompt(expanded, echoLabel, { skipMask: true });
     };
 
     const cmdCtx: CommandContext = {
@@ -806,10 +895,24 @@ export async function runInteractiveMode(
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
         textarea.writeAbove(render.userMessage(input) + '\n');
+        let payload = input;
+        if (mode === 'secure') {
+          try {
+            const masker = await ensurePiiReady();
+            payload = (await masker.mask(input)).masked;
+          } catch (err) {
+            textarea.writeAbove(
+              chalk.red('  PII masking failed — steering NOT sent: ') +
+                (err instanceof Error ? err.message : String(err)) +
+                '\n\n',
+            );
+            return;
+          }
+        }
         try {
           session.agent.steer({
             role: 'user',
-            content: input,
+            content: payload,
             timestamp: Date.now(),
           });
         } catch (err) {
@@ -825,6 +928,9 @@ export async function runInteractiveMode(
       await runPrompt(input);
     });
   });
+  } finally {
+    pii.masker?.dispose();
+  }
 
   process.stdin.unref();
 }

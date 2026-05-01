@@ -319,6 +319,7 @@ export {
   getProviderConfig,
   getStoredKey,
   listStoredProviders,
+  removeProviderConfig,
   type AuthData,
   type AuthEntry,
 } from './auth.js';
@@ -355,6 +356,15 @@ export {
   setProviderEnv,
   type ProviderInfo,
 } from './providers.js';
+
+export {
+  createPiiMasker,
+  type CreatePiiMaskerOptions,
+  type MaskResult,
+  type PiiEntity,
+  type PiiMasker,
+  type PiiMaskerProgress,
+} from './pii/masker.js';
 
 export {
   isValidServerName,

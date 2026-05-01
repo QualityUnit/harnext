@@ -58,3 +58,19 @@ export function getStoredKey(provider: string): string | undefined {
 export function listStoredProviders(): string[] {
   return Object.keys(loadAuth());
 }
+
+/**
+ * Remove a provider's stored config (key + baseUrl). No-op when the provider
+ * has no entry. Used by the /model picker's "Remove configuration" action so
+ * the next pick of the same provider goes through the first-run wizard again.
+ *
+ * Note: this only clears auth.json; an env var like `NVIDIA_API_KEY` set in
+ * the shell still wins over a missing stored key on the next request.
+ */
+export function removeProviderConfig(provider: string): void {
+  const data = loadAuth();
+  if (provider in data) {
+    delete data[provider];
+    writeAuth(data);
+  }
+}

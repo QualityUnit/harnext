@@ -15,6 +15,8 @@ export interface TextareaOptions {
   getTopBorder?: () => string;
   getBottomBorder?: () => string;
   completions?: CompletionItem[];
+  /** Called on shift+tab. Used by interactive mode to cycle modes. */
+  onShiftTab?: () => void;
 }
 
 export interface Textarea {
@@ -224,7 +226,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   const onKeypress = (
     str: string | undefined,
-    key: { name?: string; ctrl?: boolean; meta?: boolean },
+    key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean },
   ) => {
     if (!active || !key) return;
 
@@ -234,6 +236,12 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (!textareaDrawn) drawTextarea();
+
+    if (key.shift && key.name === 'tab' && options.onShiftTab) {
+      options.onShiftTab();
+      redraw();
+      return;
+    }
 
     if (key.name === 'return') {
       // If the inline panel is open, submit the selected command verbatim
