@@ -296,10 +296,21 @@ export { buildSystemPrompt, type BuildSystemPromptOptions } from './system-promp
 export {
   createCompaction,
   compactNow,
-  estimateTotalTokens,
+  getContextTokens,
+  findCutPoint,
+  serializeConversation,
   type CompactionOptions,
+  type CompactNowOptions,
   type CompactNowResult,
 } from './compaction.js';
+
+export {
+  loadSettings,
+  DEFAULT_SETTINGS,
+  DEFAULT_COMPACTION_SETTINGS,
+  type CompactionSettings,
+  type HarnextSettings,
+} from './settings.js';
 
 export {
   loadAuth,
