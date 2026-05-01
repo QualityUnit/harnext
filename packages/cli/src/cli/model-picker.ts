@@ -14,6 +14,7 @@ import {
   listOllamaModels,
   normalizeOllamaBaseUrl,
   PROVIDERS,
+  removeProviderConfig,
   saveProviderConfig,
   saveProviderKey,
   setProviderEnv,
@@ -30,11 +31,92 @@ export interface ModelPickerResult {
 /**
  * Interactive model picker triggered by the /model slash command.
  * Uses arrow-key select boxes for provider and model selection.
+ *
+ * Loops at the provider list so that "Remove configuration" or back-cancel
+ * inside a provider's submenu drops the user back to provider selection
+ * rather than aborting the whole command.
  */
 export async function pickModel(): Promise<ModelPickerResult | undefined> {
-  const provider = await selectProvider();
-  if (!provider) return undefined;
+  while (true) {
+    const provider = await selectProvider();
+    if (!provider) return undefined;
 
+    const result = await manageProvider(provider);
+    if (result === 'reselect') continue;
+    return result;
+  }
+}
+
+/**
+ * Drive a single provider through either the first-run wizard (no key/url
+ * stored yet) or the CRUD submenu (already configured). Returns:
+ *   - a ModelPickerResult when the user picked a model
+ *   - 'reselect' to bounce back to the provider list (e.g. config removed)
+ *   - undefined when the user cancelled out
+ */
+async function manageProvider(
+  provider: ProviderInfo,
+): Promise<ModelPickerResult | 'reselect' | undefined> {
+  if (!isProviderConfigured(provider)) {
+    return runFirstRunFlow(provider);
+  }
+
+  // CRUD submenu — loops so update-key/url returns here for further actions.
+  while (true) {
+    const action = await selectProviderAction(provider);
+    if (!action || action === 'cancel') return undefined;
+    if (action === 'back') return 'reselect';
+
+    if (action === 'pick-model') {
+      const result = await runFirstRunFlow(provider);
+      if (result) return result;
+      // user backed out of model selection — stay in the submenu
+      continue;
+    }
+
+    if (action === 'update-key') {
+      const ok = await promptApiKeyUpdate(provider);
+      if (ok) console.log(chalk.green('  Key updated.'));
+      console.log();
+      continue;
+    }
+
+    if (action === 'update-url') {
+      const ok = await promptBaseUrlUpdate(provider);
+      if (ok) console.log(chalk.green('  Base URL updated.'));
+      console.log();
+      continue;
+    }
+
+    if (action === 'remove') {
+      removeProviderConfig(provider.id);
+      // Also clear the env var for this process so the picker's "configured"
+      // tag flips off immediately. Shell-set env vars in *new* processes are
+      // unaffected — that's by design (we don't own the parent shell).
+      if (provider.envVar) delete process.env[provider.envVar];
+      console.log(chalk.dim(`  Removed ${provider.name} configuration.`));
+      console.log();
+      return 'reselect';
+    }
+  }
+}
+
+function isProviderConfigured(provider: ProviderInfo): boolean {
+  if (provider.local) return !!getProviderConfig(provider.id)?.baseUrl;
+  return (
+    !!(provider.envVar && process.env[provider.envVar]) || !!getStoredKey(provider.id)
+  );
+}
+
+/**
+ * The pre-existing (provider not yet configured) flow: prompt for key/url if
+ * needed, then go straight to model selection. Reused as the "Pick a model"
+ * branch from the CRUD submenu so updated configs flow through the same
+ * codepath.
+ */
+async function runFirstRunFlow(
+  provider: ProviderInfo,
+): Promise<ModelPickerResult | undefined> {
   if (provider.local) {
     return pickLocalModel(provider);
   }
@@ -52,14 +134,85 @@ export async function pickModel(): Promise<ModelPickerResult | undefined> {
   return { provider: provider.id, model };
 }
 
+// ── Provider CRUD submenu ────────────────────────────────────────────
+
+type ProviderAction =
+  | 'pick-model'
+  | 'update-key'
+  | 'update-url'
+  | 'remove'
+  | 'back'
+  | 'cancel';
+
+async function selectProviderAction(
+  provider: ProviderInfo,
+): Promise<ProviderAction | undefined> {
+  const items: SelectItem<ProviderAction>[] = [
+    { label: 'Pick a model', value: 'pick-model' },
+  ];
+  if (provider.local) {
+    items.push({
+      label: 'Update base URL',
+      value: 'update-url',
+      hint: getProviderConfig(provider.id)?.baseUrl,
+    });
+  } else {
+    items.push({
+      label: 'Update API key',
+      value: 'update-key',
+      hint: provider.envVar && process.env[provider.envVar] ? `from $${provider.envVar}` : 'stored',
+    });
+  }
+  items.push({ label: 'Remove configuration', value: 'remove' });
+  items.push({ label: 'Back to providers', value: 'back' });
+
+  return select(items, { title: `${provider.name} — configured` });
+}
+
+async function promptApiKeyUpdate(provider: ProviderInfo): Promise<boolean> {
+  console.log();
+  console.log(chalk.dim(`  Enter a new API key for ${provider.name} (empty to cancel).`));
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>((resolve) => {
+    rl.question(chalk.cyan('  API key: '), (answer) => {
+      rl.close();
+      const key = answer.trim();
+      if (!key) {
+        resolve(false);
+        return;
+      }
+      saveProviderKey(provider.id, key);
+      setProviderEnv(provider, key);
+      resolve(true);
+    });
+  });
+}
+
+async function promptBaseUrlUpdate(provider: ProviderInfo): Promise<boolean> {
+  const current = getProviderConfig(provider.id)?.baseUrl;
+  const fallback = current ?? provider.defaultBaseUrl ?? DEFAULT_OLLAMA_BASE_URL;
+  console.log();
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<boolean>((resolve) => {
+    rl.question(chalk.cyan(`  ${provider.name} base URL [${fallback}]: `), (answer) => {
+      rl.close();
+      const raw = answer.trim() || fallback;
+      const url = normalizeOllamaBaseUrl(raw);
+      if (!url) {
+        resolve(false);
+        return;
+      }
+      saveProviderConfig(provider.id, { baseUrl: url });
+      resolve(true);
+    });
+  });
+}
+
 // ── Provider selection ───────────────────────────────────────────────
 
 async function selectProvider(): Promise<ProviderInfo | undefined> {
   const items: SelectItem<ProviderInfo>[] = PROVIDERS.map((p) => {
-    const configured = p.local
-      ? !!getProviderConfig(p.id)?.baseUrl
-      : !!(p.envVar && process.env[p.envVar]) || !!getStoredKey(p.id);
-    const tag = configured ? chalk.green(' ✓') : '';
+    const tag = isProviderConfigured(p) ? chalk.green(' ✓') : '';
     return {
       label: p.name + tag,
       value: p,

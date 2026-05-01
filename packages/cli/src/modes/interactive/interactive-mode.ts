@@ -4,13 +4,14 @@ import { dirname, join } from 'node:path';
 import type { AgentEvent } from '@mariozechner/pi-agent-core';
 import {
   compactNow,
+  createPiiMasker,
   ensureBundledSkills,
   getContextTokens,
   listAgentRunLogs,
   reconstructMessagesFromRunLog,
   setDefault,
 } from '@harnext/core';
-import type { AgentRunLogSummary, EnsureResult } from '@harnext/core';
+import type { AgentRunLogSummary, EnsureResult, PiiMasker } from '@harnext/core';
 import chalk from 'chalk';
 
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
@@ -462,6 +463,20 @@ export async function runInteractiveMode(
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
 
+  // ── Mode state (toggled with shift+tab) ───────────────────────────
+  // Lazy-init the PII masker the first time the user enters secure mode —
+  // it spawns a Python child that loads a transformer model, which on the
+  // first run also downloads ~200MB from HuggingFace. We never want that
+  // cost paid at startup for users who never touch secure mode.
+  // Held in a single object so closures elsewhere can mutate it without
+  // tripping TypeScript's control-flow narrowing into `never`.
+  const MODES: render.Mode[] = ['normal', 'secure'];
+  let mode: render.Mode = 'normal';
+  const pii: { masker: PiiMasker | null; ready: Promise<void> | null } = {
+    masker: null,
+    ready: null,
+  };
+
   // Assistant-text streaming state. `asstPendingNewlines` holds trailing
   // newlines from recent chunks so we don't emit them yet — if the stream
   // ends with more trailing newlines than we want, we just drop them.
@@ -558,7 +573,33 @@ export async function runInteractiveMode(
         ctxPercent,
         input,
         output,
+        mode,
       );
+    },
+    onShiftTab: () => {
+      const idx = MODES.indexOf(mode);
+      mode = MODES[(idx + 1) % MODES.length];
+      // First entry into secure mode kicks off model loading silently in the
+      // background. The first prompt in secure mode awaits `pii.ready`. On
+      // load failure we surface the error and revert to normal — without
+      // that fallback the user would be silently blocked from sending.
+      if (mode === 'secure' && !pii.masker) {
+        const masker = createPiiMasker();
+        pii.masker = masker;
+        pii.ready = masker.ready().catch((err) => {
+          textarea.writeAbove(
+            chalk.red('  Failed to load PII model: ') +
+              (err instanceof Error ? err.message : String(err)) +
+              '\n\n',
+          );
+          masker.dispose();
+          pii.masker = null;
+          pii.ready = null;
+          mode = 'normal';
+          textarea.redraw();
+          throw err;
+        });
+      }
     },
     completions,
   });
@@ -628,6 +669,7 @@ export async function runInteractiveMode(
     }
   });
 
+  try {
   await new Promise<void>((resolve) => {
     // Run a command with full terminal control: tear down the sticky textarea,
     // let the command's own UI (select menus, prompts) own stdin, then restore.
@@ -649,12 +691,35 @@ export async function runInteractiveMode(
 
     // Submit `text` to the agent as a user prompt, echoing `echo` above the
     // textarea (defaults to echoing `text` itself). Handles spinner + busy flag.
-    const runPrompt = async (text: string, echo?: string): Promise<void> => {
+    //
+    // In secure mode masking happens silently between the user echo and the
+    // LLM call — the UI is identical to normal mode. If masking fails we
+    // refuse to send (the whole point of secure mode is that PII never leaks
+    // to the provider). Slash commands and skills bypass masking by passing
+    // skipMask: true so harnext-controlled templates aren't corrupted.
+    const runPrompt = async (
+      text: string,
+      echo?: string,
+      opts: { skipMask?: boolean } = {},
+    ): Promise<void> => {
       textarea.writeAbove(render.userMessage(echo ?? text) + '\n');
+
       agentBusy = true;
       startSpinner();
       try {
-        await session.prompt(text);
+        let payload = text;
+        if (mode === 'secure' && !opts.skipMask) {
+          const masker = pii.masker;
+          if (!masker || !pii.ready) {
+            textarea.writeAbove(
+              chalk.red('  Secure mode active but PII masker is not initialized.') + '\n\n',
+            );
+            return;
+          }
+          await pii.ready;
+          payload = (await masker.mask(text)).masked;
+        }
+        await session.prompt(payload);
       } catch (error) {
         textarea.writeAbove(
           chalk.red('  Error: ') +
@@ -679,7 +744,9 @@ export async function runInteractiveMode(
         );
         return;
       }
-      await runPrompt(expanded, echoLabel);
+      // Skills are harnext-controlled templates — masking their bodies would
+      // corrupt instructions and file paths. Skill args bypass masking too.
+      await runPrompt(expanded, echoLabel, { skipMask: true });
     };
 
     const cmdCtx: CommandContext = {
@@ -806,10 +873,31 @@ export async function runInteractiveMode(
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
         textarea.writeAbove(render.userMessage(input) + '\n');
+        let payload = input;
+        if (mode === 'secure') {
+          const masker = pii.masker;
+          if (!masker || !pii.ready) {
+            textarea.writeAbove(
+              chalk.red('  Secure mode active but PII masker is not initialized.') + '\n\n',
+            );
+            return;
+          }
+          try {
+            await pii.ready;
+            payload = (await masker.mask(input)).masked;
+          } catch (err) {
+            textarea.writeAbove(
+              chalk.red('  PII masking failed — steering NOT sent: ') +
+                (err instanceof Error ? err.message : String(err)) +
+                '\n\n',
+            );
+            return;
+          }
+        }
         try {
           session.agent.steer({
             role: 'user',
-            content: input,
+            content: payload,
             timestamp: Date.now(),
           });
         } catch (err) {
@@ -825,6 +913,9 @@ export async function runInteractiveMode(
       await runPrompt(input);
     });
   });
+  } finally {
+    pii.masker?.dispose();
+  }
 
   process.stdin.unref();
 }

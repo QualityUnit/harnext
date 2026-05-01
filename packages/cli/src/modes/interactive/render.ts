@@ -234,6 +234,30 @@ function formatTokens(n: number): string {
   return trim(n / 1_000_000) + 'M';
 }
 
+// ── Mode pill ────────────────────────────────────────────────────────
+
+export type Mode = 'normal' | 'secure';
+
+interface ModeStyle {
+  label: string;
+  bg: ChalkInstance;
+}
+
+const MODE_STYLES: Record<Mode, ModeStyle> = {
+  normal: { label: 'NORMAL', bg: chalk.bgCyan.black.bold },
+  secure: { label: 'SECURE', bg: chalk.bgGreen.black.bold },
+};
+
+/** Visible width of the rendered pill (padding + label + padding). */
+function modePillVisibleLen(mode: Mode): number {
+  return MODE_STYLES[mode].label.length + 2;
+}
+
+function renderModePill(mode: Mode): string {
+  const s = MODE_STYLES[mode];
+  return s.bg(` ${s.label} `);
+}
+
 export function inputFooter(
   provider: string,
   model: string,
@@ -241,6 +265,7 @@ export function inputFooter(
   contextPercent?: number,
   inputTokens?: number,
   outputTokens?: number,
+  mode: Mode = 'normal',
 ): string {
   const w = termWidth();
   const home = process.env.HOME ?? '';
@@ -255,18 +280,21 @@ export function inputFooter(
       : '';
   const ctxStr = pctPart + tokPart;
   const rightRaw = `${provider}/${model}`;
-  // Right-align `rightRaw`; give `leftRaw` whatever is left (min 1 gap).
-  // Truncate left side with an ellipsis if it overflows, so the info line
-  // never wraps (a wrap breaks the textarea's row accounting).
+  // Right-align `rightRaw`; give the rest whatever is left (min 1 gap).
+  // The mode pill is anchored to the far left and gets a fixed budget;
+  // the cwd block is truncated with an ellipsis if it overflows so the
+  // info line never wraps (a wrap breaks the textarea's row accounting).
   const rightFit = rightRaw.length >= w ? rightRaw.slice(-(w - 1)) : rightRaw;
-  const leftBudget = Math.max(0, w - rightFit.length - 1);
-  let leftRaw = `${shortCwd}${branchStr}${ctxStr}`;
-  if (leftRaw.length > leftBudget) {
-    leftRaw = leftBudget <= 1 ? leftRaw.slice(0, leftBudget) : '…' + leftRaw.slice(-(leftBudget - 1));
+  const pill = renderModePill(mode);
+  const pillVis = modePillVisibleLen(mode);
+  const leftBudget = Math.max(0, w - rightFit.length - pillVis - 2);
+  let cwdRaw = `${shortCwd}${branchStr}${ctxStr}`;
+  if (cwdRaw.length > leftBudget) {
+    cwdRaw = leftBudget <= 1 ? cwdRaw.slice(0, leftBudget) : '…' + cwdRaw.slice(-(leftBudget - 1));
   }
-  const gap = Math.max(1, w - leftRaw.length - rightFit.length);
+  const gap = Math.max(1, w - pillVis - 1 - cwdRaw.length - rightFit.length);
   const border = chalk.magenta('─'.repeat(w));
-  const infoLine = chalk.dim(leftRaw) + ' '.repeat(gap) + chalk.dim(rightFit);
+  const infoLine = pill + ' ' + chalk.dim(cwdRaw) + ' '.repeat(gap) + chalk.dim(rightFit);
 
   return border + '\n' + infoLine;
 }

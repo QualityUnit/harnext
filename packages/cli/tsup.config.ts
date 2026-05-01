@@ -25,5 +25,6 @@ export default defineConfig({
   onSuccess:
     'rm -rf dist/skills dist/prompts && ' +
     'cp -r ../core/skills dist/skills && ' +
-    'cp -r ../core/src/code-analysis/prompts dist/prompts',
+    'cp -r ../core/src/code-analysis/prompts dist/prompts && ' +
+    'cp ../core/src/pii/pii-masker.py dist/pii-masker.py',
 });
