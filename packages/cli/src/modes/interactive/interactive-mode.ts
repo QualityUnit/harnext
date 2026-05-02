@@ -8,6 +8,7 @@ import {
   ensureBundledSkills,
   getContextTokens,
   listAgentRunLogs,
+  maskToolResultContent,
   reconstructMessagesFromRunLog,
   setDefault,
 } from '@harnext/core';
@@ -715,6 +716,39 @@ export async function runInteractiveMode(
       });
       await pii.ready;
       return masker;
+    };
+
+    // In secure mode the user prompt is masked before send, but tool results
+    // travel a separate path: the tool's `execute` return is added straight
+    // into the transcript and shipped to the LLM on the next turn. The `read`
+    // tool's content is the only concrete leak vector here — file bodies can
+    // contain arbitrary PII — so we mask its result via `afterToolCall`,
+    // which runs before the result is stored or emitted as events. Other
+    // tools (bash, edit, write) are intentionally not masked: their outputs
+    // are usually file paths / shell results / harnext-controlled strings,
+    // and masking them would corrupt diffs and command output.
+    session.agent.afterToolCall = async (ctx) => {
+      if (mode !== 'secure') return undefined;
+      if (ctx.toolCall.name !== 'read') return undefined;
+      try {
+        const masker = await ensurePiiReady();
+        const masked = await maskToolResultContent(ctx.result.content, masker);
+        return { content: masked };
+      } catch (err) {
+        // Secure mode: never let raw file content reach the LLM. Replace
+        // the result with an error marker so the model knows the read failed.
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                '[secure mode] read tool result withheld — PII masker failed: ' +
+                (err instanceof Error ? err.message : String(err)),
+            },
+          ],
+          isError: true,
+        };
+      }
     };
 
     // Submit `text` to the agent as a user prompt, echoing `echo` above the

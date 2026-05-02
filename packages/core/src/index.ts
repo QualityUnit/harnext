@@ -359,6 +359,7 @@ export {
 
 export {
   createPiiMasker,
+  maskToolResultContent,
   type CreatePiiMaskerOptions,
   type MaskResult,
   type PiiEntity,
