@@ -720,29 +720,35 @@ export async function runInteractiveMode(
 
     // In secure mode the user prompt is masked before send, but tool results
     // travel a separate path: the tool's `execute` return is added straight
-    // into the transcript and shipped to the LLM on the next turn. The `read`
-    // tool's content is the only concrete leak vector here — file bodies can
-    // contain arbitrary PII — so we mask its result via `afterToolCall`,
-    // which runs before the result is stored or emitted as events. Other
-    // tools (bash, edit, write) are intentionally not masked: their outputs
-    // are usually file paths / shell results / harnext-controlled strings,
-    // and masking them would corrupt diffs and command output.
+    // into the transcript and shipped to the LLM on the next turn. We mask:
+    // - `read` (always) — file bodies can contain arbitrary PII
+    // - `bash` (success only) — `ls`, `cat`, etc. routinely surface filenames
+    //   and file contents that include PII. We deliberately skip the failure
+    //   path: bash error messages already pass through pi-agent-core as raw
+    //   exception text and masking them would obscure diagnostic info the
+    //   user needs to debug their command.
+    // `edit` and `write` are intentionally not masked: their outputs are
+    // harnext-controlled status strings ("File created", diffs of edits the
+    // user just authored) where masking would mangle code the model needs
+    // to reason about.
+    const SECURE_MASKED_TOOLS = new Set(['read', 'bash']);
     session.agent.afterToolCall = async (ctx) => {
       if (mode !== 'secure') return undefined;
-      if (ctx.toolCall.name !== 'read') return undefined;
+      if (!SECURE_MASKED_TOOLS.has(ctx.toolCall.name)) return undefined;
+      if (ctx.toolCall.name === 'bash' && ctx.isError) return undefined;
       try {
         const masker = await ensurePiiReady();
         const masked = await maskToolResultContent(ctx.result.content, masker);
         return { content: masked };
       } catch (err) {
-        // Secure mode: never let raw file content reach the LLM. Replace
-        // the result with an error marker so the model knows the read failed.
+        // Secure mode: never let raw tool content reach the LLM. Replace
+        // the result with an error marker so the model knows the call failed.
         return {
           content: [
             {
               type: 'text',
               text:
-                '[secure mode] read tool result withheld — PII masker failed: ' +
+                `[secure mode] ${ctx.toolCall.name} tool result withheld — PII masker failed: ` +
                 (err instanceof Error ? err.message : String(err)),
             },
           ],

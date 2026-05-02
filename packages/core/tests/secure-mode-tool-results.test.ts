@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { maskToolResultContent } from '../src/pii/masker.js';
 import type { PiiMasker, MaskResult } from '../src/pii/masker.js';
+import { createBashTool } from '../src/tools/bash.js';
 import { createReadTool } from '../src/tools/read.js';
 
 // Stub masker that replaces digit-bearing words. Avoids loading transformers.js.
@@ -20,11 +21,11 @@ function stubMasker(): PiiMasker {
   };
 }
 
-describe('secure-mode read tool result anonymization', () => {
+describe('secure-mode tool result anonymization', () => {
   let workDir: string;
 
   beforeEach(() => {
-    workDir = mkdtempSync(join(tmpdir(), 'harnext-secure-read-'));
+    workDir = mkdtempSync(join(tmpdir(), 'harnext-secure-tool-'));
   });
 
   afterEach(() => {
@@ -44,9 +45,6 @@ describe('secure-mode read tool result anonymization', () => {
     expect(text).toContain('555-1234');
   });
 
-  // Verifies the fix: passing the same result through `maskToolResultContent`
-  // — which is what `afterToolCall` does in interactive secure mode — strips
-  // PII before the content is forwarded.
   it('masks read tool content via maskToolResultContent', async () => {
     const file = join(workDir, 'secret.txt');
     writeFileSync(file, 'card 4242-1111-2222-3333\nphone 555-1234');
@@ -58,5 +56,30 @@ describe('secure-mode read tool result anonymization', () => {
     expect(text).not.toContain('4242-1111');
     expect(text).not.toContain('555-1234');
     expect(text).toContain('[DIGIT]');
+  });
+
+  // Bash output (e.g. `ls`) routinely surfaces PII (filenames containing
+  // names, log lines, secrets in env). Successful bash output goes through
+  // the same masker.
+  it('masks successful bash output via maskToolResultContent', async () => {
+    writeFileSync(join(workDir, 'CV_4242.txt'), '');
+    const bash = createBashTool(workDir);
+    const result = await bash.execute('call-1', { command: 'ls' });
+
+    const masked = await maskToolResultContent(result.content, stubMasker());
+    const text = (masked[0] as { text: string }).text;
+    expect(text).not.toContain('CV_4242');
+    expect(text).toContain('[DIGIT]');
+  });
+
+  // Bash failures throw, so `afterToolCall` sees `isError: true`. The hook
+  // is expected to skip masking in that case so the user gets readable
+  // diagnostic output. We assert here that the bash tool throws on non-zero
+  // exit — that's the path the hook keys off of.
+  it('bash tool rejects on non-zero exit (failures are not masked)', async () => {
+    const bash = createBashTool(workDir);
+    await expect(bash.execute('call-1', { command: 'exit 7' })).rejects.toThrow(
+      /Command exited with code 7/,
+    );
   });
 });
