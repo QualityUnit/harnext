@@ -242,3 +242,26 @@ export function createPiiMasker(options: CreatePiiMaskerOptions = {}): PiiMasker
     onProgress: options.onProgress,
   });
 }
+
+/**
+ * Mask PII in the text blocks of a tool result's content array. Non-text
+ * blocks pass through unchanged. Used by secure mode to keep file contents
+ * fetched by the read tool from leaking to the LLM — the user's prompt is
+ * masked before submit, but tool results travel a separate path back into
+ * the conversation transcript.
+ */
+export async function maskToolResultContent<T extends { type: string }>(
+  content: ReadonlyArray<T>,
+  masker: PiiMasker,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (const block of content) {
+    if (block.type === 'text' && typeof (block as unknown as { text?: unknown }).text === 'string') {
+      const { masked } = await masker.mask((block as unknown as { text: string }).text);
+      out.push({ ...block, text: masked });
+    } else {
+      out.push(block);
+    }
+  }
+  return out;
+}
