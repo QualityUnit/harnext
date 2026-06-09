@@ -17,6 +17,8 @@ import {
   getProviderById,
   loadHeartbeatConfig,
   loadPreferences,
+  type PermissionMode,
+  type SettingSource,
 } from '@harnext/core';
 import {
   runHeartbeatMode,
@@ -34,7 +36,11 @@ const FALLBACK_MODEL = '';
 export async function main(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
 
-  if (args.mode === 'print' && args.messages.length === 0) {
+  if (
+    args.mode === 'print' &&
+    args.messages.length === 0 &&
+    args.inputFormat !== 'stream-json'
+  ) {
     console.error(chalk.red('Error: print mode requires a message'));
     console.error(chalk.dim('Usage: harnext -p "your message"'));
     process.exit(1);
@@ -109,12 +115,25 @@ export async function main(argv: string[]): Promise<void> {
     modelId: model,
     cwd: args.cwd,
     systemPrompt: args.systemPrompt,
+    appendSystemPrompt: args.appendSystemPrompt,
     thinkingLevel: args.thinkingLevel as ThinkingLevel,
+    allowedTools: args.allowedTools,
+    disallowedTools: args.disallowedTools,
+    permissionMode: args.permissionMode as PermissionMode | undefined,
+    maxTurns: args.maxTurns,
+    settingSources: args.settingSources as SettingSource[] | undefined,
   });
 
   if (args.mode === 'print') {
+    const initialMessage =
+      args.inputFormat === 'stream-json'
+        ? await readStreamJsonPrompt()
+        : args.messages.join(' ');
     const exitCode = await runPrintMode(session, {
-      initialMessage: args.messages.join(' '),
+      initialMessage,
+      outputFormat: args.outputFormat ?? 'text',
+      cwd: args.cwd,
+      permissionMode: args.permissionMode,
     });
     process.exit(exitCode);
   } else {
@@ -127,6 +146,49 @@ export async function main(argv: string[]): Promise<void> {
       await session.dispose();
     }
   }
+}
+
+/**
+ * Read a stream-json prompt from stdin (Claude SDK `--input-format stream-json`).
+ * Each line is a JSON envelope; we extract the text of every user message and
+ * concatenate it into a single prompt. Non-user lines are ignored.
+ */
+async function readStreamJsonPrompt(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
+  const texts: string[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed) as {
+        type?: string;
+        message?: { role?: string; content?: unknown };
+      };
+      if (obj.type !== 'user' && obj.message?.role !== 'user') continue;
+      const content = obj.message?.content;
+      if (typeof content === 'string') {
+        texts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (
+            block &&
+            typeof block === 'object' &&
+            (block as { type?: string }).type === 'text' &&
+            typeof (block as { text?: string }).text === 'string'
+          ) {
+            texts.push((block as { text: string }).text);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed lines.
+    }
+  }
+  return texts.join('\n');
 }
 
 /**

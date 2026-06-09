@@ -12,6 +12,8 @@ export type Mode =
 export type McpVerb = 'add' | 'remove' | 'list' | 'reconnect';
 export type McpScopeArg = 'user' | 'project';
 export type RunnerVerb = 'status' | 'logs';
+export type OutputFormat = 'text' | 'json' | 'stream-json';
+export type InputFormat = 'text' | 'stream-json';
 
 export interface Args {
   mode: Mode;
@@ -21,8 +23,30 @@ export interface Args {
   model?: string;
   thinkingLevel: string;
   systemPrompt?: string;
+  /** Text appended to the system prompt (Claude SDK `append_system_prompt`). */
+  appendSystemPrompt?: string;
   cwd: string;
   messages: string[];
+  /** Auto-approve list (Claude SDK `allowed_tools`). */
+  allowedTools?: string[];
+  /** Block list (Claude SDK `disallowed_tools`). */
+  disallowedTools?: string[];
+  /** Permission mode (Claude SDK `permission_mode`). */
+  permissionMode?: string;
+  /** Stop after this many assistant turns (Claude SDK `max_turns`). */
+  maxTurns?: number;
+  /** CLAUDE.md sources to load (Claude SDK `setting_sources`): user|project|local. */
+  settingSources?: string[];
+  /** Extra accessible directories (Claude SDK `add_dirs`). Accepted; not yet enforced. */
+  addDirs?: string[];
+  /** Fallback model (Claude SDK `fallback_model`). Accepted; not yet enforced. */
+  fallbackModel?: string;
+  /** Output format for print mode: text (default), json, or stream-json. */
+  outputFormat?: OutputFormat;
+  /** Input format for print mode: text (default) or stream-json (NDJSON on stdin). */
+  inputFormat?: InputFormat;
+  /** Raw sandbox JSON (Claude SDK `sandbox`). Accepted for parity; currently a no-op. */
+  sandbox?: string;
   /** Heartbeat name — only set when mode === 'heartbeat'. */
   heartbeatName?: string;
   /** MCP subcommand — only set when mode === 'mcp'. */
@@ -45,6 +69,21 @@ export interface Args {
   runnerLogLines?: number;
   /** `harnext runner logs --no-follow` — dump and exit instead of `tail -f`. */
   runnerLogNoFollow?: boolean;
+}
+
+/**
+ * Append comma-separated values to a list arg, supporting both repeated flags
+ * (`--allowed-tools Read --allowed-tools Bash`) and inline CSV
+ * (`--allowed-tools Read,Bash`). Returns undefined only when nothing accumulated.
+ */
+function appendCsv(existing: string[] | undefined, raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return existing;
+  const parts = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (parts.length === 0) return existing;
+  return [...(existing ?? []), ...parts];
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -99,6 +138,43 @@ export function parseArgs(argv: string[]): Args {
         break;
       case '--system-prompt':
         args.systemPrompt = argv[++i];
+        break;
+      case '--append-system-prompt':
+        args.appendSystemPrompt = argv[++i];
+        break;
+      case '--allowed-tools':
+      case '--allowedTools':
+        args.allowedTools = appendCsv(args.allowedTools, argv[++i]);
+        break;
+      case '--disallowed-tools':
+      case '--disallowedTools':
+        args.disallowedTools = appendCsv(args.disallowedTools, argv[++i]);
+        break;
+      case '--permission-mode':
+        args.permissionMode = argv[++i];
+        break;
+      case '--max-turns': {
+        const n = Number(argv[++i]);
+        if (Number.isFinite(n) && n > 0) args.maxTurns = Math.floor(n);
+        break;
+      }
+      case '--setting-sources':
+        args.settingSources = appendCsv(args.settingSources, argv[++i]);
+        break;
+      case '--add-dir':
+        if (argv[++i]) args.addDirs = [...(args.addDirs ?? []), argv[i]];
+        break;
+      case '--fallback-model':
+        args.fallbackModel = argv[++i];
+        break;
+      case '--output-format':
+        args.outputFormat = argv[++i] as OutputFormat;
+        break;
+      case '--input-format':
+        args.inputFormat = argv[++i] as InputFormat;
+        break;
+      case '--sandbox':
+        args.sandbox = argv[++i];
         break;
       case '--cwd':
         args.cwd = argv[++i] ?? args.cwd;
@@ -385,15 +461,26 @@ Usage:
   harnext mcp <verb> [...]
 
 Options:
-  -p, --print              Run in non-interactive (single-shot) mode
-  --heartbeat <name>       Run the named heartbeat prompt once (for cron)
-  --provider <provider>    LLM provider (anthropic, openai, google) [default: anthropic]
-  -m, --model <model>      Model ID [default: claude-sonnet-4-6]
-  --thinking <level>       Thinking level (off, low, medium, high) [default: off]
-  --system-prompt <text>   Override system prompt
-  --cwd <directory>        Working directory [default: .]
-  -h, --help               Show this help
-  -v, --version            Show version
+  -p, --print                  Run in non-interactive (single-shot) mode
+  --heartbeat <name>           Run the named heartbeat prompt once (for cron)
+  --provider <provider>        LLM provider (anthropic, openai, google) [default: anthropic]
+  -m, --model <model>          Model ID [default: claude-sonnet-4-6]
+  --fallback-model <model>     Model to fall back to (accepted; reserved)
+  --thinking <level>           Thinking level (off, low, medium, high) [default: off]
+  --system-prompt <text>       Override system prompt
+  --append-system-prompt <t>   Append text to the system prompt
+  --allowed-tools <csv>        Auto-approve tools (repeatable / comma-separated)
+  --disallowed-tools <csv>     Block tools (repeatable / comma-separated)
+  --permission-mode <mode>     default | acceptEdits | plan | dontAsk | bypassPermissions
+  --max-turns <n>              Stop after n assistant turns
+  --setting-sources <csv>      Load CLAUDE.md from: user, project, local
+  --add-dir <dir>              Extra accessible directory (repeatable; reserved)
+  --output-format <fmt>        text (default) | json | stream-json
+  --input-format <fmt>         text (default) | stream-json
+  --sandbox <json>             Sandbox config (accepted for parity; currently a no-op)
+  --cwd <directory>            Working directory [default: .]
+  -h, --help                   Show this help
+  -v, --version                Show version
 
 Subcommands:
   setup                    Pick a coding agent and configure the project pipeline

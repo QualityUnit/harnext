@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harnext-sdk"
+version = "0.1.0"
+description = "Python SDK for the harnext coding agent — subprocesses the harnext CLI with a Claude Agent SDK-compatible API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yasha Boroumand", email = "yasha1boroumand@gmail.com" }]
+keywords = ["ai-agent", "coding-agent", "harnext", "claude-agent-sdk", "llm", "agent"]
+dependencies = []
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.23", "build>=1.2", "twine>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/QualityUnit/harnext"
+Repository = "https://github.com/QualityUnit/harnext"
+Documentation = "https://github.com/QualityUnit/harnext/blob/main/sdk/python/README.md"
+Issues = "https://github.com/QualityUnit/harnext/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["harnext_sdk*"]
+
+[tool.setuptools.package-data]
+harnext_sdk = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

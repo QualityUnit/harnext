@@ -27,6 +27,8 @@ import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { seedBuiltinSkills } from './seed.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
+import { loadProjectContext, type SettingSource } from './project-context.js';
+import { createPermissionHook, filterTools, type PermissionMode } from './tool-policy.js';
 import { createCodingTools, createSkillTool, type Tool } from './tools/index.js';
 
 export { createCodingTools, createAllTools, createBashTool, createReadTool, createEditTool, createWriteTool, createSkillTool } from './tools/index.js';
@@ -60,6 +62,20 @@ export interface CreateAgentSessionOptions {
   mcpConfigOverride?: McpConfigFile;
   /** Inject an MCP metadata cache instead of reading ~/.harnext/agent/mcp-cache.json. */
   mcpCacheOverride?: MetadataCache;
+  /** Auto-approve list (Claude SDK `allowed_tools`). Gates `dontAsk`/`plan`. */
+  allowedTools?: readonly string[];
+  /** Block list (Claude SDK `disallowed_tools`). Removes tools from view and call. */
+  disallowedTools?: readonly string[];
+  /** Permission mode (Claude SDK `permission_mode`). */
+  permissionMode?: PermissionMode;
+  /** Stop after this many assistant turns (Claude SDK `max_turns`). */
+  maxTurns?: number;
+  /** CLAUDE.md sources to load into the system prompt (Claude SDK `setting_sources`). */
+  settingSources?: readonly SettingSource[];
+  /** Text appended to the system prompt (Claude SDK `append_system_prompt`). */
+  appendSystemPrompt?: string;
+  /** Stable session id surfaced in stream-json envelopes. */
+  sessionId?: string;
 }
 
 export interface CreateAgentSessionResult {
@@ -220,12 +236,26 @@ export async function createAgentSession(
     tools.push(createSkillTool(() => skills));
   }
 
-  // Build system prompt
-  const systemPrompt = buildSystemPrompt({
+  // Build system prompt: base (custom or default) + CLAUDE.md context selected
+  // via setting_sources + any append_system_prompt text.
+  let systemPrompt = buildSystemPrompt({
     cwd,
     customPrompt: options.systemPrompt,
     skills,
   });
+  const projectContext = loadProjectContext({ cwd, settingSources: options.settingSources });
+  if (projectContext) systemPrompt += projectContext;
+  if (options.appendSystemPrompt) systemPrompt += `\n\n${options.appendSystemPrompt}`;
+
+  // Apply tool policy: disallow_tools removes tools from view; the permission
+  // hook enforces allowed_tools / permission_mode at call time.
+  const toolPolicy = {
+    permissionMode: options.permissionMode,
+    allowedTools: options.allowedTools,
+    disallowedTools: options.disallowedTools,
+  };
+  const visibleTools = filterTools(tools, toolPolicy);
+  const beforeToolCall = createPermissionHook(toolPolicy);
 
   // Resolve compaction settings: defaults < settings.json < SDK options.
   // SDK options (`options.compaction`) win to give programmatic callers an
@@ -245,8 +275,9 @@ export async function createAgentSession(
       systemPrompt,
       model,
       thinkingLevel,
-      tools,
+      tools: visibleTools,
     },
+    beforeToolCall,
     convertToLlm,
     streamFn: async (m, ctx, opts) => {
       // Inject the right apiKey for providers pi-ai doesn't recognize in
@@ -276,10 +307,12 @@ export async function createAgentSession(
   const session = new AgentSession(agent, {
     model,
     systemPrompt,
-    tools,
+    tools: visibleTools,
     thinkingLevel,
     skills,
     mcpManager,
+    maxTurns: options.maxTurns,
+    sessionId: options.sessionId,
   });
 
   return { session, diagnostics };

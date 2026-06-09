@@ -16,3 +16,11 @@ coverage/
 .harnext/github-runs/
 # harnext: github poller worktree state
 .harnext/worktrees/
+
+# python sdk: local venv + build artifacts
+sdk/python/.venv/
+sdk/python/**/__pycache__/
+sdk/python/*.egg-info/
+sdk/python/.pytest_cache/
+sdk/python/dist/
+sdk/python/build/

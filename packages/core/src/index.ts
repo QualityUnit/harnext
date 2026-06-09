@@ -283,6 +283,7 @@ export {
   AgentSession,
   type AgentSessionConfig,
   type AgentSessionEventListener,
+  type StopReason,
 } from './agent-session.js';
 
 export {
@@ -292,6 +293,29 @@ export {
 } from './sdk.js';
 
 export { buildSystemPrompt, type BuildSystemPromptOptions } from './system-prompt.js';
+
+export {
+  PERMISSION_MODES,
+  NATIVE_TO_CANONICAL,
+  isPermissionMode,
+  normalizeToolName,
+  canonicalToolName,
+  toolMatchesRule,
+  matchesAnyRule,
+  filterTools,
+  createPermissionHook,
+  type PermissionMode,
+  type ToolPolicy,
+} from './tool-policy.js';
+
+export {
+  SETTING_SOURCES,
+  isSettingSource,
+  resolveContextFiles,
+  loadProjectContext,
+  type SettingSource,
+  type LoadProjectContextOptions,
+} from './project-context.js';
 
 export {
   createCompaction,
