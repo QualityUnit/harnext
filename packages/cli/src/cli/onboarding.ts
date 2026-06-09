@@ -10,6 +10,7 @@ import {
   getStoredKey,
   listNvidiaModels,
   listOllamaModels,
+  listOpenRouterModels,
   normalizeOllamaBaseUrl,
   PROVIDERS,
   saveProviderConfig,
@@ -106,6 +107,15 @@ async function runOnboarding(): Promise<{ provider: string; model: string }> {
     return { provider: provider.id, model: modelId };
   }
 
+  // OpenRouter: pi-ai's static catalog lags the live one, so fetch the live
+  // list from `/v1/models` (public endpoint) instead of the registry.
+  if (provider.id === 'openrouter') {
+    const modelId = await onboardOpenRouterModel(provider);
+    setDefault(provider.id, modelId);
+    console.log(chalk.green(`\n  Saved! Using ${provider.name} / ${modelId}\n`));
+    return { provider: provider.id, model: modelId };
+  }
+
   // Let the user pick a model now that we know the provider is reachable.
   // Fall back to the provider's default if the registry lookup fails or the user cancels.
   let modelId = provider.defaultModel;
@@ -150,6 +160,37 @@ async function onboardNvidiaModel(provider: ProviderInfo, apiKey: string): Promi
     pageSize: 15,
   });
   return picked ?? summaries[0].id;
+}
+
+/**
+ * OpenRouter picker — fetches the live catalog from `/v1/models` (a public
+ * endpoint, so no key needed). Falls back to the curated default if the fetch
+ * fails or the user cancels, so onboarding never gets stuck.
+ */
+async function onboardOpenRouterModel(provider: ProviderInfo): Promise<string> {
+  let summaries;
+  try {
+    summaries = await listOpenRouterModels();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.yellow(`  Could not fetch OpenRouter model list: ${message}`));
+    console.log(chalk.dim(`  Falling back to ${provider.defaultModel}; pick another via /model.`));
+    return provider.defaultModel;
+  }
+  if (summaries.length === 0) {
+    console.log(chalk.yellow(`  OpenRouter returned no models. Using ${provider.defaultModel}.`));
+    return provider.defaultModel;
+  }
+  const items: SelectItem<string>[] = summaries.map((s) => ({
+    label: s.id,
+    value: s.id,
+    hint: s.contextLength ? `${Math.round(s.contextLength / 1000)}k ctx` : undefined,
+  }));
+  const picked = await select(items, {
+    title: `Select an ${provider.name} model`,
+    pageSize: 15,
+  });
+  return picked ?? provider.defaultModel;
 }
 
 async function selectOnboardingProvider(): Promise<ProviderInfo | undefined> {

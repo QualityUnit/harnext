@@ -24,6 +24,7 @@ import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
 import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
+import { buildOpenRouterModel } from './openrouter.js';
 import { seedBuiltinSkills } from './seed.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -110,6 +111,13 @@ export async function createAgentSession(
     model = buildOllamaModel(modelId, baseUrl) as Model<string>;
   } else if (provider === 'nvidia') {
     model = buildNvidiaModel(modelId) as Model<string>;
+  } else if (provider === 'openrouter') {
+    // Known ids keep pi-ai's curated registry metadata; ids newer than the
+    // static snapshot (e.g. deepseek/deepseek-v4-pro) are built by hand so the
+    // live /v1/models catalog is always usable. No network call here — the id
+    // is enough to route the request.
+    const registryModel = getModel('openrouter', modelId as never) as Model<string> | undefined;
+    model = registryModel ?? (buildOpenRouterModel(modelId) as Model<string>);
   } else {
     const registryModel = getModel(provider as KnownProvider, modelId as never) as Model<string>;
     if (!registryModel) {

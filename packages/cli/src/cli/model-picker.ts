@@ -1,17 +1,19 @@
 import { createInterface } from 'node:readline';
 
-import { getModels } from '@mariozechner/pi-ai';
+import { getModel, getModels } from '@mariozechner/pi-ai';
 import type { KnownProvider, Model } from '@mariozechner/pi-ai';
 import chalk from 'chalk';
 
 import {
   buildNvidiaModel,
   buildOllamaModel,
+  buildOpenRouterModel,
   DEFAULT_OLLAMA_BASE_URL,
   getProviderConfig,
   getStoredKey,
   listNvidiaModels,
   listOllamaModels,
+  listOpenRouterModels,
   normalizeOllamaBaseUrl,
   PROVIDERS,
   removeProviderConfig,
@@ -19,6 +21,7 @@ import {
   saveProviderKey,
   setProviderEnv,
 } from '@harnext/core';
+import type { OpenRouterModelSummary } from '@harnext/core';
 import type { ProviderInfo } from '@harnext/core';
 import { select } from './select.js';
 import type { SelectItem } from './select.js';
@@ -126,6 +129,10 @@ async function runFirstRunFlow(
 
   if (provider.id === 'nvidia') {
     return pickNvidiaModel(provider);
+  }
+
+  if (provider.id === 'openrouter') {
+    return pickOpenRouterModel(provider);
   }
 
   const model = await selectModel(provider);
@@ -287,6 +294,45 @@ async function pickNvidiaModel(provider: ProviderInfo): Promise<ModelPickerResul
   };
 }
 
+// ── OpenRouter flow (live /v1/models catalog, fixed remote base URL) ──
+
+async function pickOpenRouterModel(
+  provider: ProviderInfo,
+): Promise<ModelPickerResult | undefined> {
+  let summaries: OpenRouterModelSummary[];
+  try {
+    summaries = await listOpenRouterModels();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`  Could not fetch OpenRouter model list: ${message}`));
+    return undefined;
+  }
+  if (summaries.length === 0) {
+    console.log(chalk.yellow(`  ${provider.name} returned no models.`));
+    return undefined;
+  }
+
+  const items: SelectItem<OpenRouterModelSummary>[] = summaries.map((s) => {
+    const parts: string[] = [];
+    if (s.contextLength) parts.push(formatTokenCount(s.contextLength));
+    if (s.reasoning) parts.push('reasoning');
+    if (s.promptCost) parts.push(`$${trimCost(s.promptCost)}/${trimCost(s.completionCost ?? 0)}`);
+    return { label: s.id, value: s, hint: parts.join('  ') };
+  });
+
+  const picked = await select(items, {
+    title: `Select a model (${provider.name})`,
+    pageSize: 15,
+  });
+  if (!picked) return undefined;
+
+  // Prefer pi-ai's curated registry metadata when it knows the id; otherwise
+  // build from the live summary so brand-new models are still usable.
+  const registryModel = getModel('openrouter', picked.id as never) as Model<string> | undefined;
+  const model = registryModel ?? (buildOpenRouterModel(picked.id, picked) as Model<string>);
+  return { provider: provider.id, model };
+}
+
 // ── Local provider flow (ollama) ─────────────────────────────────────
 
 async function pickLocalModel(provider: ProviderInfo): Promise<ModelPickerResult | undefined> {
@@ -378,4 +424,9 @@ function formatTokenCount(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(0)}M ctx`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(0)}k ctx`;
   return `${tokens} ctx`;
+}
+
+/** Trim floating-point noise from per-million-token prices for display. */
+function trimCost(usd: number): string {
+  return Number.parseFloat(usd.toFixed(4)).toString();
 }

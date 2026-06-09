@@ -365,6 +365,14 @@ export {
 } from './nvidia.js';
 
 export {
+  OPENROUTER_BASE_URL,
+  OPENROUTER_DEFAULT_MODEL,
+  buildOpenRouterModel,
+  listOpenRouterModels,
+  type OpenRouterModelSummary,
+} from './openrouter.js';
+
+export {
   loadPreferences,
   savePreferences,
   setDefaultProvider,

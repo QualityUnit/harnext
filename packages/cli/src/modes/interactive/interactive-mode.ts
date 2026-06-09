@@ -684,6 +684,19 @@ export async function runInteractiveMode(
       resolve();
     });
 
+    // Esc aborts the in-flight run. `prompt()` resolves cleanly on abort (the
+    // runtime records an `aborted` stop), so runPrompt's finally clears the
+    // busy flag and spinner on its own — we just trigger the abort and note it.
+    textarea.on('interrupt', () => {
+      if (!agentBusy) return;
+      try {
+        session.agent.abort();
+      } catch {
+        // no active run — nothing to abort
+      }
+      textarea.writeAbove(chalk.yellow('\n  ⎋ Interrupted\n\n'));
+    });
+
     /**
      * Lazy-init the PII masker on first secure-mode submit. Subsequent calls
      * just await the cached `pii.ready` promise. Pins a "Downloading PII

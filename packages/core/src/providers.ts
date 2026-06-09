@@ -33,7 +33,16 @@ export const PROVIDERS: ProviderInfo[] = [
   { id: 'openai', name: 'OpenAI', envVar: 'OPENAI_API_KEY', defaultModel: 'gpt-5.3-codex' },
   { id: 'google', name: 'Google Gemini', envVar: 'GEMINI_API_KEY', defaultModel: 'gemini-3-flash-preview' },
   { id: 'xai', name: 'xAI (Grok)', envVar: 'XAI_API_KEY', defaultModel: 'grok-3' },
-  { id: 'openrouter', name: 'OpenRouter', envVar: 'OPENROUTER_API_KEY', defaultModel: 'anthropic/claude-sonnet-4' },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    envVar: 'OPENROUTER_API_KEY',
+    defaultModel: 'anthropic/claude-sonnet-4.6',
+    defaultBaseUrl: 'https://openrouter.ai/api/v1',
+    // Catalog is fetched live from /v1/models; ids missing from pi-ai's static
+    // registry are built by hand (see openrouter.ts + sdk.ts).
+    customResolution: true,
+  },
   { id: 'groq', name: 'Groq', envVar: 'GROQ_API_KEY', defaultModel: 'llama-3.3-70b-versatile' },
   { id: 'mistral', name: 'Mistral', envVar: 'MISTRAL_API_KEY', defaultModel: 'mistral-large-latest' },
   { id: 'cerebras', name: 'Cerebras', envVar: 'CEREBRAS_API_KEY', defaultModel: 'qwen-3-235b-a22b-instruct-2507' },

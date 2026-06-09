@@ -22,6 +22,8 @@ export interface TextareaOptions {
 export interface Textarea {
   on(event: 'submit', cb: (value: string) => void): Textarea;
   on(event: 'exit', cb: () => void): Textarea;
+  /** Emitted when the user presses Esc — used to interrupt an in-flight run. */
+  on(event: 'interrupt', cb: () => void): Textarea;
   writeAbove(text: string): void;
   redraw(): void;
   pause(): void;
@@ -232,6 +234,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
     if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
       emitter.emit('exit');
+      return;
+    }
+
+    // Esc interrupts an in-flight agent run. The handler (interactive mode)
+    // decides whether anything is running; here we just surface the intent.
+    // Note: emitKeypressEvents parses arrow keys etc. into their own named
+    // keys, so `escape` only fires for a bare Esc press.
+    if (key.name === 'escape') {
+      emitter.emit('interrupt');
       return;
     }
 
