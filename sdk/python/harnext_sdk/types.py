@@ -62,6 +62,10 @@ class HarnextAgentOptions:
     extra_args: dict[str, Optional[str]] = field(default_factory=dict)
     stderr: Optional[Callable[[str], None]] = None
     max_buffer_size: Optional[int] = None
+    # When True (default), if the globally-installed harnext CLI is older than
+    # this SDK, query() attempts `npm install -g harnext@<sdk_version>` once per
+    # process. Skipped when cli_path/HARNEXT_CLI_PATH is set. Best-effort.
+    auto_update_cli: bool = True
 
 
 # Drop-in alias for ported claude_agent_sdk code.

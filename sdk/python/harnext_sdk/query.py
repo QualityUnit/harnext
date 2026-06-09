@@ -8,6 +8,7 @@ from typing import AsyncIterator, Optional
 from ._cli import build_command
 from ._parser import parse_line
 from ._transport import SubprocessCLITransport
+from ._version import ensure_cli_version
 from .types import HarnextAgentOptions, Message, ResultMessage
 
 
@@ -43,6 +44,10 @@ async def query(
                 print(message.result)
     """
     opts = options or HarnextAgentOptions()
+
+    # Keep the global CLI in lockstep with the SDK (best-effort, once/process).
+    await ensure_cli_version(opts)
+
     command = build_command(prompt, opts)
 
     transport = SubprocessCLITransport(

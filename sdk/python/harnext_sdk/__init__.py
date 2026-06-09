@@ -27,6 +27,7 @@ from ._errors import (
     ProcessError,
 )
 from ._parser import parse_line, parse_message
+from ._version import ensure_cli_version, is_behind, parse_version
 from .query import query
 from .types import (
     AssistantMessage,
@@ -75,5 +76,8 @@ __all__ = [
     "resolve_cli_invocation",
     "parse_line",
     "parse_message",
+    "ensure_cli_version",
+    "is_behind",
+    "parse_version",
     "__version__",
 ]

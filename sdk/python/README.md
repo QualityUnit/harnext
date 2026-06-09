@@ -62,6 +62,18 @@ exported as an alias so ported code runs unchanged.
 | `env` | (process env) | merged over `os.environ` |
 | `cli_path` | — | path to the CLI entry point |
 | `extra_args` | passthrough | `{"flag": "value"}` → `--flag value` |
+| `auto_update_cli` | — | default `True`; auto-upgrade the global CLI when it's behind the SDK |
+
+### CLI version sync
+
+The SDK and CLI are released in lockstep (same version). On the first `query()`
+call, if the **globally-installed** `harnext` CLI is older than the SDK, the SDK
+runs `npm install -g harnext@<sdk_version>` once per process so the new flags it
+emits are understood. It's best-effort: failures (no npm, offline, permissions)
+emit a warning and the existing CLI is used.
+
+It's skipped when `cli_path` or `HARNEXT_CLI_PATH` is set (custom/dev builds),
+when `auto_update_cli=False`, or when `HARNEXT_NO_CLI_AUTOUPDATE` is set.
 
 ### Tool names
 
