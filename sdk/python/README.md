@@ -9,7 +9,7 @@ supported surface.
 ## Install
 
 ```bash
-pip install harnext-sdk              # from PyPI
+pip install harnext                  # from PyPI
 # or, from a checkout of this repo:
 pip install -e sdk/python
 
@@ -86,7 +86,7 @@ HARNEXT_LIVE_E2E=1 pytest -k live   # live run against the real CLI (needs a pro
 
 ## Publishing to PyPI
 
-The package name on PyPI is **`harnext-sdk`** (import name `harnext_sdk`).
+The package name on PyPI is **`harnext`** (import name `harnext_sdk`).
 
 ### CI (recommended): trusted publishing
 
@@ -95,7 +95,7 @@ The package name on PyPI is **`harnext-sdk`** (import name `harnext_sdk`).
 stored in the repo).
 
 1. One-time: on PyPI (and TestPyPI) add a *pending publisher* for project
-   `harnext-sdk`, owner `QualityUnit`, repo `harnext`, workflow
+   `harnext`, owner `QualityUnit`, repo `harnext`, workflow
    `publish-python-sdk.yml`.
 2. Dry run to TestPyPI: run the workflow manually (`workflow_dispatch`, default
    target `testpypi`).

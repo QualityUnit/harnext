@@ -6,7 +6,7 @@ name: Publish Python SDK
 # (defaulting to TestPyPI for a safe dry run).
 #
 # One-time setup: create a "pending publisher" on PyPI (and TestPyPI) for the
-# project `harnext-sdk`, owner `QualityUnit`, repo `harnext`, workflow
+# project `harnext`, owner `QualityUnit`, repo `harnext`, workflow
 # `publish-python-sdk.yml`. See:
 # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
 

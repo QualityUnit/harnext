@@ -122,7 +122,7 @@ unchanged.
 
 ## Packaging / distribution
 
-- Distribution name `harnext-sdk` (import `harnext_sdk`), published to PyPI.
+- Distribution name `harnext` (import `harnext_sdk`), published to PyPI.
 - `pyproject.toml` carries full metadata (SPDX `MIT`, classifiers, project URLs),
   ships `py.typed`, and builds a clean sdist + wheel (`twine check` PASSED).
 - `.github/workflows/publish-python-sdk.yml` publishes via OIDC trusted
