@@ -88,19 +88,23 @@ HARNEXT_LIVE_E2E=1 pytest -k live   # live run against the real CLI (needs a pro
 
 The package name on PyPI is **`harnext`** (import name `harnext_sdk`).
 
-### CI (recommended): trusted publishing
+### CI (recommended): unified release
 
-`.github/workflows/publish-python-sdk.yml` builds, tests, and publishes via PyPI
+Releases are unified in `.github/workflows/release.yml`: pushing a `v<version>`
+tag publishes the CLI to npm **and** the Python SDK to PyPI in one run. The SDK
+version is derived from the tag, so the CLI and SDK stay in lockstep
+(`v1.3.3` → npm `1.3.3` + `harnext==1.3.3`). PyPI uses
 [trusted publishing](https://docs.pypi.org/trusted-publishers/) (OIDC — no token
 stored in the repo).
 
-1. One-time: on PyPI (and TestPyPI) add a *pending publisher* for project
-   `harnext`, owner `QualityUnit`, repo `harnext`, workflow
-   `publish-python-sdk.yml`.
-2. Dry run to TestPyPI: run the workflow manually (`workflow_dispatch`, default
-   target `testpypi`).
-3. Release to PyPI: push a tag `python-v0.1.0` (independent of the CLI's `v*`
-   tags), or run the workflow manually with target `pypi`.
+1. One-time: on PyPI add a *trusted publisher* for project `harnext`, owner
+   `QualityUnit`, repo `harnext`, workflow `release.yml`, environment blank.
+2. Dry run: trigger `release.yml` via `workflow_dispatch` (default
+   `dry_run=true`) — builds and validates npm + PyPI without uploading.
+3. Release: push a `v<version>` tag (e.g. `git tag v1.3.3 && git push origin v1.3.3`).
+
+`version` in `pyproject.toml` / `__version__` in `harnext_sdk/__init__.py` are the
+local defaults; CI overwrites them with the tag version at build time.
 
 ### Manual
 
@@ -110,6 +114,3 @@ python -m build                      # -> dist/*.whl, dist/*.tar.gz
 python -m twine check dist/*
 python -m twine upload dist/*        # needs a PyPI API token (TWINE_USERNAME=__token__)
 ```
-
-Bump `version` in `pyproject.toml` and `__version__` in `harnext_sdk/__init__.py`
-together for each release.
