@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 
 import type { AgentEvent } from '@mariozechner/pi-agent-core';
 import {
@@ -392,8 +392,6 @@ function expandSkillInvocation(skill: Skill, args: string): string {
 
 // ── Animated spinner (rendered inline on the info line) ─────────────
 
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-
 const LOADING_MESSAGES = [
   'Working...',
   'Thinking...',
@@ -428,22 +426,27 @@ function randomMessage(): string {
   return LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
 }
 
-// Sum input/output tokens across all assistant turns in the session.
-// Each turn's `input` is cumulative context sent to the model — summing
-// across turns reflects total tokens consumed, not unique tokens.
+// Sum input/output tokens and cost across all assistant turns in the
+// session. Each turn's `input` is cumulative context sent to the model —
+// summing across turns reflects total tokens consumed, not unique tokens.
 function sumSessionUsage(
-  messages: ReadonlyArray<{ role: string; usage?: { input?: number; output?: number } }>,
-): { input: number; output: number } {
+  messages: ReadonlyArray<{
+    role: string;
+    usage?: { input?: number; output?: number; cost?: { total?: number } };
+  }>,
+): { input: number; output: number; cost: number } {
   let input = 0;
   let output = 0;
+  let cost = 0;
   for (const msg of messages) {
     if (msg.role !== 'assistant') continue;
     const u = msg.usage;
     if (!u) continue;
     input += u.input ?? 0;
     output += u.output ?? 0;
+    cost += u.cost?.total ?? 0;
   }
-  return { input, output };
+  return { input, output, cost };
 }
 
 /**
@@ -459,7 +462,10 @@ export async function runInteractiveMode(
   const cwd = process.cwd();
   let activeProvider = options.provider;
   let activeModel = options.model;
-  const pendingToolArgs: Map<string, Record<string, unknown>> = new Map();
+  const pendingTools: Map<
+    string,
+    { args: Record<string, unknown>; startedAt: number; priorContent?: string | null }
+  > = new Map();
   let currentText = '';
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
@@ -487,15 +493,28 @@ export async function runInteractiveMode(
   // ends with more trailing newlines than we want, we just drop them.
   // `asstAtLineStart` tracks whether the cursor is at column 0 of a fresh
   // row, used by message_end to decide whether to emit a final '\n'.
+  // `asstNeedsLead` defers the blank line that separates prose from the
+  // previous block until the message actually produces text — an assistant
+  // message that goes straight to a tool call must not emit a blank that
+  // would stack with the tool block's own separator.
   let asstPendingNewlines = '';
   let asstAtLineStart = true;
+  let asstNeedsLead = false;
 
   function processAsstChunk(styled: string): string {
     if (styled.length === 0) return '';
     const combined = asstPendingNewlines + styled;
     const m = combined.match(/\n+$/);
-    const toWrite = m ? combined.slice(0, -m[0].length) : combined;
+    let toWrite = m ? combined.slice(0, -m[0].length) : combined;
     asstPendingNewlines = m ? m[0] : '';
+    if (asstNeedsLead) {
+      // Drop model-emitted leading newlines, then open the block with
+      // exactly one blank line of our own.
+      toWrite = toWrite.replace(/^\n+/, '');
+      if (toWrite.length === 0) return '';
+      toWrite = '\n' + toWrite;
+      asstNeedsLead = false;
+    }
     if (toWrite.length === 0) return '';
     asstAtLineStart = toWrite.endsWith('\n');
     return toWrite;
@@ -506,6 +525,7 @@ export async function runInteractiveMode(
   let spinnerFrame = 0;
   let spinnerLastCycle = 0;
   let spinnerTimer: NodeJS.Timeout | null = null;
+  let spinnerStartedAt = 0;
 
   // Print the static header before the textarea — it stays above content
   // and scrolls out naturally as the session grows.
@@ -543,9 +563,16 @@ export async function runInteractiveMode(
       }
       label = spinnerMsg;
     }
-    const frame = SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length];
+    const { input, output, cost } = sumSessionUsage(session.messages);
+    spinnerPrefix = render.thinkLine({
+      frame: spinnerFrame,
+      label,
+      elapsedMs: Date.now() - spinnerStartedAt,
+      inputTokens: input,
+      outputTokens: output,
+      cost,
+    });
     spinnerFrame++;
-    spinnerPrefix = `  ${chalk.cyan(frame)} ${chalk.dim(label)}`;
     textarea.redraw();
   }
 
@@ -554,6 +581,7 @@ export async function runInteractiveMode(
     spinnerMsg = randomMessage();
     spinnerLastCycle = Date.now();
     spinnerFrame = 0;
+    spinnerStartedAt = Date.now();
     tickSpinner();
     spinnerTimer = setInterval(tickSpinner, 80);
   }
@@ -570,7 +598,7 @@ export async function runInteractiveMode(
   textarea = createTextarea({
     prompt: render.prompt(),
     getTopBorder: () => {
-      const sep = render.separator(chalk.magenta);
+      const sep = render.separator();
       const body = spinnerPrefix ? `${spinnerPrefix}\n${sep}` : sep;
       return `\n${body}`;
     },
@@ -578,16 +606,17 @@ export async function runInteractiveMode(
       const ctxTokens = getContextTokens(session.messages);
       const ctxWindow = session.agent.state.model.contextWindow;
       const ctxPercent = ctxWindow ? (ctxTokens / ctxWindow) * 100 : undefined;
-      const { input, output } = sumSessionUsage(session.messages);
-      return render.inputFooter(
-        activeProvider,
-        activeModel,
+      const { input, output, cost } = sumSessionUsage(session.messages);
+      return render.inputFooter({
+        provider: activeProvider,
+        model: activeModel,
         cwd,
-        ctxPercent,
-        input,
-        output,
+        contextPercent: ctxPercent,
+        inputTokens: input,
+        outputTokens: output,
+        cost,
         mode,
-      );
+      });
     },
     onShiftTab: () => {
       const idx = MODES.indexOf(mode);
@@ -607,9 +636,9 @@ export async function runInteractiveMode(
           markdown = createMarkdownStreamer();
           asstPendingNewlines = '';
           asstAtLineStart = true;
-          // Leading blank separates assistant text from whatever preceded
-          // (user msg, tool-end card, or another assistant message).
-          textarea.writeAbove('\n');
+          // The blank that separates prose from the previous block is
+          // emitted lazily by processAsstChunk on the first text chunk.
+          asstNeedsLead = true;
         }
         break;
 
@@ -644,21 +673,41 @@ export async function runInteractiveMode(
         break;
 
       case 'tool_execution_start': {
-        pendingToolArgs.set(event.toolCallId, event.args);
-        // The card's own top padding (blank tinted row) supplies the separation
-        // from whatever preceded — adding a leading '\n' here would stack a
-        // plain blank row on top of that and read as excess whitespace.
-        textarea.writeAbove(render.toolStart(event.toolName, event.args) + '\n');
+        // Snapshot the file the write tool is about to overwrite so the
+        // tool-end renderer can diff against it instead of dumping the
+        // whole new content as additions. null = file didn't exist.
+        let priorContent: string | null | undefined;
+        if (event.toolName === 'write') {
+          try {
+            priorContent = readFileSync(
+              resolvePath(cwd, String(event.args.path ?? '')),
+              'utf-8',
+            );
+          } catch {
+            priorContent = null;
+          }
+        }
+        pendingTools.set(event.toolCallId, {
+          args: event.args,
+          startedAt: Date.now(),
+          priorContent,
+        });
+        // Blank line above each tool header keeps blocks visually separated
+        // without padding inside the block itself (single-spaced bodies).
+        textarea.writeAbove('\n' + render.toolStart(event.toolName, event.args) + '\n');
         break;
       }
 
       case 'tool_execution_end': {
-        const args = pendingToolArgs.get(event.toolCallId) ?? {};
-        pendingToolArgs.delete(event.toolCallId);
+        const pending = pendingTools.get(event.toolCallId);
+        pendingTools.delete(event.toolCallId);
+        const args = pending?.args ?? {};
         const resultText = event.result?.content?.[0]?.text ?? '';
-        textarea.writeAbove(
-          render.toolEnd(event.toolName, args, resultText, event.isError) + '\n',
-        );
+        const body = render.toolEnd(event.toolName, args, resultText, event.isError, {
+          durationMs: pending ? Date.now() - pending.startedAt : undefined,
+          priorContent: pending?.priorContent,
+        });
+        if (body.length > 0) textarea.writeAbove(body + '\n');
         break;
       }
     }
@@ -784,7 +833,8 @@ export async function runInteractiveMode(
       echo?: string,
       opts: { skipMask?: boolean } = {},
     ): Promise<void> => {
-      textarea.writeAbove(render.userMessage(echo ?? text) + '\n');
+      // Leading blank separates the echo from the previous block.
+      textarea.writeAbove('\n' + render.userMessage(echo ?? text) + '\n');
 
       agentBusy = true;
       startSpinner();
@@ -841,11 +891,12 @@ export async function runInteractiveMode(
           // no active run — nothing to abort
         }
         session.agent.reset();
-        pendingToolArgs.clear();
+        pendingTools.clear();
         currentText = '';
         markdown = null;
         asstPendingNewlines = '';
         asstAtLineStart = true;
+        asstNeedsLead = false;
         // Clear the visible screen (ESC[2J) and move cursor home (ESC[H),
         // then reprint the static header so the session starts fresh.
         process.stdout.write('\x1B[2J\x1B[H');
@@ -947,7 +998,7 @@ export async function runInteractiveMode(
 
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
-        textarea.writeAbove(render.userMessage(input) + '\n');
+        textarea.writeAbove('\n' + render.userMessage(input) + '\n');
         let payload = input;
         if (mode === 'secure') {
           try {
