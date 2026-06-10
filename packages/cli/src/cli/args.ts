@@ -106,7 +106,7 @@ export function parseArgs(argv: string[]): Args {
     return parseStatusArgs(argv.slice(1), args);
   }
 
-  if (argv[0] === 'upgrade') {
+  if (argv[0] === 'upgrade' || argv[0] === 'update') {
     return parseUpgradeArgs(argv.slice(1), args);
   }
 
@@ -263,10 +263,11 @@ function parseUpgradeArgs(rest: string[], args: Args): Args {
 
 export function printUpgradeHelp(): void {
   console.log(`
-harnext upgrade - Install the latest published harnext from npm
+harnext upgrade (or: harnext update) - Install the latest published harnext from npm
 
 Usage:
   harnext upgrade [--check] [--force]
+  harnext update  [--check] [--force]
 
 Options:
   --check                  Print the available version without installing
@@ -485,7 +486,7 @@ Options:
 Subcommands:
   setup                    Pick a coding agent and configure the project pipeline
   status                   Show active coding-agent runs (worktrees + processes)
-  upgrade                  Install the latest harnext from npm
+  upgrade, update          Install the latest harnext from npm
   mcp                      Manage MCP servers (run \`harnext mcp --help\`)
   runner                   Inspect the self-hosted runner (run \`harnext runner --help\`)
 `);
