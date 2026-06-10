@@ -559,13 +559,154 @@ export function approveDecision(decision: ApproveDecision, program: string): str
   }
 }
 
+// ── Out-of-directory write approval ──────────────────────────────────
+//
+//  ╭──────────────────────────────────────────────────────╮
+//  │ ⚠ permission  harnext wants to edit a file outside ~/proj │
+//  │   ✎ /etc/hosts                                         │
+//  │  y allow once   a allow outside edits   n deny         │
+//  ╰──────────────────────────────────────────────────────╯
+
+export interface ApproveWriteOptions {
+  /** The native tool requesting the write: 'edit' or 'write'. */
+  tool: string;
+  /** The target path (as the model supplied it). */
+  path: string;
+}
+
+export function approveWritePrompt(opts: ApproveWriteOptions): string {
+  const w = Math.min(termWidth(), APPROVE_MAX_WIDTH);
+  const inner = Math.max(20, w - 4);
+
+  const keycap = (key: string, bg: number, fg: ChalkInstance, label: string) => ({
+    rendered: chalk.bgAnsi256(bg).ansi256(X.bg).bold(` ${key} `) + ' ' + fg(label),
+    width: key.length + 3 + label.length,
+  });
+
+  const verb = opts.tool.toLowerCase() === 'edit' ? 'edit' : 'write';
+  const rows: { rendered: string; width: number }[] = [];
+  {
+    const head = '⚠ permission';
+    const tail = `  ${APP_NAME} wants to ${verb} a file outside the working directory`;
+    const tailFit = fitToWidth(tail, Math.max(0, inner - head.length));
+    rows.push({
+      rendered: c.amber.bold(head) + c.bright(tailFit),
+      width: head.length + tailFit.length,
+    });
+  }
+  {
+    const line = '✎ ' + truncateOneLine(opts.path, Math.max(8, inner - 4));
+    rows.push({
+      rendered: '  ' + chalk.bgAnsi256(235)(c.bright(` ${line} `)),
+      width: 2 + line.length + 2,
+    });
+  }
+  {
+    const yes = keycap('y', X.amber, c.dim, 'allow once');
+    const always = keycap('a', X.green, c.dim, 'allow outside edits this session');
+    const no = keycap('n', X.dim, c.dim, 'deny & tell agent why');
+    const GAP = 3;
+    let rendered = '';
+    let width = 0;
+    for (const opt of [yes, always, no]) {
+      if (width + (width > 0 ? GAP : 0) + opt.width > inner) break;
+      if (width > 0) {
+        rendered += ' '.repeat(GAP);
+        width += GAP;
+      }
+      rendered += opt.rendered;
+      width += opt.width;
+    }
+    rows.push({ rendered, width });
+  }
+
+  const bar = '─'.repeat(inner + 2);
+  const out: string[] = [c.amber('╭' + bar + '╮')];
+  for (const row of rows) {
+    const pad = ' '.repeat(Math.max(0, inner - row.width));
+    out.push(c.amber('│') + ' ' + row.rendered + pad + ' ' + c.amber('│'));
+  }
+  out.push(c.amber('╰' + bar + '╯'));
+  return out.join('\n');
+}
+
+export function approveWriteDecision(decision: ApproveDecision): string {
+  switch (decision) {
+    case 'y':
+      return c.green('✓ approved') + c.faint(' — this file');
+    case 'a':
+      return c.green('✓ approved') + c.faint(' — allowing out-of-directory edits this session');
+    default:
+      return c.red('✗ denied') + c.faint(' — type a message to tell the agent why');
+  }
+}
+
+// ── Plan approval ────────────────────────────────────────────────────
+//
+//  │ ◆ plan ready
+//  │   <the plan, rendered line by line>
+//  ╭───────────────────────────────────────────────────╮
+//  │ ◆ approve plan?  build it now or keep refining     │
+//  │  y approve & build   n keep planning               │
+//  ╰───────────────────────────────────────────────────╯
+
+export function planApprovalPrompt(plan: string): string {
+  const w = Math.min(termWidth(), APPROVE_MAX_WIDTH);
+  const inner = Math.max(20, w - 4);
+  const rail = c.blue('│') + ' ';
+
+  const out: string[] = [];
+  out.push(rail + c.blue.bold('◆ plan ready'));
+  for (const raw of plan.replace(/\s+$/, '').split('\n')) {
+    out.push(rail + c.fg(fitToWidth(raw, Math.max(8, termWidth() - 4))));
+  }
+
+  const keycap = (key: string, bg: number, fg: ChalkInstance, label: string) => ({
+    rendered: chalk.bgAnsi256(bg).ansi256(X.bg).bold(` ${key} `) + ' ' + fg(label),
+    width: key.length + 3 + label.length,
+  });
+  const head = '◆ approve plan?';
+  const tail = '  build it now, or deny to keep refining';
+  const tailFit = fitToWidth(tail, Math.max(0, inner - head.length));
+
+  const yes = keycap('y', X.green, c.dim, 'approve & build');
+  const no = keycap('n', X.dim, c.dim, 'keep planning');
+  const GAP = 3;
+  let keysRendered = yes.rendered;
+  let keysWidth = yes.width;
+  if (keysWidth + GAP + no.width <= inner) {
+    keysRendered += ' '.repeat(GAP) + no.rendered;
+    keysWidth += GAP + no.width;
+  }
+
+  const rows: { rendered: string; width: number }[] = [
+    { rendered: c.blue.bold(head) + c.bright(tailFit), width: head.length + tailFit.length },
+    { rendered: keysRendered, width: keysWidth },
+  ];
+
+  const bar = '─'.repeat(inner + 2);
+  out.push(c.blue('╭' + bar + '╮'));
+  for (const row of rows) {
+    const pad = ' '.repeat(Math.max(0, inner - row.width));
+    out.push(c.blue('│') + ' ' + row.rendered + pad + ' ' + c.blue('│'));
+  }
+  out.push(c.blue('╰' + bar + '╯'));
+  return out.join('\n');
+}
+
+export function planDecision(approved: boolean): string {
+  return approved
+    ? c.green('✓ plan approved') + c.faint(' — switching to ACCEPT EDITS and building')
+    : c.amber('✎ keeping plan mode') + c.faint(' — tell the agent what to change');
+}
+
 // ── Header ───────────────────────────────────────────────────────────
 
 export function header(): string {
   const lines = [
     '',
     chalk.bold.ansi256(X.accent)(APP_NAME) + c.faint(` v${VERSION}`),
-    c.faint('⏎ send · / commands · esc interrupt · ⌃c quit'),
+    c.faint('⏎ send · ⇧⇥ mode · / commands · esc interrupt · ⌃c quit'),
     '',
   ];
   return lines.join('\n');
@@ -601,12 +742,34 @@ function isGitClean(): boolean {
 
 // ── Mode pill ────────────────────────────────────────────────────────
 
-export type Mode = 'normal' | 'secure';
+// The three coding-agent permission modes, cycled with Shift+Tab. The strings
+// match @harnext/core's PermissionMode so the UI value passes straight through
+// to the policy layer.
+export type Mode = 'plan' | 'acceptEdits' | 'bypassPermissions';
 
 const MODE_STYLES: Record<Mode, { label: string; bg: ChalkInstance }> = {
-  normal: { label: 'NORMAL', bg: chalk.bgAnsi256(X.accent).ansi256(X.bg).bold },
-  secure: { label: 'SECURE', bg: chalk.bgAnsi256(X.green).ansi256(X.bg).bold },
+  plan: { label: 'PLAN', bg: chalk.bgAnsi256(X.blue).ansi256(X.bg).bold },
+  acceptEdits: { label: 'ACCEPT EDITS', bg: chalk.bgAnsi256(X.accent).ansi256(X.bg).bold },
+  bypassPermissions: { label: 'BYPASS', bg: chalk.bgAnsi256(X.red).ansi256(X.bg).bold },
 };
+
+/** Short one-line hint describing what each mode does (shown on switch). */
+export function modeHint(mode: Mode): string {
+  switch (mode) {
+    case 'plan':
+      return 'read-only — agent drafts a plan for you to approve';
+    case 'acceptEdits':
+      return 'edits in this dir auto-run · out-of-dir edits & shell ask first';
+    case 'bypassPermissions':
+      return 'dangerously approve all — every tool runs without asking';
+  }
+}
+
+/** The line printed above the input when the mode changes via Shift+Tab. */
+export function modeSwitchLine(mode: Mode): string {
+  const style = MODE_STYLES[mode];
+  return '  ' + style.bg(` ${style.label} `) + ' ' + c.faint(modeHint(mode));
+}
 
 // ── Status bar ───────────────────────────────────────────────────────
 //
@@ -644,7 +807,7 @@ export function inputFooter(opts: StatusBarOptions): string {
   const home = process.env.HOME ?? '';
   const shortCwd =
     home && opts.cwd.startsWith(home) ? '~' + opts.cwd.slice(home.length) : opts.cwd;
-  const mode = opts.mode ?? 'normal';
+  const mode = opts.mode ?? 'acceptEdits';
 
   // Left: mode pill + cwd + git branch.
   const pillStyle = MODE_STYLES[mode];

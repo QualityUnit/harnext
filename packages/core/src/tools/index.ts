@@ -35,6 +35,12 @@ export {
   createTodoTool,
 } from './todo.js';
 export {
+  type ExitPlanToolDetails,
+  type ExitPlanToolInput,
+  exitPlanTool,
+  createExitPlanTool,
+} from './exit-plan.js';
+export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
@@ -45,6 +51,7 @@ export {
 import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { bashTool, createBashTool } from './bash.js';
 import { editTool, createEditTool } from './edit.js';
+import { exitPlanTool, createExitPlanTool } from './exit-plan.js';
 import { readTool, createReadTool } from './read.js';
 import { todoTool, createTodoTool } from './todo.js';
 import { writeTool, createWriteTool } from './write.js';
@@ -52,7 +59,7 @@ import { writeTool, createWriteTool } from './write.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Tool = AgentTool<any>;
 
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, todoTool];
+export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, todoTool, exitPlanTool];
 
 export const allTools = {
   read: readTool,
@@ -60,6 +67,7 @@ export const allTools = {
   edit: editTool,
   write: writeTool,
   todo: todoTool,
+  exit_plan: exitPlanTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -71,6 +79,7 @@ export function createCodingTools(cwd: string): Tool[] {
     createEditTool(cwd),
     createWriteTool(cwd),
     createTodoTool(),
+    createExitPlanTool(),
   ];
 }
 
@@ -81,5 +90,6 @@ export function createAllTools(cwd: string): Record<ToolName, Tool> {
     edit: createEditTool(cwd),
     write: createWriteTool(cwd),
     todo: createTodoTool(),
+    exit_plan: createExitPlanTool(),
   };
 }

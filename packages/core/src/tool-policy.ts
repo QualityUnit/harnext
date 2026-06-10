@@ -10,6 +10,8 @@
  * as `mcp__server__tool`) pass through unchanged and match case-insensitively.
  */
 
+import { isAbsolute, relative, resolve } from 'node:path';
+
 import type {
   BeforeToolCallContext,
   BeforeToolCallResult,
@@ -44,13 +46,55 @@ export const NATIVE_TO_CANONICAL: Record<string, string> = {
   write: 'Write',
   edit: 'Edit',
   todo: 'TodoWrite',
+  exit_plan: 'ExitPlanMode',
 };
 
-/** Native tools that don't mutate the workspace — allowed under `plan` mode. */
-const READ_ONLY_NATIVE = new Set(['read', 'todo']);
+/**
+ * Native tools that don't mutate the workspace — allowed under `plan` mode.
+ * `exit_plan` is the affordance the model uses to present its plan and request
+ * approval, so it must run even while planning is read-only.
+ */
+const READ_ONLY_NATIVE = new Set(['read', 'todo', 'exit_plan']);
 
 /** Native tools that mutate the workspace — blocked under `plan` mode. */
 const MUTATING_NATIVE = new Set(['bash', 'write', 'edit']);
+
+/** True for tools that change the workspace (bash, write, edit). */
+export function isMutatingTool(name: string): boolean {
+  return MUTATING_NATIVE.has(normalizeToolName(name));
+}
+
+/** True for tools safe to run while planning (read, todo, exit_plan). */
+export function isReadOnlyTool(name: string): boolean {
+  return READ_ONLY_NATIVE.has(normalizeToolName(name));
+}
+
+/**
+ * The filesystem path a tool call would mutate, if any. `edit` and `write`
+ * both take a `path` argument; everything else (bash, read, todo, exit_plan,
+ * MCP tools) returns undefined because they have no single mutation target.
+ */
+export function toolTargetPath(
+  toolName: string,
+  args: unknown,
+): string | undefined {
+  const native = normalizeToolName(toolName);
+  if (native !== 'edit' && native !== 'write') return undefined;
+  const path = (args as { path?: unknown } | null | undefined)?.path;
+  return typeof path === 'string' && path.length > 0 ? path : undefined;
+}
+
+/**
+ * Is `target` inside `cwd` (or cwd itself)? Relative paths resolve against cwd.
+ * A path that escapes via `..` or names an absolute location elsewhere returns
+ * false — that's the boundary `acceptEdits` guards.
+ */
+export function isPathInsideCwd(target: string, cwd: string): boolean {
+  const base = resolve(cwd);
+  const abs = isAbsolute(target) ? resolve(target) : resolve(base, target);
+  const rel = relative(base, abs);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
 
 /**
  * Reduce a tool name to a stable comparison key. For most built-ins the
@@ -61,6 +105,7 @@ const MUTATING_NATIVE = new Set(['bash', 'write', 'edit']);
  */
 const CANONICAL_LOWER_TO_NATIVE: Record<string, string> = {
   todowrite: 'todo',
+  exitplanmode: 'exit_plan',
 };
 
 export function normalizeToolName(name: string): string {
@@ -180,4 +225,78 @@ export function createPermissionHook(
         return undefined;
     }
   };
+}
+
+/**
+ * Verdict for an interactive (TTY) tool call under one of the three
+ * coding-agent permission modes. Unlike `createPermissionHook` — which can only
+ * allow or block headlessly — this classifier can also defer to the user with
+ * an `ask`, and signal the special plan-approval flow.
+ *
+ * - `allow`       — run the tool without prompting.
+ * - `deny`        — block it with `reason` (shown to the model so it can adjust).
+ * - `ask`         — pause and prompt the user (`kind` picks the prompt copy).
+ * - `approve-plan`— the model called `exit_plan` while planning; show the plan
+ *                   and ask the user to approve before any edits run.
+ */
+export type InteractiveDecision =
+  | { action: 'allow' }
+  | { action: 'deny'; reason: string }
+  | { action: 'ask'; kind: 'bash' | 'edit-outside' }
+  | { action: 'approve-plan' };
+
+export interface ClassifyInteractiveOptions {
+  /** The active permission mode (toggled with Shift+Tab). */
+  mode: PermissionMode;
+  /** Working directory — the boundary `acceptEdits` auto-approves within. */
+  cwd: string;
+}
+
+/**
+ * Decide what an interactive session should do with a tool call, given the
+ * current mode. Pure and synchronous so it can be unit-tested without a TTY;
+ * the caller owns the actual prompting and any per-session allow-lists.
+ */
+export function classifyInteractive(
+  toolName: string,
+  args: unknown,
+  opts: ClassifyInteractiveOptions,
+): InteractiveDecision {
+  const native = normalizeToolName(toolName);
+
+  switch (opts.mode) {
+    case 'bypassPermissions':
+      // Dangerously approve all — nothing is gated.
+      return { action: 'allow' };
+
+    case 'plan':
+      if (native === 'exit_plan') return { action: 'approve-plan' };
+      if (isReadOnlyTool(native)) return { action: 'allow' };
+      if (isMutatingTool(native)) {
+        return {
+          action: 'deny',
+          reason:
+            'Plan mode is read-only. Research with read, then call the exit_plan ' +
+            'tool with your proposed plan and wait for the user to approve before editing.',
+        };
+      }
+      return {
+        action: 'deny',
+        reason: `Plan mode is read-only; "${toolName}" is unavailable until the plan is approved.`,
+      };
+
+    case 'acceptEdits':
+    case 'default':
+    case 'dontAsk':
+    default:
+      // Auto-accept edits inside the working directory; everything that can
+      // reach beyond it (bash, out-of-cwd writes) defers to the user.
+      if (native === 'bash') return { action: 'ask', kind: 'bash' };
+      if (native === 'edit' || native === 'write') {
+        const target = toolTargetPath(native, args);
+        if (target && isPathInsideCwd(target, opts.cwd)) return { action: 'allow' };
+        return { action: 'ask', kind: 'edit-outside' };
+      }
+      return { action: 'allow' };
+  }
 }

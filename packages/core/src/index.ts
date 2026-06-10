@@ -304,8 +304,15 @@ export {
   matchesAnyRule,
   filterTools,
   createPermissionHook,
+  isMutatingTool,
+  isReadOnlyTool,
+  toolTargetPath,
+  isPathInsideCwd,
+  classifyInteractive,
   type PermissionMode,
   type ToolPolicy,
+  type InteractiveDecision,
+  type ClassifyInteractiveOptions,
 } from './tool-policy.js';
 
 export {
@@ -479,6 +486,10 @@ export {
   type TodoItem,
   type TodoToolDetails,
   type TodoToolInput,
+  exitPlanTool,
+  createExitPlanTool,
+  type ExitPlanToolDetails,
+  type ExitPlanToolInput,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,

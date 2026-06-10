@@ -3,12 +3,17 @@ import type { BeforeToolCallContext } from '@mariozechner/pi-agent-core';
 
 import {
   canonicalToolName,
+  classifyInteractive,
   createPermissionHook,
   filterTools,
+  isMutatingTool,
+  isPathInsideCwd,
   isPermissionMode,
+  isReadOnlyTool,
   matchesAnyRule,
   normalizeToolName,
   toolMatchesRule,
+  toolTargetPath,
   type ToolPolicy,
 } from '../src/tool-policy.js';
 
@@ -88,11 +93,13 @@ describe('createPermissionHook', () => {
     expect(await decide(policy, 'edit')).toBe('block');
   });
 
-  it('plan mode is read-only', async () => {
+  it('plan mode is read-only but allows exit_plan', async () => {
     const policy: ToolPolicy = { permissionMode: 'plan' };
     expect(await decide(policy, 'read')).toBe('allow');
     expect(await decide(policy, 'bash')).toBe('block');
     expect(await decide(policy, 'write')).toBe('block');
+    expect(await decide(policy, 'exit_plan')).toBe('allow');
+    expect(await decide(policy, 'ExitPlanMode')).toBe('allow');
   });
 
   it('bypassPermissions allows everything except disallowed', async () => {
@@ -118,5 +125,99 @@ describe('createPermissionHook', () => {
     const policy: ToolPolicy = { permissionMode: 'default', disallowedTools: ['Write'] };
     expect(await decide(policy, 'write')).toBe('block');
     expect(await decide(policy, 'bash')).toBe('allow');
+  });
+});
+
+describe('tool classification helpers', () => {
+  it('classifies mutating vs read-only tools (alias-aware)', () => {
+    expect(isMutatingTool('bash')).toBe(true);
+    expect(isMutatingTool('Edit')).toBe(true);
+    expect(isMutatingTool('write')).toBe(true);
+    expect(isMutatingTool('read')).toBe(false);
+    expect(isReadOnlyTool('read')).toBe(true);
+    expect(isReadOnlyTool('TodoWrite')).toBe(true);
+    expect(isReadOnlyTool('exit_plan')).toBe(true);
+    expect(isReadOnlyTool('ExitPlanMode')).toBe(true);
+    expect(isReadOnlyTool('bash')).toBe(false);
+  });
+
+  it('maps exit_plan to its canonical Claude name', () => {
+    expect(canonicalToolName('exit_plan')).toBe('ExitPlanMode');
+    expect(normalizeToolName('ExitPlanMode')).toBe('exit_plan');
+  });
+
+  it('extracts the mutation target path only for edit/write', () => {
+    expect(toolTargetPath('edit', { path: 'src/a.ts' })).toBe('src/a.ts');
+    expect(toolTargetPath('Write', { path: '/etc/hosts' })).toBe('/etc/hosts');
+    expect(toolTargetPath('bash', { command: 'ls' })).toBeUndefined();
+    expect(toolTargetPath('edit', {})).toBeUndefined();
+    expect(toolTargetPath('read', { path: 'x' })).toBeUndefined();
+  });
+
+  it('detects whether a path is inside the working directory', () => {
+    const cwd = '/home/user/project';
+    expect(isPathInsideCwd('src/a.ts', cwd)).toBe(true);
+    expect(isPathInsideCwd('./nested/b.ts', cwd)).toBe(true);
+    expect(isPathInsideCwd('/home/user/project/c.ts', cwd)).toBe(true);
+    expect(isPathInsideCwd('.', cwd)).toBe(true);
+    expect(isPathInsideCwd('../sibling/d.ts', cwd)).toBe(false);
+    expect(isPathInsideCwd('/etc/hosts', cwd)).toBe(false);
+    expect(isPathInsideCwd('/home/user/project-evil/e.ts', cwd)).toBe(false);
+  });
+});
+
+describe('classifyInteractive (TTY permission modes)', () => {
+  const cwd = '/home/user/project';
+
+  it('bypassPermissions allows everything', () => {
+    for (const tool of ['bash', 'edit', 'write', 'read', 'exit_plan']) {
+      expect(classifyInteractive(tool, { path: '/etc/x', command: 'rm' }, { mode: 'bypassPermissions', cwd })).toEqual({
+        action: 'allow',
+      });
+    }
+  });
+
+  it('plan mode allows reads, denies mutations, and routes exit_plan to approval', () => {
+    expect(classifyInteractive('read', { path: 'a.ts' }, { mode: 'plan', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(classifyInteractive('todo', {}, { mode: 'plan', cwd })).toEqual({ action: 'allow' });
+    expect(classifyInteractive('exit_plan', { plan: 'do it' }, { mode: 'plan', cwd })).toEqual({
+      action: 'approve-plan',
+    });
+    expect(classifyInteractive('bash', { command: 'ls' }, { mode: 'plan', cwd }).action).toBe('deny');
+    expect(classifyInteractive('edit', { path: 'a.ts' }, { mode: 'plan', cwd }).action).toBe('deny');
+    expect(classifyInteractive('write', { path: 'a.ts' }, { mode: 'plan', cwd }).action).toBe('deny');
+  });
+
+  it('acceptEdits auto-allows in-cwd edits, asks for bash and out-of-cwd edits', () => {
+    expect(classifyInteractive('edit', { path: 'src/a.ts' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(classifyInteractive('write', { path: 'src/new.ts' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(classifyInteractive('read', { path: '/etc/hosts' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(classifyInteractive('bash', { command: 'npm test' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'ask',
+      kind: 'bash',
+    });
+    expect(classifyInteractive('edit', { path: '/etc/hosts' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'ask',
+      kind: 'edit-outside',
+    });
+    expect(classifyInteractive('write', { path: '../escape.ts' }, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'ask',
+      kind: 'edit-outside',
+    });
+  });
+
+  it('treats a write with no path as out-of-cwd (asks rather than silently allowing)', () => {
+    expect(classifyInteractive('write', {}, { mode: 'acceptEdits', cwd })).toEqual({
+      action: 'ask',
+      kind: 'edit-outside',
+    });
   });
 });

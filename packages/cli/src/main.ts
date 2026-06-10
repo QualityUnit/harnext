@@ -110,6 +110,11 @@ export async function main(argv: string[]): Promise<void> {
   // Resolve auth — onboards if no API key is found
   const { provider, model } = await ensureAuth(resolvedProvider, resolvedModel);
 
+  // Interactive sessions own the permission mode dynamically (Shift+Tab cycles
+  // plan / acceptEdits / bypassPermissions), so we don't bake a fixed
+  // permission_mode hook into the agent — the flag only seeds the starting UI
+  // mode. Headless print mode keeps the baked policy hook.
+  const permissionMode = args.permissionMode as PermissionMode | undefined;
   const { session } = await createAgentSession({
     provider,
     modelId: model,
@@ -119,7 +124,7 @@ export async function main(argv: string[]): Promise<void> {
     thinkingLevel: args.thinkingLevel as ThinkingLevel,
     allowedTools: args.allowedTools,
     disallowedTools: args.disallowedTools,
-    permissionMode: args.permissionMode as PermissionMode | undefined,
+    permissionMode: args.mode === 'print' ? permissionMode : undefined,
     maxTurns: args.maxTurns,
     settingSources: args.settingSources as SettingSource[] | undefined,
   });
@@ -141,6 +146,7 @@ export async function main(argv: string[]): Promise<void> {
       await runInteractiveMode(session, {
         provider,
         model,
+        initialMode: permissionMode,
       });
     } finally {
       await session.dispose();
