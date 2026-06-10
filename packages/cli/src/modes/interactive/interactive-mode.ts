@@ -3,16 +3,17 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 
 import type { AgentEvent } from '@mariozechner/pi-agent-core';
 import {
+  classifyInteractive,
   compactNow,
-  createPiiMasker,
   ensureBundledSkills,
   getContextTokens,
   listAgentRunLogs,
-  maskToolResultContent,
+  normalizeToolName,
   reconstructMessagesFromRunLog,
   setDefault,
+  toolTargetPath,
 } from '@harnext/core';
-import type { AgentRunLogSummary, EnsureResult, PiiMasker } from '@harnext/core';
+import type { AgentRunLogSummary, EnsureResult, PermissionMode } from '@harnext/core';
 import chalk from 'chalk';
 
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
@@ -31,6 +32,17 @@ import * as render from './render.js';
 export interface InteractiveModeOptions {
   provider: string;
   model: string;
+  /**
+   * Permission mode to start in (Shift+Tab cycles between the three UI modes).
+   * Anything outside the three coding-agent modes — `default`, `dontAsk`, or
+   * undefined — lands on `acceptEdits`.
+   */
+  initialMode?: PermissionMode;
+}
+
+/** Narrow any PermissionMode to one of the three interactive UI modes. */
+function toUiMode(mode: PermissionMode | undefined): render.Mode {
+  return mode === 'plan' || mode === 'bypassPermissions' ? mode : 'acceptEdits';
 }
 
 // ── Slash command registry ───────────────────────────────────────────
@@ -474,22 +486,21 @@ export async function runInteractiveMode(
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
 
-  // ── Mode state (toggled with shift+tab) ───────────────────────────
-  // Toggling to secure is free — we don't allocate the masker until the user
-  // *submits* their first message in secure mode. That first submit triggers
-  // the model download (~165 MB int8 ONNX) into ~/.harnext/models/. Users who
-  // toggle in/out of secure mode without sending anything pay nothing.
-  // Held in an object so closures elsewhere can mutate it without tripping
-  // TypeScript's control-flow narrowing into `never`.
-  const MODES: render.Mode[] = ['normal', 'secure'];
-  let mode: render.Mode = 'normal';
-  const pii: { masker: PiiMasker | null; ready: Promise<void> | null } = {
-    masker: null,
-    ready: null,
-  };
-  // When set, the spinner shows this label instead of the cycling whimsical
-  // word. Used to surface "Downloading PII Anonymizer 45 / 165 MB" while the
-  // model is being fetched on first use.
+  // ── Permission mode (cycled with shift+tab) ───────────────────────
+  // Three coding-agent modes, mirroring Claude Code:
+  //   plan              — read-only; the agent drafts a plan via the exit_plan
+  //                       tool and waits for the user to approve before editing.
+  //   acceptEdits       — edits inside cwd run automatically; out-of-cwd edits
+  //                       and every bash command ask first.
+  //   bypassPermissions — dangerously approve all; nothing is gated.
+  // Held in a one-field object so the approval-gate closure can both read the
+  // live value and switch it (plan→acceptEdits on approval) without tripping
+  // TypeScript's control-flow narrowing.
+  const MODES: render.Mode[] = ['plan', 'acceptEdits', 'bypassPermissions'];
+  const perm: { mode: render.Mode } = { mode: toUiMode(options.initialMode) };
+  // When set, the spinner shows this fixed label instead of the cycling
+  // whimsical word — used to surface "waiting for your approval…" while a
+  // permission prompt is open.
   let spinnerOverride: string | null = null;
 
   // Assistant-text streaming state. `asstPendingNewlines` holds trailing
@@ -619,15 +630,15 @@ export async function runInteractiveMode(
         inputTokens: input,
         outputTokens: output,
         cost,
-        mode,
+        mode: perm.mode,
       });
     },
     onShiftTab: () => {
-      const idx = MODES.indexOf(mode);
-      mode = MODES[(idx + 1) % MODES.length];
-      // Toggling is free — no allocation. The masker is created lazily by
-      // ensurePiiReady() the first time the user submits a message while in
-      // secure mode, so users who toggle in/out without sending pay nothing.
+      const idx = MODES.indexOf(perm.mode);
+      perm.mode = MODES[(idx + 1) % MODES.length];
+      // Surface the new mode + a one-line reminder of what it gates, above the
+      // input. The footer pill updates on the redraw that follows this handler.
+      textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
     },
     completions,
   });
@@ -721,7 +732,6 @@ export async function runInteractiveMode(
     }
   });
 
-  try {
   await new Promise<void>((resolve) => {
     // Run a command with full terminal control: tear down the sticky textarea,
     // let the command's own UI (select menus, prompts) own stdin, then restore.
@@ -754,151 +764,158 @@ export async function runInteractiveMode(
       textarea.writeAbove(chalk.yellow('\n  ⎋ Interrupted\n\n'));
     });
 
-    /**
-     * Lazy-init the PII masker on first secure-mode submit. Subsequent calls
-     * just await the cached `pii.ready` promise. Pins a "Downloading PII
-     * Anonymizer X / Y MB" label on the spinner during the initial download
-     * (~165 MB int8 ONNX from HuggingFace), then releases it back to the
-     * normal cycling messages once the model is ready.
-     */
-    const ensurePiiReady = async (): Promise<PiiMasker> => {
-      if (pii.masker && pii.ready) {
-        await pii.ready;
-        return pii.masker;
-      }
-      const fmtMB = (n: number) => (n / 1024 / 1024).toFixed(0);
-      const masker = createPiiMasker({
-        onProgress: (s) => {
-          if (s.type === 'downloading' && s.total > 0) {
-            spinnerOverride = `Downloading PII Anonymizer ${fmtMB(s.loaded)} / ${fmtMB(s.total)} MB`;
-          } else if (s.type === 'ready' || s.type === 'error') {
-            spinnerOverride = null;
-          }
-        },
-      });
-      pii.masker = masker;
-      pii.ready = masker.ready().catch((err) => {
-        spinnerOverride = null;
-        masker.dispose();
-        pii.masker = null;
-        pii.ready = null;
-        throw err;
-      });
-      await pii.ready;
-      return masker;
-    };
-
-    // In secure mode the user prompt is masked before send, but tool results
-    // travel a separate path: the tool's `execute` return is added straight
-    // into the transcript and shipped to the LLM on the next turn. We mask:
-    // - `read` (always) — file bodies can contain arbitrary PII
-    // - `bash` (success only) — `ls`, `cat`, etc. routinely surface filenames
-    //   and file contents that include PII. We deliberately skip the failure
-    //   path: bash error messages already pass through pi-agent-core as raw
-    //   exception text and masking them would obscure diagnostic info the
-    //   user needs to debug their command.
-    // `edit` and `write` are intentionally not masked: their outputs are
-    // harnext-controlled status strings ("File created", diffs of edits the
-    // user just authored) where masking would mangle code the model needs
-    // to reason about.
-    const SECURE_MASKED_TOOLS = new Set(['read', 'bash']);
-    session.agent.afterToolCall = async (ctx) => {
-      if (mode !== 'secure') return undefined;
-      if (!SECURE_MASKED_TOOLS.has(ctx.toolCall.name)) return undefined;
-      if (ctx.toolCall.name === 'bash' && ctx.isError) return undefined;
-      try {
-        const masker = await ensurePiiReady();
-        const masked = await maskToolResultContent(ctx.result.content, masker);
-        return { content: masked };
-      } catch (err) {
-        // Secure mode: never let raw tool content reach the LLM. Replace
-        // the result with an error marker so the model knows the call failed.
-        return {
-          content: [
-            {
-              type: 'text',
-              text:
-                `[secure mode] ${ctx.toolCall.name} tool result withheld — PII masker failed: ` +
-                (err instanceof Error ? err.message : String(err)),
-            },
-          ],
-          isError: true,
-        };
-      }
-    };
-
-    // ── Shell-command approval gate ─────────────────────────────────────
-    // Every bash call pauses on an amber y/a/n prompt before it runs:
-    //   y — run this once
-    //   a — always allow this program (first token) for the session
-    //   n / esc — block the call; the model sees the denial as the tool
-    //       result, and the user can follow up with a steering message.
-    // The SDK's policy hook (permission_mode / disallowed_tools) still runs
-    // first — a policy block never reaches the prompt.
-    const alwaysAllowedPrograms = new Set<string>();
+    // ── Permission gate ─────────────────────────────────────────────────
+    // Runs before every tool call and enforces the active mode:
+    //   bypassPermissions — allow everything.
+    //   plan              — read-only; mutating tools are blocked, and the
+    //                       agent's exit_plan call opens the plan-approval
+    //                       prompt (approving switches to acceptEdits).
+    //   acceptEdits       — in-cwd edits run silently; out-of-cwd edits and
+    //                       every bash command pause on a y/a/n prompt.
+    // The SDK policy hook (disallowed_tools) still runs first, so a policy
+    // block never reaches a prompt. The pure decision lives in core's
+    // classifyInteractive; this layer only owns the prompting + session
+    // allow-lists.
+    const canPrompt = !!process.stdin.isTTY;
+    const alwaysAllowedPrograms = new Set<string>(); // bash first-tokens, "a"-approved
+    let allowOutsideEdits = false; // set by "a" on an out-of-cwd write prompt
     const policyHook = session.agent.beforeToolCall;
-    session.agent.beforeToolCall = async (ctx, signal) => {
-      const policyResult = policyHook ? await policyHook(ctx, signal) : undefined;
-      if (policyResult?.block) return policyResult;
-      if (ctx.toolCall.name !== 'bash') return policyResult;
-      // Without a TTY no keypress can ever arrive — keep prior behavior.
-      if (!process.stdin.isTTY) return policyResult;
 
-      const command = String(
-        (ctx.args as Record<string, unknown> | null)?.command ?? '',
-      ).trim();
-      const program = command.split(/\s+/)[0] ?? '';
-      if (!command || alwaysAllowedPrograms.has(program)) return policyResult;
-
-      textarea.writeAbove('\n' + render.approvePrompt({ command, program }) + '\n');
+    // Open an approval box, pin the spinner label while it's up, and return the
+    // resolved y/a/n decision (esc/anything-else → 'n').
+    const askApproval = async (
+      box: string,
+      keys: readonly string[] = ['y', 'a', 'n', 'escape'],
+    ): Promise<render.ApproveDecision> => {
+      textarea.writeAbove('\n' + box + '\n');
       const prevOverride = spinnerOverride;
       spinnerOverride = 'waiting for your approval…';
       let pressed: string;
       try {
-        pressed = await textarea.captureKey(['y', 'a', 'n', 'escape']);
+        pressed = await textarea.captureKey(keys);
       } finally {
         spinnerOverride = prevOverride;
       }
-      const decision: render.ApproveDecision =
-        pressed === 'y' || pressed === 'a' ? pressed : 'n';
-      textarea.writeAbove(render.approveDecision(decision, program) + '\n');
+      return pressed === 'y' || pressed === 'a' ? pressed : 'n';
+    };
 
-      if (decision === 'a') alwaysAllowedPrograms.add(program);
-      if (decision !== 'n') return policyResult;
-      deniedToolCalls.add(ctx.toolCall.id);
-      return {
-        block: true,
-        reason:
-          `User denied "$ ${command}" at the approval prompt. Do not retry it ` +
-          'verbatim — adjust your approach, or wait for the user to explain.',
-      };
+    session.agent.beforeToolCall = async (ctx, signal) => {
+      // disallowed_tools (and any baked policy) always wins.
+      const policyResult = policyHook ? await policyHook(ctx, signal) : undefined;
+      if (policyResult?.block) return policyResult;
+
+      const args = ctx.args as Record<string, unknown> | null | undefined;
+      const decision = classifyInteractive(ctx.toolCall.name, args, {
+        mode: perm.mode,
+        cwd,
+      });
+
+      switch (decision.action) {
+        case 'allow':
+          return policyResult;
+
+        case 'deny':
+          // Plan mode tried to run a mutating tool. Suppress the raw error body
+          // and show a concise note; the model sees `reason` as the result.
+          deniedToolCalls.add(ctx.toolCall.id);
+          textarea.writeAbove(
+            '  ' + chalk.yellow('✗ blocked') + chalk.dim(' — plan mode is read-only') + '\n',
+          );
+          return { block: true, reason: decision.reason };
+
+        case 'approve-plan': {
+          const plan = typeof args?.plan === 'string' ? args.plan : '';
+          if (!canPrompt) {
+            perm.mode = 'acceptEdits';
+            return policyResult;
+          }
+          const pressed = await askApproval(render.planApprovalPrompt(plan), [
+            'y',
+            'n',
+            'escape',
+          ]);
+          const approved = pressed !== 'n';
+          textarea.writeAbove(render.planDecision(approved) + '\n');
+          if (approved) {
+            // Drop out of plan mode so the implementation the agent runs next
+            // (in this same turn) flows through acceptEdits.
+            perm.mode = 'acceptEdits';
+            return policyResult;
+          }
+          deniedToolCalls.add(ctx.toolCall.id);
+          return {
+            block: true,
+            reason:
+              'User did not approve the plan. Stay in plan mode: do not edit, write, ' +
+              'or run commands. Wait for the user to say what to change, then present ' +
+              'a revised plan with exit_plan.',
+          };
+        }
+
+        case 'ask': {
+          // No TTY → no keypress can arrive; fall back to allowing.
+          if (!canPrompt) return policyResult;
+
+          if (decision.kind === 'bash') {
+            const command = String(args?.command ?? '').trim();
+            const program = command.split(/\s+/)[0] ?? '';
+            if (!command || alwaysAllowedPrograms.has(program)) return policyResult;
+            const d = await askApproval(render.approvePrompt({ command, program }));
+            textarea.writeAbove(render.approveDecision(d, program) + '\n');
+            if (d === 'a') alwaysAllowedPrograms.add(program);
+            if (d !== 'n') return policyResult;
+            deniedToolCalls.add(ctx.toolCall.id);
+            return {
+              block: true,
+              reason:
+                `User denied "$ ${command}" at the approval prompt. Do not retry it ` +
+                'verbatim — adjust your approach, or wait for the user to explain.',
+            };
+          }
+
+          // kind === 'edit-outside': an edit/write targeting a path outside cwd.
+          if (allowOutsideEdits) return policyResult;
+          const path = toolTargetPath(ctx.toolCall.name, args) ?? String(args?.path ?? '');
+          const tool = normalizeToolName(ctx.toolCall.name);
+          const d = await askApproval(render.approveWritePrompt({ tool, path }));
+          textarea.writeAbove(render.approveWriteDecision(d) + '\n');
+          if (d === 'a') allowOutsideEdits = true;
+          if (d !== 'n') return policyResult;
+          deniedToolCalls.add(ctx.toolCall.id);
+          return {
+            block: true,
+            reason:
+              `User denied ${tool} to "${path}" (outside the working directory). ` +
+              'Do not retry it — adjust your approach or ask the user.',
+          };
+        }
+
+        default:
+          return policyResult;
+      }
     };
 
     // Submit `text` to the agent as a user prompt, echoing `echo` above the
     // textarea (defaults to echoing `text` itself). Handles spinner + busy flag.
     //
-    // In secure mode masking happens silently between the user echo and the
-    // LLM call — the UI is identical to normal mode except for the one-time
-    // download progress on the spinner. If masking fails we refuse to send
-    // (the whole point of secure mode is that PII never leaks to the
-    // provider). Slash commands and skills bypass masking by passing
-    // skipMask: true so harnext-controlled templates aren't corrupted.
-    const runPrompt = async (
-      text: string,
-      echo?: string,
-      opts: { skipMask?: boolean } = {},
-    ): Promise<void> => {
+    // In plan mode we prepend a system-reminder of the current mode so the
+    // model reliably stays read-only and routes through exit_plan — the base
+    // system prompt documents the modes, but only the live reminder tells it
+    // which one is active right now.
+    const runPrompt = async (text: string, echo?: string): Promise<void> => {
       // Leading blank separates the echo from the previous block.
       textarea.writeAbove('\n' + render.userMessage(echo ?? text) + '\n');
 
       agentBusy = true;
       startSpinner();
       try {
-        let payload = text;
-        if (mode === 'secure' && !opts.skipMask) {
-          const masker = await ensurePiiReady();
-          payload = (await masker.mask(text)).masked;
-        }
+        const payload =
+          perm.mode === 'plan'
+            ? `<system-reminder>You are in PLAN MODE (read-only). Investigate with read; ` +
+              `do not edit, write, or run shell commands. When you have a concrete plan, ` +
+              `call the exit_plan tool with it and wait for the user to approve.` +
+              `</system-reminder>\n\n${text}`
+            : text;
         await session.prompt(payload);
       } catch (error) {
         textarea.writeAbove(
@@ -924,9 +941,7 @@ export async function runInteractiveMode(
         );
         return;
       }
-      // Skills are harnext-controlled templates — masking their bodies would
-      // corrupt instructions and file paths. Skill args bypass masking too.
-      await runPrompt(expanded, echoLabel, { skipMask: true });
+      await runPrompt(expanded, echoLabel);
     };
 
     const cmdCtx: CommandContext = {
@@ -1054,24 +1069,10 @@ export async function runInteractiveMode(
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
         textarea.writeAbove('\n' + render.userMessage(input) + '\n');
-        let payload = input;
-        if (mode === 'secure') {
-          try {
-            const masker = await ensurePiiReady();
-            payload = (await masker.mask(input)).masked;
-          } catch (err) {
-            textarea.writeAbove(
-              chalk.red('  PII masking failed — steering NOT sent: ') +
-                (err instanceof Error ? err.message : String(err)) +
-                '\n\n',
-            );
-            return;
-          }
-        }
         try {
           session.agent.steer({
             role: 'user',
-            content: payload,
+            content: input,
             timestamp: Date.now(),
           });
         } catch (err) {
@@ -1087,9 +1088,6 @@ export async function runInteractiveMode(
       await runPrompt(input);
     });
   });
-  } finally {
-    pii.masker?.dispose();
-  }
 
   process.stdin.unref();
 }
