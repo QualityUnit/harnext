@@ -10,13 +10,16 @@ import {
   listAgentRunLogs,
   maskToolResultContent,
   reconstructMessagesFromRunLog,
+  resolveGoalModels,
   setDefault,
 } from '@harnext/core';
 import type { AgentRunLogSummary, EnsureResult, PiiMasker } from '@harnext/core';
 import chalk from 'chalk';
 
+import { runSetGoalConfigCommand } from '../../cli/goal-config-prompt.js';
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
+import { runGoalCommand } from './goal-command.js';
 import { runMcpPanel } from './mcp-panel.js';
 import { createTextarea } from '../../cli/input.js';
 import type { Textarea } from '../../cli/input.js';
@@ -72,6 +75,32 @@ const SLASH_COMMANDS: SlashCommand[] = [
         console.log(chalk.dim('  Cancelled.'));
       }
       console.log();
+      return true;
+    },
+  },
+  {
+    name: '/goal',
+    description: 'Run a goal through the planner → generator → evaluator loop',
+    acceptsArgs: true,
+    action: async (ctx, args) => {
+      const goal = args.trim();
+      if (!goal) {
+        console.log();
+        console.log(chalk.yellow('  Usage: /goal <what to build>'));
+        console.log(chalk.dim('  Configure phase models with /set-goal-config.'));
+        console.log();
+        return true;
+      }
+      const models = resolveGoalModels(ctx.getProvider(), ctx.getModel());
+      await runGoalCommand(goal, models);
+      return true;
+    },
+  },
+  {
+    name: '/set-goal-config',
+    description: 'Pick the planner / generator / evaluator models for /goal',
+    action: async (ctx) => {
+      await runSetGoalConfigCommand(ctx.getProvider(), ctx.getModel());
       return true;
     },
   },
@@ -299,10 +328,10 @@ const SLASH_COMMANDS: SlashCommand[] = [
     action: async () => {
       console.log();
       console.log(chalk.bold('  Commands:'));
+      const width = Math.max(...SLASH_COMMANDS.map((cmd) => cmd.name.length)) + 2;
       for (const cmd of SLASH_COMMANDS) {
-        const pad = 10 - cmd.name.length;
         console.log(
-          chalk.cyan(`  ${cmd.name}`) + ' '.repeat(pad) + chalk.dim(`— ${cmd.description}`),
+          chalk.cyan(`  ${cmd.name.padEnd(width)}`) + chalk.dim(`— ${cmd.description}`),
         );
       }
       console.log(chalk.dim('\n  Tip: type / to open the command selector\n'));
