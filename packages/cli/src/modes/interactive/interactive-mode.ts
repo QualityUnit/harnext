@@ -466,6 +466,10 @@ export async function runInteractiveMode(
     string,
     { args: Record<string, unknown>; startedAt: number; priorContent?: string | null }
   > = new Map();
+  // Tool calls the user denied at the approval prompt. The blocked-call error
+  // result still flows through tool_execution_end — these ids suppress its
+  // body so the scrollback shows our "✗ denied" line instead of a red error.
+  const deniedToolCalls = new Set<string>();
   let currentText = '';
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
@@ -699,6 +703,10 @@ export async function runInteractiveMode(
       }
 
       case 'tool_execution_end': {
+        if (deniedToolCalls.delete(event.toolCallId)) {
+          pendingTools.delete(event.toolCallId);
+          break;
+        }
         const pending = pendingTools.get(event.toolCallId);
         pendingTools.delete(event.toolCallId);
         const args = pending?.args ?? {};
@@ -817,6 +825,53 @@ export async function runInteractiveMode(
           isError: true,
         };
       }
+    };
+
+    // ── Shell-command approval gate ─────────────────────────────────────
+    // Every bash call pauses on an amber y/a/n prompt before it runs:
+    //   y — run this once
+    //   a — always allow this program (first token) for the session
+    //   n / esc — block the call; the model sees the denial as the tool
+    //       result, and the user can follow up with a steering message.
+    // The SDK's policy hook (permission_mode / disallowed_tools) still runs
+    // first — a policy block never reaches the prompt.
+    const alwaysAllowedPrograms = new Set<string>();
+    const policyHook = session.agent.beforeToolCall;
+    session.agent.beforeToolCall = async (ctx, signal) => {
+      const policyResult = policyHook ? await policyHook(ctx, signal) : undefined;
+      if (policyResult?.block) return policyResult;
+      if (ctx.toolCall.name !== 'bash') return policyResult;
+      // Without a TTY no keypress can ever arrive — keep prior behavior.
+      if (!process.stdin.isTTY) return policyResult;
+
+      const command = String(
+        (ctx.args as Record<string, unknown> | null)?.command ?? '',
+      ).trim();
+      const program = command.split(/\s+/)[0] ?? '';
+      if (!command || alwaysAllowedPrograms.has(program)) return policyResult;
+
+      textarea.writeAbove('\n' + render.approvePrompt({ command, program }) + '\n');
+      const prevOverride = spinnerOverride;
+      spinnerOverride = 'waiting for your approval…';
+      let pressed: string;
+      try {
+        pressed = await textarea.captureKey(['y', 'a', 'n', 'escape']);
+      } finally {
+        spinnerOverride = prevOverride;
+      }
+      const decision: render.ApproveDecision =
+        pressed === 'y' || pressed === 'a' ? pressed : 'n';
+      textarea.writeAbove(render.approveDecision(decision, program) + '\n');
+
+      if (decision === 'a') alwaysAllowedPrograms.add(program);
+      if (decision !== 'n') return policyResult;
+      deniedToolCalls.add(ctx.toolCall.id);
+      return {
+        block: true,
+        reason:
+          `User denied "$ ${command}" at the approval prompt. Do not retry it ` +
+          'verbatim — adjust your approach, or wait for the user to explain.',
+      };
     };
 
     // Submit `text` to the agent as a user prompt, echoing `echo` above the

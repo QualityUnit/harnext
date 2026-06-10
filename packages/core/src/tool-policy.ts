@@ -43,21 +43,29 @@ export const NATIVE_TO_CANONICAL: Record<string, string> = {
   read: 'Read',
   write: 'Write',
   edit: 'Edit',
+  todo: 'TodoWrite',
 };
 
-/** Native tools that only observe the workspace — allowed under `plan` mode. */
-const READ_ONLY_NATIVE = new Set(['read']);
+/** Native tools that don't mutate the workspace — allowed under `plan` mode. */
+const READ_ONLY_NATIVE = new Set(['read', 'todo']);
 
 /** Native tools that mutate the workspace — blocked under `plan` mode. */
 const MUTATING_NATIVE = new Set(['bash', 'write', 'edit']);
 
 /**
- * Reduce a tool name to a stable comparison key. For harnext's built-ins the
+ * Reduce a tool name to a stable comparison key. For most built-ins the
  * canonical lowercase already equals the native name (`Bash`→`bash`), so a
  * lowercase fold is sufficient and also makes MCP names case-insensitive.
+ * Canonical names whose lowercase differs from the native name (`TodoWrite`)
+ * are folded explicitly.
  */
+const CANONICAL_LOWER_TO_NATIVE: Record<string, string> = {
+  todowrite: 'todo',
+};
+
 export function normalizeToolName(name: string): string {
-  return name.trim().toLowerCase();
+  const lower = name.trim().toLowerCase();
+  return CANONICAL_LOWER_TO_NATIVE[lower] ?? lower;
 }
 
 /** Map a native tool name to its Claude-SDK canonical name (else unchanged). */

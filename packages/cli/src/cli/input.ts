@@ -29,6 +29,14 @@ export interface Textarea {
   pause(): void;
   resume(): void;
   close(): void;
+  /**
+   * Modal one-shot key capture for hotkey prompts (e.g. the y/a/n approval
+   * box). While pending, every keypress except ctrl+c/ctrl+d is consumed;
+   * the promise resolves with the first key whose name (or character) is in
+   * `keys` — pass `'escape'` to capture Esc. Caller must ensure stdin is a
+   * TTY; without one no keypress ever arrives and the promise never settles.
+   */
+  captureKey(keys: readonly string[]): Promise<string>;
 }
 
 function stripAnsi(s: string): string {
@@ -83,6 +91,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // Index into the current matches list for the inline completion panel.
   // Always clamped to [0, matches.length) at render time.
   let selectedCompletionIdx = 0;
+  // Pending modal key capture (captureKey). While set, onKeypress routes
+  // every key here instead of the editing logic.
+  let keyCapture: { keys: Set<string>; resolve: (key: string) => void } | null = null;
 
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
@@ -254,6 +265,19 @@ export function createTextarea(options: TextareaOptions): Textarea {
       return;
     }
 
+    // Modal key capture: a pending captureKey() owns the keyboard. Keys in
+    // the capture set resolve the promise; everything else is swallowed so
+    // stray typing can't leak into the textarea mid-prompt.
+    if (keyCapture) {
+      const pressed = key.name === 'escape' ? 'escape' : (str ?? key.name ?? '').toLowerCase();
+      if (keyCapture.keys.has(pressed)) {
+        const pending = keyCapture;
+        keyCapture = null;
+        pending.resolve(pressed);
+      }
+      return;
+    }
+
     // Esc interrupts an in-flight agent run. The handler (interactive mode)
     // decides whether anything is running; here we just surface the intent.
     // Note: emitKeypressEvents parses arrow keys etc. into their own named
@@ -379,12 +403,19 @@ export function createTextarea(options: TextareaOptions): Textarea {
   active = true;
   drawTextarea();
 
+  function captureKey(keys: readonly string[]): Promise<string> {
+    return new Promise((resolve) => {
+      keyCapture = { keys: new Set(keys.map((k) => k.toLowerCase())), resolve };
+    });
+  }
+
   const api = Object.assign(emitter, {
     writeAbove,
     redraw,
     pause,
     resume,
     close,
+    captureKey,
   }) as unknown as Textarea;
 
   return api;

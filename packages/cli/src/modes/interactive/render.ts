@@ -144,6 +144,10 @@ const MAX_BODY_LINES = 12;
 const MAX_DIFF_LINES = 10;
 
 export function toolStart(name: string, args: Record<string, unknown>): string {
+  // The todo tool renders as a plan block instead of a badge header — all
+  // its information lives in the args, so it draws in full at call start.
+  if (name === 'todo') return planBlock(args);
+
   const role = toolColor(name);
   const head = badge(name, role.idx);
   const w = termWidth();
@@ -246,6 +250,9 @@ export function toolEnd(
 ): string {
   const role = isError ? { idx: X.red, ink: c.red } : toolColor(name);
   const parts: string[] = [];
+
+  // The plan block already rendered everything at tool start.
+  if (name === 'todo' && !isError) return '';
 
   if (name === 'edit' && !isError) {
     parts.push(editBody(args, role.ink));
@@ -418,6 +425,138 @@ function bashBody(result: string, isError: boolean, durationMs?: number): string
       : c.red(`✗ exit ${exitCode}${time}`);
 
   return body.length > 0 ? body + '\n' + exitLine : exitLine;
+}
+
+// ── Plan / todo block ────────────────────────────────────────────────
+//
+//  │ ◇ plan · add openrouter provider
+//  │ ✔ Inspect Provider interface          (done — dim, struck through)
+//  │ ▶ Create src/providers/openrouter.ts  (active — bright)
+//  │ ○ Register in providers/index.ts      (pending — faint)
+
+interface PlanItem {
+  text: string;
+  status: 'pending' | 'active' | 'done';
+}
+
+export function planBlock(args: Record<string, unknown>): string {
+  const items: PlanItem[] = Array.isArray(args.items)
+    ? (args.items as unknown[]).map((raw) => {
+        const it = (raw ?? {}) as { text?: unknown; status?: unknown };
+        const status = it.status === 'done' || it.status === 'active' ? it.status : 'pending';
+        return { text: String(it.text ?? ''), status };
+      })
+    : [];
+  const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : 'plan';
+
+  const w = termWidth();
+  const rail = c.magenta('│') + ' ';
+  const lines: string[] = [];
+  lines.push(rail + c.magenta.bold('◇ ' + fitToWidth(title, Math.max(8, w - 6))));
+  for (const it of items) {
+    const text = fitToWidth(it.text, Math.max(8, w - 6));
+    switch (it.status) {
+      case 'done':
+        lines.push(rail + c.green('✔') + ' ' + c.dim.strikethrough(text));
+        break;
+      case 'active':
+        lines.push(rail + c.amber('▶') + ' ' + c.bright(text));
+        break;
+      default:
+        lines.push(rail + c.faint('○') + ' ' + c.faint(text));
+    }
+  }
+  return lines.join('\n');
+}
+
+// ── Approval / permission prompt ─────────────────────────────────────
+//
+//  ╭──────────────────────────────────────────────────╮
+//  │ ⚠ permission  harnext wants to run a shell command│
+//  │   $ npm install @openrouter/sdk                   │
+//  │  y run once   a always allow npm   n deny         │
+//  ╰──────────────────────────────────────────────────╯
+
+const APPROVE_MAX_WIDTH = 86;
+
+export interface ApproveOptions {
+  /** The full shell command awaiting approval. */
+  command: string;
+  /** The program (first token) an "always allow" decision would whitelist. */
+  program: string;
+}
+
+export function approvePrompt(opts: ApproveOptions): string {
+  const w = Math.min(termWidth(), APPROVE_MAX_WIDTH);
+  const inner = Math.max(20, w - 4); // "│ " + content + " │"
+
+  const keycap = (key: string, bg: number, fg: ChalkInstance, label: string) => ({
+    rendered: chalk.bgAnsi256(bg).ansi256(X.bg).bold(` ${key} `) + ' ' + fg(label),
+    width: key.length + 3 + label.length,
+  });
+
+  const rows: { rendered: string; width: number }[] = [];
+  {
+    const head = '⚠ permission';
+    const tail = `  ${APP_NAME} wants to run a shell command`;
+    const tailFit = fitToWidth(tail, Math.max(0, inner - head.length));
+    rows.push({
+      rendered: c.amber.bold(head) + c.bright(tailFit),
+      width: head.length + tailFit.length,
+    });
+  }
+  {
+    const cmd = '$ ' + truncateOneLine(opts.command, Math.max(8, inner - 4));
+    rows.push({
+      rendered: '  ' + chalk.bgAnsi256(235)(c.bright(` ${cmd} `)),
+      width: 2 + cmd.length + 2,
+    });
+  }
+  {
+    const yes = keycap('y', X.amber, c.dim, 'run once');
+    const always = keycap(
+      'a',
+      X.green,
+      c.dim,
+      `always allow ${fitToWidth(opts.program, 24)}`,
+    );
+    const no = keycap('n', X.dim, c.dim, 'deny & tell agent why');
+    const GAP = 3;
+    let rendered = '';
+    let width = 0;
+    for (const opt of [yes, always, no]) {
+      if (width + (width > 0 ? GAP : 0) + opt.width > inner) break;
+      if (width > 0) {
+        rendered += ' '.repeat(GAP);
+        width += GAP;
+      }
+      rendered += opt.rendered;
+      width += opt.width;
+    }
+    rows.push({ rendered, width });
+  }
+
+  const bar = '─'.repeat(inner + 2);
+  const out: string[] = [c.amber('╭' + bar + '╮')];
+  for (const row of rows) {
+    const pad = ' '.repeat(Math.max(0, inner - row.width));
+    out.push(c.amber('│') + ' ' + row.rendered + pad + ' ' + c.amber('│'));
+  }
+  out.push(c.amber('╰' + bar + '╯'));
+  return out.join('\n');
+}
+
+export type ApproveDecision = 'y' | 'a' | 'n';
+
+export function approveDecision(decision: ApproveDecision, program: string): string {
+  switch (decision) {
+    case 'y':
+      return c.green('✓ approved') + c.faint(' — run once');
+    case 'a':
+      return c.green('✓ approved') + c.faint(` — always allowing "${program}" this session`);
+    default:
+      return c.red('✗ denied') + c.faint(' — type a message to tell the agent why');
+  }
 }
 
 // ── Header ───────────────────────────────────────────────────────────

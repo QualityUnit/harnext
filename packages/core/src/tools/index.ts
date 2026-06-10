@@ -28,6 +28,13 @@ export {
   createSkillTool,
 } from './skill.js';
 export {
+  type TodoItem,
+  type TodoToolDetails,
+  type TodoToolInput,
+  todoTool,
+  createTodoTool,
+} from './todo.js';
+export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
@@ -39,24 +46,32 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { bashTool, createBashTool } from './bash.js';
 import { editTool, createEditTool } from './edit.js';
 import { readTool, createReadTool } from './read.js';
+import { todoTool, createTodoTool } from './todo.js';
 import { writeTool, createWriteTool } from './write.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Tool = AgentTool<any>;
 
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
+export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, todoTool];
 
 export const allTools = {
   read: readTool,
   bash: bashTool,
   edit: editTool,
   write: writeTool,
+  todo: todoTool,
 };
 
 export type ToolName = keyof typeof allTools;
 
 export function createCodingTools(cwd: string): Tool[] {
-  return [createReadTool(cwd), createBashTool(cwd), createEditTool(cwd), createWriteTool(cwd)];
+  return [
+    createReadTool(cwd),
+    createBashTool(cwd),
+    createEditTool(cwd),
+    createWriteTool(cwd),
+    createTodoTool(),
+  ];
 }
 
 export function createAllTools(cwd: string): Record<ToolName, Tool> {
@@ -65,5 +80,6 @@ export function createAllTools(cwd: string): Record<ToolName, Tool> {
     bash: createBashTool(cwd),
     edit: createEditTool(cwd),
     write: createWriteTool(cwd),
+    todo: createTodoTool(),
   };
 }
