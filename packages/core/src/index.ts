@@ -380,6 +380,26 @@ export {
 } from './openrouter.js';
 
 export {
+  GOAL_PHASES,
+  loadGoalConfig,
+  saveGoalConfig,
+  resolveGoalModels,
+  type GoalConfig,
+  type GoalPhase,
+  type GoalPhaseModel,
+  type ResolvedGoalModels,
+} from './goal-config.js';
+
+export {
+  runGoal,
+  parseGoalVerdict,
+  type GoalIterationRecord,
+  type GoalVerdict,
+  type RunGoalOptions,
+  type RunGoalResult,
+} from './goal-runner.js';
+
+export {
   loadPreferences,
   savePreferences,
   setDefaultProvider,
