@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { Agent } from '@mariozechner/pi-agent-core';
+import { Agent } from '@earendil-works/pi-agent-core';
 import type {
   AgentEvent,
   AgentMessage,
   AgentTool,
   ThinkingLevel,
-} from '@mariozechner/pi-agent-core';
-import type { Model } from '@mariozechner/pi-ai';
+} from '@earendil-works/pi-agent-core';
+import type { Model } from '@earendil-works/pi-ai';
 
 import type { McpServerManager } from './mcp-server-manager.js';
 import type { Skill } from './skills.js';

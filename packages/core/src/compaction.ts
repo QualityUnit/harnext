@@ -1,6 +1,6 @@
-import type { Agent, AgentMessage } from '@mariozechner/pi-agent-core';
-import { streamSimple } from '@mariozechner/pi-ai';
-import type { AssistantMessage, Message, Model, UserMessage } from '@mariozechner/pi-ai';
+import type { Agent, AgentMessage } from '@earendil-works/pi-agent-core';
+import { streamSimple } from '@earendil-works/pi-ai';
+import type { AssistantMessage, Message, Model, UserMessage } from '@earendil-works/pi-ai';
 
 import {
   DEFAULT_COMPACTION_SETTINGS,

@@ -1,13 +1,13 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type {
   AssistantMessage,
   ToolCall,
   ToolResultMessage,
   UserMessage,
-} from '@mariozechner/pi-ai';
+} from '@earendil-works/pi-ai';
 
 import type { AgentRunLogEvent } from './coding-agent-runner.js';
 import { getProjectStateDir } from './config.js';

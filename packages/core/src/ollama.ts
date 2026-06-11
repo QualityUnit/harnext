@@ -1,4 +1,4 @@
-import type { Model } from '@mariozechner/pi-ai';
+import type { Model } from '@earendil-works/pi-ai';
 
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 

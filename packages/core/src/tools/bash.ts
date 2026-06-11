@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type, type Static } from '@sinclair/typebox';
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail } from './truncate.js';
 

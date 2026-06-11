@@ -15,7 +15,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 import type {
   BeforeToolCallContext,
   BeforeToolCallResult,
-} from '@mariozechner/pi-agent-core';
+} from '@earendil-works/pi-agent-core';
 
 export type PermissionMode =
   | 'default'
