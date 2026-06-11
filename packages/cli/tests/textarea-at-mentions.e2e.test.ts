@@ -161,6 +161,20 @@ describe('textarea @-mention picker (e2e)', () => {
     textarea.close();
   });
 
+  it('colors only the active option and dims the rest', () => {
+    const ACCENT = `${ESC}38;5;74m`;
+    const DIM = `${ESC}38;5;245m`;
+    const textarea = make();
+    // '@.ts' matches two files; the first is selected, the second is not.
+    writes = [];
+    type(stdin, '@.ts');
+    const raw = writes.join(''); // keep ANSI to inspect the colors
+    // Selected row: accent '@' marker. Non-selected row: dimmed '@' marker.
+    expect(raw).toContain(`${ACCENT}@`);
+    expect(raw).toContain(`${DIM}@`);
+    textarea.close();
+  });
+
   it('Esc dismisses an open picker without firing interrupt', () => {
     const textarea = make();
     const onInterrupt = vi.fn();

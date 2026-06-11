@@ -252,9 +252,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
     const RESET = `${ESC}39m`;
     const termW = Math.max(20, process.stdout.columns ?? 80);
 
-    // `@`-mention rows: accent `@` + path. Directories are accent-colored to
-    // stand out from files; long paths are head-truncated so a row never wraps
-    // (which would break the textarea's row accounting).
+    // `@`-mention rows: only the selected row is accent-colored (accent `@` +
+    // bold accent path); the rest are dimmed so it's clear which option is
+    // active. The trailing `/` in a directory's text already marks it as a
+    // folder, so no separate color is needed. Long paths are head-truncated so
+    // a row never wraps (which would break the textarea's row accounting).
     if (active.mode === 'path') {
       const budget = Math.max(8, termW - 6);
       const rows: string[] = [''];
@@ -264,13 +266,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
         const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
         let label = m.text;
         if (label.length > budget) label = '…' + label.slice(label.length - (budget - 1));
-        const isDir = m.hint === 'dir';
+        const at = sel ? `${ACCENT}@${RESET}` : `${DIM}@${RESET}`;
         const styled = sel
           ? `${ACCENT}${ESC}1m${label}${ESC}22m${RESET}`
-          : isDir
-            ? `${ACCENT}${label}${RESET}`
-            : `${BRIGHT}${label}${RESET}`;
-        rows.push('  ' + chevron + `${ACCENT}@${RESET}` + styled);
+          : `${DIM}${label}${RESET}`;
+        rows.push('  ' + chevron + at + styled);
       }
       return rows.join('\n');
     }
