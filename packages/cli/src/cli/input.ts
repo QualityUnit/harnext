@@ -44,6 +44,29 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+// Matches a slash-command-shaped token: a leading slash, an initial letter,
+// then word chars / ':' / '-' (covers "/goal" and "/skill:foo"). Exported for
+// reuse by the highlighter and its tests.
+const SLASH_TOKEN = /\/[A-Za-z][\w:-]*/g;
+
+/**
+ * Colorize any recognized slash-command token in `text` so the user can see at
+ * a glance that it is special. Only tokens that *exactly* match a name in
+ * `commandNames` are highlighted; arbitrary "/foo" text is left untouched, and
+ * the token may appear anywhere in the line, not just at the start.
+ *
+ * Inserts zero-width ANSI codes only, so callers that compute terminal columns
+ * from the raw (unhighlighted) string stay correct.
+ */
+export function highlightSlashCommands(text: string, commandNames: ReadonlySet<string>): string {
+  if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
+  const ACCENT = `${ESC}38;5;74m`;
+  const RESET = `${ESC}39m`;
+  return text.replace(SLASH_TOKEN, (token) =>
+    commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
+  );
+}
+
 function countLines(s: string): number {
   if (!s) return 0;
   const nl = (s.match(/\n/g) || []).length;
@@ -162,20 +185,6 @@ export function createTextarea(options: TextareaOptions): Textarea {
     return rows.join('\n');
   }
 
-  // Colorize any recognized slash-command token in the input so the user can
-  // see at a glance that it is special. Only tokens that exactly match a known
-  // command name are highlighted; arbitrary "/foo" text is left untouched.
-  // Inserts zero-width ANSI codes only, so terminal column accounting (which
-  // uses raw buffer length) is unaffected.
-  function highlightCommands(text: string): string {
-    if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
-    const ACCENT = `${ESC}38;5;74m`;
-    const RESET = `${ESC}39m`;
-    return text.replace(/\/[A-Za-z][\w:-]*/g, (token) =>
-      commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
-    );
-  }
-
   function clearGhost() {
     if (!hasTTY || ghostLen === 0) return;
     process.stdout.write(`${ESC}K`);
@@ -225,7 +234,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       lastTopLines = 0;
     }
     process.stdout.write(promptStr);
-    process.stdout.write(highlightCommands(buffer));
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
     ghostLen = 0;
     drawGhost();
     if (options.getBottomBorder) {
