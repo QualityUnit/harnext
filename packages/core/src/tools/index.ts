@@ -28,6 +28,12 @@ export {
   createSkillTool,
 } from './skill.js';
 export {
+  type MemoryToolDetails,
+  type MemoryToolInput,
+  memoryTool,
+  createMemoryTool,
+} from './memory.js';
+export {
   type TodoItem,
   type TodoToolDetails,
   type TodoToolInput,
@@ -52,6 +58,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { bashTool, createBashTool } from './bash.js';
 import { editTool, createEditTool } from './edit.js';
 import { exitPlanTool, createExitPlanTool } from './exit-plan.js';
+import { memoryTool, createMemoryTool } from './memory.js';
 import { readTool, createReadTool } from './read.js';
 import { todoTool, createTodoTool } from './todo.js';
 import { writeTool, createWriteTool } from './write.js';
@@ -59,7 +66,15 @@ import { writeTool, createWriteTool } from './write.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Tool = AgentTool<any>;
 
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, todoTool, exitPlanTool];
+export const codingTools: Tool[] = [
+  readTool,
+  bashTool,
+  editTool,
+  writeTool,
+  todoTool,
+  exitPlanTool,
+  memoryTool,
+];
 
 export const allTools = {
   read: readTool,
@@ -68,6 +83,7 @@ export const allTools = {
   write: writeTool,
   todo: todoTool,
   exit_plan: exitPlanTool,
+  memory: memoryTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -80,6 +96,7 @@ export function createCodingTools(cwd: string): Tool[] {
     createWriteTool(cwd),
     createTodoTool(),
     createExitPlanTool(),
+    createMemoryTool(cwd),
   ];
 }
 
@@ -91,5 +108,6 @@ export function createAllTools(cwd: string): Record<ToolName, Tool> {
     write: createWriteTool(cwd),
     todo: createTodoTool(),
     exit_plan: createExitPlanTool(),
+    memory: createMemoryTool(cwd),
   };
 }

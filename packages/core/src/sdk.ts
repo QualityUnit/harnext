@@ -7,6 +7,7 @@ import { AgentSession } from './agent-session.js';
 import { getProviderConfig } from './auth.js';
 import { createCompaction } from './compaction.js';
 import type { CompactionOptions } from './compaction.js';
+import { buildMemorySection } from './memory.js';
 import { loadSettings } from './settings.js';
 import {
   computeServerConfigHash,
@@ -253,6 +254,7 @@ export async function createAgentSession(
   });
   const projectContext = loadProjectContext({ cwd, settingSources: options.settingSources });
   if (projectContext) systemPrompt += projectContext;
+  systemPrompt += buildMemorySection(cwd);
   if (options.appendSystemPrompt) systemPrompt += `\n\n${options.appendSystemPrompt}`;
 
   // Apply tool policy: disallow_tools removes tools from view; the permission
