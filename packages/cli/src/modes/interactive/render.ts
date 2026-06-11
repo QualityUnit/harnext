@@ -701,14 +701,58 @@ export function planDecision(approved: boolean): string {
 }
 
 // ── Header ───────────────────────────────────────────────────────────
+//
+// A session banner printed once at startup (and after /clear). The logo
+// mark is a terminal rendering of harnext's SVG glyph; the metadata column
+// names the session: app + version, provider/model, and working directory.
+//
+//      ██     harnext v1.7.2
+//   ▀▄  ██ ▄▄ anthropic · claude-opus-4-8
+//    ▄▀ ██ ██ ~/Desktop/projects/harnext2
+//   ▀   ██ ██
+//          ⏎ send · ⇧⇥ mode · / commands · esc interrupt · ⌃c quit
 
-export function header(): string {
-  const lines = [
-    '',
-    chalk.bold.ansi256(X.accent)(APP_NAME) + c.faint(` v${VERSION}`),
-    c.faint('⏎ send · ⇧⇥ mode · / commands · esc interrupt · ⌃c quit'),
-    '',
-  ];
+// A faithful rendering of the logo mark (SVG viewBox 60×64): a 9×8 grid of
+// 6px cells — a right-pointing "next" chevron beside two solid bars. Each
+// text line packs two pixel-rows via half-blocks (▀ top, ▄ bottom, █ both),
+// which keeps the square pixels square in the terminal's 1:2 cell aspect.
+const LOGO_MARK = ['    ██   ', '▀▄  ██ ▄▄', ' ▄▀ ██ ██', '▀   ██ ██'];
+
+export interface HeaderOptions {
+  provider: string;
+  model: string;
+  cwd: string;
+}
+
+export function header(opts?: HeaderOptions): string {
+  const mark = LOGO_MARK.map((row) => c.accent(row));
+  const gap = '  ';
+
+  // Metadata column, top-aligned against the mark. Rows beyond the column's
+  // height are left blank so the mark always renders in full.
+  const info: string[] = [];
+  if (opts) {
+    const home = process.env.HOME ?? '';
+    const shortCwd =
+      home && opts.cwd.startsWith(home) ? '~' + opts.cwd.slice(home.length) : opts.cwd;
+    info.push(chalk.bold.ansi256(X.accent)(APP_NAME) + c.faint(` v${VERSION}`));
+    info.push(c.dim(`${opts.provider} · `) + c.accent(opts.model));
+    info.push(c.faint(shortCwd));
+  } else {
+    info.push(chalk.bold.ansi256(X.accent)(APP_NAME) + c.faint(` v${VERSION}`));
+  }
+
+  const rows = Math.max(mark.length, info.length);
+  const markPad = ' '.repeat(stripAnsi(mark[0]).length);
+  const lines: string[] = [''];
+  for (let i = 0; i < rows; i++) {
+    const left = mark[i] ?? markPad;
+    const right = info[i] ?? '';
+    lines.push(left + gap + right);
+  }
+  lines.push('');
+  lines.push(c.faint('  ⏎ send · ⇧⇥ mode · / commands · esc interrupt · ⌃c quit'));
+  lines.push('');
   return lines.join('\n');
 }
 
