@@ -573,7 +573,9 @@ export async function runInteractiveMode(
 
   // Print the static header before the textarea — it stays above content
   // and scrolls out naturally as the session grows.
-  process.stdout.write(render.header());
+  process.stdout.write(
+    render.header({ provider: activeProvider, model: activeModel, cwd }),
+  );
 
   const completions = [
     ...SLASH_COMMANDS.map((cmd) => ({
@@ -999,7 +1001,9 @@ export async function runInteractiveMode(
         // Clear the visible screen (ESC[2J) and move cursor home (ESC[H),
         // then reprint the static header so the session starts fresh.
         process.stdout.write('\x1B[2J\x1B[H');
-        process.stdout.write(render.header());
+        process.stdout.write(
+          render.header({ provider: activeProvider, model: activeModel, cwd }),
+        );
       },
       ensureBundledSkills,
       invokeSkill,
