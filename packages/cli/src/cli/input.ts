@@ -44,6 +44,29 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+// Matches a slash-command-shaped token: a leading slash, an initial letter,
+// then word chars / ':' / '-' (covers "/goal" and "/skill:foo"). Exported for
+// reuse by the highlighter and its tests.
+const SLASH_TOKEN = /\/[A-Za-z][\w:-]*/g;
+
+/**
+ * Colorize any recognized slash-command token in `text` so the user can see at
+ * a glance that it is special. Only tokens that *exactly* match a name in
+ * `commandNames` are highlighted; arbitrary "/foo" text is left untouched, and
+ * the token may appear anywhere in the line, not just at the start.
+ *
+ * Inserts zero-width ANSI codes only, so callers that compute terminal columns
+ * from the raw (unhighlighted) string stay correct.
+ */
+export function highlightSlashCommands(text: string, commandNames: ReadonlySet<string>): string {
+  if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
+  const ACCENT = `${ESC}38;5;74m`;
+  const RESET = `${ESC}39m`;
+  return text.replace(SLASH_TOKEN, (token) =>
+    commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
+  );
+}
+
 function countLines(s: string): number {
   if (!s) return 0;
   const nl = (s.match(/\n/g) || []).length;
@@ -100,6 +123,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
+
+  // Set of recognized slash-command names (e.g. "/goal", "/skill:foo"), used
+  // to colorize the matching token wherever it appears in the buffer.
+  const commandNames = new Set((options.completions ?? []).map((c) => c.text));
 
   // Rows occupied / final column of an input line of `len` visible chars,
   // accounting for terminal wrapping. Terminals defer autowrap: a line that
@@ -207,7 +234,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       lastTopLines = 0;
     }
     process.stdout.write(promptStr);
-    process.stdout.write(buffer);
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
     ghostLen = 0;
     drawGhost();
     if (options.getBottomBorder) {
@@ -360,7 +387,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
     if (key.name === 'backspace') {
       if (buffer.length > 0) {
-        const wasSlash = buffer.startsWith('/');
+        const hadSlash = buffer.includes('/');
         const oldLen = promptVisibleLen + buffer.length;
         buffer = buffer.slice(0, -1);
         selectedCompletionIdx = 0;
@@ -369,7 +396,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
         // cursor on the deleted char, so '\b \b' would erase its neighbor).
         const termW = Math.max(1, process.stdout.columns ?? 80);
         const wraps = inputRows(oldLen - 1) !== lastInputRows || oldLen % termW === 0;
-        if (wasSlash || wraps) {
+        // A '/' anywhere means a command token may need (re)coloring, which an
+        // in-place '\b \b' can't express — fall back to a full redraw.
+        if (hadSlash || buffer.includes('/') || wraps) {
           redraw();
         } else {
           clearGhost();
@@ -381,14 +410,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
-      const wasSlash = buffer.startsWith('/');
       buffer += str;
       selectedCompletionIdx = 0;
       // Crossing a wrap boundary needs a full redraw: an in-place write
       // would wrap the cursor down onto the bottom border instead of
       // re-flowing the frame to make room for the new input row.
       const wraps = inputRows(promptVisibleLen + buffer.length) !== lastInputRows;
-      if (wasSlash || buffer.startsWith('/') || wraps) {
+      // A '/' anywhere means a command token may need (re)coloring, which an
+      // in-place append can't express — fall back to a full redraw.
+      if (buffer.includes('/') || wraps) {
         redraw();
       } else {
         clearGhost();
