@@ -48,6 +48,29 @@ function termWidth(): number {
   return Math.max(1, process.stdout.columns ?? 80);
 }
 
+// Matches a slash-command-shaped token: a leading slash, an initial letter,
+// then word chars / ':' / '-' (covers "/goal" and "/skill:foo"). Exported for
+// reuse by the highlighter and its tests.
+const SLASH_TOKEN = /\/[A-Za-z][\w:-]*/g;
+
+/**
+ * Colorize any recognized slash-command token in `text` so the user can see at
+ * a glance that it is special. Only tokens that *exactly* match a name in
+ * `commandNames` are highlighted; arbitrary "/foo" text is left untouched, and
+ * the token may appear anywhere in the line, not just at the start.
+ *
+ * Inserts zero-width ANSI codes only, so callers that compute terminal columns
+ * from the raw (unhighlighted) string stay correct.
+ */
+export function highlightSlashCommands(text: string, commandNames: ReadonlySet<string>): string {
+  if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
+  const ACCENT = `${ESC}38;5;74m`;
+  const RESET = `${ESC}39m`;
+  return text.replace(SLASH_TOKEN, (token) =>
+    commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
+  );
+}
+
 // Number of physical terminal rows `s` occupies when printed starting at
 // column 0 of a `termW`-column terminal: one row per logical line plus the
 // extra rows long lines soft-wrap onto (a narrow terminal wraps the footer,
@@ -123,6 +146,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
+
+  // Set of recognized slash-command names (e.g. "/goal", "/skill:foo"), used
+  // to colorize the matching token wherever it appears in the buffer.
+  const commandNames = new Set((options.completions ?? []).map((c) => c.text));
 
   function getMatchingCompletions(): CompletionItem[] {
     if (!options.completions || buffer.length === 0) return [];
@@ -221,7 +248,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       lastTopLines = 0;
     }
     process.stdout.write(promptStr);
-    process.stdout.write(buffer);
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
     ghostLen = 0;
     drawGhost();
     const endOffset = promptVisibleLen + buffer.length;
@@ -281,14 +308,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // Re-render only the input row in place. Used for mid-buffer edits where
   // the tail of the line changes — cheaper than a full erase/redraw and
   // avoids frame flicker. Callers guarantee the input fits a single
-  // terminal row; wrapped input always goes through a full redraw.
+  // terminal row; wrapped input (and any '/' that may need recoloring) always
+  // goes through a full redraw, so highlighting here is a zero-width no-op.
   function renderInputLine() {
     if (!hasTTY) return;
     ghostLen = 0;
     process.stdout.write('\r');
     process.stdout.write(`${ESC}K`);
     process.stdout.write(promptStr);
-    process.stdout.write(buffer);
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
     drawGhost();
     process.stdout.write('\r');
     const col = promptVisibleLen + cursorPos;
@@ -455,7 +483,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
     if (key.name === 'backspace') {
       if (cursorPos > 0) {
-        const wasSlash = buffer.startsWith('/');
+        const hadSlash = buffer.includes('/');
         const atEnd = cursorPos === buffer.length;
         // Wrapped before the delete → the input may shrink a row and the
         // borders move up; only a full redraw keeps the frame consistent.
@@ -463,7 +491,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
         buffer = buffer.slice(0, cursorPos - 1) + buffer.slice(cursorPos);
         cursorPos--;
         selectedCompletionIdx = 0;
-        if (wasSlash || buffer.startsWith('/') || wrapped) {
+        // A '/' anywhere means a command token may need (re)coloring, which an
+        // in-place '\b \b' / mid-row rewrite can't reliably express — fall back
+        // to a full redraw.
+        if (hadSlash || buffer.includes('/') || wrapped) {
           redraw();
         } else if (atEnd) {
           clearGhost();
@@ -477,7 +508,6 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
-      const wasSlash = buffer.startsWith('/');
       const atEnd = cursorPos === buffer.length;
       buffer = buffer.slice(0, cursorPos) + str + buffer.slice(cursorPos);
       cursorPos++;
@@ -485,7 +515,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
       // Wrapped after the insert (>= because at an exact row fill the input
       // grows a forced row) → borders shift down; full redraw required.
       const wrapped = promptVisibleLen + buffer.length >= termWidth();
-      if (wasSlash || buffer.startsWith('/') || wrapped) {
+      // A '/' anywhere means a command token may need (re)coloring, which an
+      // in-place write can't express — fall back to a full redraw.
+      if (buffer.includes('/') || wrapped) {
         redraw();
       } else if (atEnd) {
         clearGhost();
