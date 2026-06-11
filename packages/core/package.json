@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
-    "@mariozechner/pi-agent-core": "^0.67.68",
-    "@mariozechner/pi-ai": "^0.67.68",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@sinclair/typebox": "^0.34.41",
     "yaml": "^2.5.0"
