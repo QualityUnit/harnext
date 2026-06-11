@@ -35,7 +35,9 @@ export const OPENROUTER_DEFAULT_MODEL = 'anthropic/claude-sonnet-4.6';
 // traffic to their own listing without patching the source.
 // Docs: https://openrouter.ai/docs/app-attribution
 
-export const OPENROUTER_APP_URL = 'https://github.com/QualityUnit/harnext';
+// The product site (a page we own) is the referer so OpenRouter scrapes the
+// app's logo from harnext.dev's favicon/OpenGraph metadata rather than GitHub's.
+export const OPENROUTER_APP_URL = 'https://www.harnext.dev';
 export const OPENROUTER_APP_TITLE = 'Harnext';
 export const OPENROUTER_APP_CATEGORIES = 'cli-agent';
 
