@@ -88,6 +88,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // (e.g. a spinner line appearing) between draws.
   let lastTopLines = 0;
   let lastBottomLines = 0;
+  // Rows the prompt+buffer occupied at draw time. Long input wraps across
+  // multiple terminal rows; erase must unwind past all of them.
+  let lastInputRows = 1;
   // Index into the current matches list for the inline completion panel.
   // Always clamped to [0, matches.length) at render time.
   let selectedCompletionIdx = 0;
@@ -97,6 +100,20 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
+
+  // Rows occupied / final column of an input line of `len` visible chars,
+  // accounting for terminal wrapping. Terminals defer autowrap: a line that
+  // exactly fills the row leaves the cursor on that row (pending-wrap), so
+  // the math uses len - 1. inputEndCol returns termW (not 0) in that state.
+  function inputRows(len: number): number {
+    const termW = Math.max(1, process.stdout.columns ?? 80);
+    return len === 0 ? 1 : Math.floor((len - 1) / termW) + 1;
+  }
+
+  function inputEndCol(len: number): number {
+    const termW = Math.max(1, process.stdout.columns ?? 80);
+    return len === 0 ? 0 : ((len - 1) % termW) + 1;
+  }
 
   function getMatchingCompletions(): CompletionItem[] {
     if (!options.completions || buffer.length === 0) return [];
@@ -208,17 +225,22 @@ export function createTextarea(options: TextareaOptions): Textarea {
     } else {
       lastBottomLines = 0;
     }
-    // Relative-only reposition to end of buffer on the input row.
+    // Relative-only reposition to end of buffer. The ESC A above already
+    // landed on the last input row (wrapped input ends there), so only the
+    // column needs fixing — modulo the terminal width, since a wrapped
+    // buffer's end column is not promptLen + bufferLen.
     process.stdout.write('\r');
-    const col = promptVisibleLen + buffer.length;
+    const col = inputEndCol(promptVisibleLen + buffer.length);
     if (col > 0) process.stdout.write(`${ESC}${col}C`);
+    lastInputRows = inputRows(promptVisibleLen + buffer.length);
     textareaDrawn = true;
     process.stdout.write(SHOW_CURSOR);
   }
 
-  // Erase the textarea. Assumes cursor is on the input line at buffer end.
-  // Uses the *last-drawn* top/bottom line counts so dynamic shape changes
-  // (spinner line appearing/vanishing) unwind to the correct origin.
+  // Erase the textarea. Assumes cursor is on the *last* input row at buffer
+  // end (wrapped input spans lastInputRows rows). Uses the *last-drawn* line
+  // counts so dynamic shape changes (spinner line appearing/vanishing, input
+  // wrapping) unwind to the correct origin.
   // After: cursor is positioned where the next content write should land —
   // either at col 1 of a fresh row (contentCol == 0) or at contentCol of
   // the row directly above the textarea (contentCol > 0).
@@ -227,7 +249,8 @@ export function createTextarea(options: TextareaOptions): Textarea {
     process.stdout.write(HIDE_CURSOR);
     clearGhost();
     process.stdout.write('\r');
-    if (lastTopLines > 0) process.stdout.write(`${ESC}${lastTopLines}A`);
+    const up = lastTopLines + lastInputRows - 1;
+    if (up > 0) process.stdout.write(`${ESC}${up}A`);
     // Clear from top-border-row to end of screen.
     process.stdout.write(`${ESC}J`);
     textareaDrawn = false;
@@ -305,9 +328,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
       clearGhost();
       buffer = '';
       selectedCompletionIdx = 0;
-      process.stdout.write('\r');
-      process.stdout.write(`${ESC}K`);
-      process.stdout.write(promptStr);
+      // Full redraw rather than a single-row clear: wrapped input occupied
+      // multiple rows, and all of them must be erased with the frame.
+      redraw();
       emitter.emit('submit', value);
       return;
     }
@@ -338,9 +361,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
     if (key.name === 'backspace') {
       if (buffer.length > 0) {
         const wasSlash = buffer.startsWith('/');
+        const oldLen = promptVisibleLen + buffer.length;
         buffer = buffer.slice(0, -1);
         selectedCompletionIdx = 0;
-        if (wasSlash || buffer.startsWith('/')) {
+        // Full redraw when the deletion crosses a wrap boundary ('\b' cannot
+        // move up a row) or the row was exactly full (pending-wrap leaves the
+        // cursor on the deleted char, so '\b \b' would erase its neighbor).
+        const termW = Math.max(1, process.stdout.columns ?? 80);
+        const wraps = inputRows(oldLen - 1) !== lastInputRows || oldLen % termW === 0;
+        if (wasSlash || wraps) {
           redraw();
         } else {
           clearGhost();
@@ -355,7 +384,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const wasSlash = buffer.startsWith('/');
       buffer += str;
       selectedCompletionIdx = 0;
-      if (wasSlash || buffer.startsWith('/')) {
+      // Crossing a wrap boundary needs a full redraw: an in-place write
+      // would wrap the cursor down onto the bottom border instead of
+      // re-flowing the frame to make room for the new input row.
+      const wraps = inputRows(promptVisibleLen + buffer.length) !== lastInputRows;
+      if (wasSlash || buffer.startsWith('/') || wraps) {
         redraw();
       } else {
         clearGhost();
