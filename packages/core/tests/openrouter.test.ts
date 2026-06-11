@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  OPENROUTER_APP_CATEGORIES,
+  OPENROUTER_APP_TITLE,
+  OPENROUTER_APP_URL,
   OPENROUTER_BASE_URL,
   OPENROUTER_DEFAULT_MODEL,
   buildOpenRouterModel,
   listOpenRouterModels,
+  openRouterAppHeaders,
 } from '../src/openrouter.js';
 import { getProviderById, PROVIDERS } from '../src/providers.js';
 
@@ -204,5 +208,36 @@ describe('PROVIDERS registry — openrouter entry', () => {
     const ollamaIdx = ids.indexOf('ollama');
     expect(orIdx).toBeGreaterThan(-1);
     expect(orIdx).toBeLessThan(ollamaIdx);
+  });
+});
+
+describe('openRouterAppHeaders (app-attribution)', () => {
+  it('returns the bundled defaults with an empty env', () => {
+    const h = openRouterAppHeaders({});
+    expect(h['HTTP-Referer']).toBe(OPENROUTER_APP_URL);
+    expect(h['X-OpenRouter-Title']).toBe(OPENROUTER_APP_TITLE);
+    expect(h['X-OpenRouter-Categories']).toBe(OPENROUTER_APP_CATEGORIES);
+  });
+
+  it('sends a non-empty HTTP-Referer — the required leaderboard identity', () => {
+    const h = openRouterAppHeaders({});
+    expect(h['HTTP-Referer']).toMatch(/^https?:\/\//);
+  });
+
+  it('lets env vars override each default', () => {
+    const h = openRouterAppHeaders({
+      OPENROUTER_APP_URL: 'https://acme.example',
+      OPENROUTER_APP_TITLE: 'Acme Agent',
+      OPENROUTER_APP_CATEGORIES: 'cli-agent,cloud-agent',
+    });
+    expect(h['HTTP-Referer']).toBe('https://acme.example');
+    expect(h['X-OpenRouter-Title']).toBe('Acme Agent');
+    expect(h['X-OpenRouter-Categories']).toBe('cli-agent,cloud-agent');
+  });
+
+  it('falls back to defaults when an env var is set but empty', () => {
+    const h = openRouterAppHeaders({ OPENROUTER_APP_URL: '', OPENROUTER_APP_TITLE: '' });
+    expect(h['HTTP-Referer']).toBe(OPENROUTER_APP_URL);
+    expect(h['X-OpenRouter-Title']).toBe(OPENROUTER_APP_TITLE);
   });
 });

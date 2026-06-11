@@ -24,7 +24,7 @@ import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
 import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
-import { buildOpenRouterModel } from './openrouter.js';
+import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
 import { seedBuiltinSkills } from './seed.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -298,6 +298,10 @@ export async function createAgentSession(
         finalOpts = { ...opts, apiKey: opts?.apiKey ?? 'ollama' };
       } else if (m.provider === 'nvidia') {
         finalOpts = { ...opts, apiKey: opts?.apiKey ?? process.env.NVIDIA_API_KEY ?? '' };
+      } else if (m.provider === 'openrouter') {
+        // Attribution headers list harnext on https://openrouter.ai/apps.
+        // Caller-supplied headers win, so an embedder can re-attribute.
+        finalOpts = { ...opts, headers: { ...openRouterAppHeaders(), ...opts?.headers } };
       }
       return streamSimple(m, ctx, finalOpts);
     },
