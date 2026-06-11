@@ -44,10 +44,21 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
-function countLines(s: string): number {
+function termWidth(): number {
+  return Math.max(1, process.stdout.columns ?? 80);
+}
+
+// Number of physical terminal rows `s` occupies when printed starting at
+// column 0 of a `termW`-column terminal: one row per logical line plus the
+// extra rows long lines soft-wrap onto (a narrow terminal wraps the footer,
+// and an undercount here would skew every relative cursor move).
+function screenRows(s: string, termW: number): number {
   if (!s) return 0;
-  const nl = (s.match(/\n/g) || []).length;
-  return nl + (s.endsWith('\n') ? 0 : 1);
+  const lines = s.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  let rows = 0;
+  for (const line of lines) rows += Math.max(1, Math.ceil(stripAnsi(line).length / termW));
+  return rows;
 }
 
 /**
@@ -67,6 +78,11 @@ function countLines(s: string): number {
  * All cursor movement is relative (no DEC scroll region, no absolute row
  * positioning) so the frame stays correct across terminals with inconsistent
  * dimension reporting.
+ *
+ * The buffer is a single logical line. When prompt + buffer exceed the
+ * terminal width it soft-wraps; caret math maps the buffer offset to a
+ * wrapped (row, col) so arrows — including up/down — navigate within the
+ * wrapped input, and editing falls back to full redraws.
  */
 export function createTextarea(options: TextareaOptions): Textarea {
   const emitter = new EventEmitter();
@@ -75,6 +91,12 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const hasTTY = !!stdin.isTTY;
 
   let buffer = '';
+  // Caret index into `buffer` (0..buffer.length). Insertion and deletion
+  // happen at this position; left/right/home/end move it, and up/down move
+  // it by one terminal row when the input soft-wraps. All screen math maps
+  // the offset `promptVisibleLen + cursorPos` to a wrapped (row, col) via
+  // the terminal width.
+  let cursorPos = 0;
   let ghostLen = 0;
   let textareaDrawn = false;
   // Column where the next content append should land. 0 means "fresh row".
@@ -88,6 +110,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // (e.g. a spinner line appearing) between draws.
   let lastTopLines = 0;
   let lastBottomLines = 0;
+  // Wrapped input row the physical cursor currently sits on (0-based within
+  // the input area). Erase unwinds from here — it must not be derived from
+  // cursorPos, which handlers mutate before the screen catches up.
+  let drawnCaretRow = 0;
   // Index into the current matches list for the inline completion panel.
   // Always clamped to [0, matches.length) at render time.
   let selectedCompletionIdx = 0;
@@ -153,6 +179,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
     const match = matches[selectedCompletionIdx] ?? matches[0];
     if (match && match.text !== buffer) {
       const rest = match.text.slice(buffer.length);
+      // Ghost rendering is single-row only: skip it when prompt + buffer +
+      // ghost would reach the terminal edge, where the cursor-left rewind
+      // could not cross the wrap.
+      if (promptVisibleLen + buffer.length + rest.length >= termWidth()) return;
       process.stdout.write(`${ESC}2m${rest}${ESC}22m`);
       process.stdout.write(`${ESC}${rest.length}D`);
       ghostLen = rest.length;
@@ -177,6 +207,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // first so the top border lands on a fresh row.
   function drawTextarea() {
     if (!hasTTY) return;
+    const termW = termWidth();
     process.stdout.write(HIDE_CURSOR);
     if (contentCol > 0) {
       process.stdout.write('\n');
@@ -185,7 +216,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const top = options.getTopBorder();
       process.stdout.write(top);
       process.stdout.write('\n');
-      lastTopLines = countLines(top);
+      lastTopLines = screenRows(top, termW);
     } else {
       lastTopLines = 0;
     }
@@ -193,27 +224,75 @@ export function createTextarea(options: TextareaOptions): Textarea {
     process.stdout.write(buffer);
     ghostLen = 0;
     drawGhost();
+    const endOffset = promptVisibleLen + buffer.length;
+    // When the input exactly fills its last row the terminal holds the
+    // cursor in deferred-wrap state on that row. Print-and-backspace forces
+    // the next row to exist so the caret can sit at column 0 of it and the
+    // border/erase row accounting stays consistent.
+    if (endOffset > 0 && endOffset % termW === 0) process.stdout.write(' \b');
     if (options.getBottomBorder) {
       const bot = options.getBottomBorder();
       process.stdout.write('\n');
       process.stdout.write(bot);
-      lastBottomLines = countLines(bot);
+      lastBottomLines = screenRows(bot, termW);
       const panel = renderCompletionsPanel();
       if (panel) {
         process.stdout.write('\n');
         process.stdout.write(panel);
-        lastBottomLines += countLines(panel);
+        lastBottomLines += screenRows(panel, termW);
       }
       if (lastBottomLines > 0) process.stdout.write(`${ESC}${lastBottomLines}A`);
     } else {
       lastBottomLines = 0;
     }
-    // Relative-only reposition to end of buffer on the input row.
+    // Relative-only reposition from the last wrapped input row (where the
+    // cursor sits after the border dance) to the caret's row and column.
+    const lastRow = Math.floor(endOffset / termW);
+    const caretOffset = promptVisibleLen + cursorPos;
+    const caretRow = Math.floor(caretOffset / termW);
     process.stdout.write('\r');
-    const col = promptVisibleLen + buffer.length;
+    if (lastRow > caretRow) process.stdout.write(`${ESC}${lastRow - caretRow}A`);
+    const col = caretOffset % termW;
     if (col > 0) process.stdout.write(`${ESC}${col}C`);
+    drawnCaretRow = caretRow;
     textareaDrawn = true;
     process.stdout.write(SHOW_CURSOR);
+  }
+
+  // Move the caret to `newPos` and emit the relative cursor motion to get
+  // there from the current caret position, crossing soft-wrap row
+  // boundaries when the input spans multiple terminal rows.
+  function moveCaretTo(newPos: number) {
+    const from = promptVisibleLen + cursorPos;
+    const to = promptVisibleLen + newPos;
+    cursorPos = newPos;
+    if (!hasTTY || !textareaDrawn || from === to) return;
+    const termW = termWidth();
+    const fromRow = Math.floor(from / termW);
+    const toRow = Math.floor(to / termW);
+    if (toRow < fromRow) process.stdout.write(`${ESC}${fromRow - toRow}A`);
+    else if (toRow > fromRow) process.stdout.write(`${ESC}${toRow - fromRow}B`);
+    process.stdout.write('\r');
+    const col = to % termW;
+    if (col > 0) process.stdout.write(`${ESC}${col}C`);
+    drawnCaretRow = toRow;
+  }
+
+  // Re-render only the input row in place. Used for mid-buffer edits where
+  // the tail of the line changes — cheaper than a full erase/redraw and
+  // avoids frame flicker. Callers guarantee the input fits a single
+  // terminal row; wrapped input always goes through a full redraw.
+  function renderInputLine() {
+    if (!hasTTY) return;
+    ghostLen = 0;
+    process.stdout.write('\r');
+    process.stdout.write(`${ESC}K`);
+    process.stdout.write(promptStr);
+    process.stdout.write(buffer);
+    drawGhost();
+    process.stdout.write('\r');
+    const col = promptVisibleLen + cursorPos;
+    if (col > 0) process.stdout.write(`${ESC}${col}C`);
   }
 
   // Erase the textarea. Assumes cursor is on the input line at buffer end.
@@ -227,7 +306,12 @@ export function createTextarea(options: TextareaOptions): Textarea {
     process.stdout.write(HIDE_CURSOR);
     clearGhost();
     process.stdout.write('\r');
-    if (lastTopLines > 0) process.stdout.write(`${ESC}${lastTopLines}A`);
+    // The cursor sits on the wrapped row last placed on screen; unwind past
+    // any wrapped input rows above it plus the top border before clearing
+    // downward. drawnCaretRow (not cursorPos) is authoritative: handlers
+    // mutate cursorPos before the redraw that re-syncs the screen.
+    const up = lastTopLines + drawnCaretRow;
+    if (up > 0) process.stdout.write(`${ESC}${up}A`);
     // Clear from top-border-row to end of screen.
     process.stdout.write(`${ESC}J`);
     textareaDrawn = false;
@@ -302,12 +386,13 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const matches = getMatchingCompletions();
       const chosen = matches[selectedCompletionIdx];
       const value = chosen ? chosen.text : buffer.trim();
-      clearGhost();
+      // Full erase/redraw: a single-row clear would leave stale wrapped
+      // input rows and any open completions panel on screen.
+      if (textareaDrawn) eraseTextarea();
       buffer = '';
+      cursorPos = 0;
       selectedCompletionIdx = 0;
-      process.stdout.write('\r');
-      process.stdout.write(`${ESC}K`);
-      process.stdout.write(promptStr);
+      drawTextarea();
       emitter.emit('submit', value);
       return;
     }
@@ -317,9 +402,30 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const match = matches[selectedCompletionIdx] ?? matches[0];
       if (match && match.text !== buffer) {
         buffer = match.text;
+        cursorPos = buffer.length;
         selectedCompletionIdx = 0;
         redraw();
       }
+      return;
+    }
+
+    if (key.name === 'left') {
+      if (cursorPos > 0) moveCaretTo(cursorPos - 1);
+      return;
+    }
+
+    if (key.name === 'right') {
+      if (cursorPos < buffer.length) moveCaretTo(cursorPos + 1);
+      return;
+    }
+
+    if (key.name === 'home' || (key.ctrl && key.name === 'a')) {
+      if (cursorPos > 0) moveCaretTo(0);
+      return;
+    }
+
+    if (key.name === 'end' || (key.ctrl && key.name === 'e')) {
+      if (cursorPos < buffer.length) moveCaretTo(buffer.length);
       return;
     }
 
@@ -331,21 +437,40 @@ export function createTextarea(options: TextareaOptions): Textarea {
             ? (selectedCompletionIdx - 1 + matches.length) % matches.length
             : (selectedCompletionIdx + 1) % matches.length;
         redraw();
+        return;
+      }
+      // No completions panel: move the caret one terminal row up/down
+      // within a soft-wrapped input, clamping to the buffer edges.
+      const termW = termWidth();
+      const caretOffset = promptVisibleLen + cursorPos;
+      const lastRow = Math.floor((promptVisibleLen + buffer.length) / termW);
+      const row = Math.floor(caretOffset / termW);
+      if (key.name === 'up' && row > 0) {
+        moveCaretTo(Math.max(0, caretOffset - termW - promptVisibleLen));
+      } else if (key.name === 'down' && row < lastRow) {
+        moveCaretTo(Math.min(buffer.length, caretOffset + termW - promptVisibleLen));
       }
       return;
     }
 
     if (key.name === 'backspace') {
-      if (buffer.length > 0) {
+      if (cursorPos > 0) {
         const wasSlash = buffer.startsWith('/');
-        buffer = buffer.slice(0, -1);
+        const atEnd = cursorPos === buffer.length;
+        // Wrapped before the delete → the input may shrink a row and the
+        // borders move up; only a full redraw keeps the frame consistent.
+        const wrapped = promptVisibleLen + buffer.length >= termWidth();
+        buffer = buffer.slice(0, cursorPos - 1) + buffer.slice(cursorPos);
+        cursorPos--;
         selectedCompletionIdx = 0;
-        if (wasSlash || buffer.startsWith('/')) {
+        if (wasSlash || buffer.startsWith('/') || wrapped) {
           redraw();
-        } else {
+        } else if (atEnd) {
           clearGhost();
           process.stdout.write('\b \b');
           drawGhost();
+        } else {
+          renderInputLine();
         }
       }
       return;
@@ -353,14 +478,21 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
     if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
       const wasSlash = buffer.startsWith('/');
-      buffer += str;
+      const atEnd = cursorPos === buffer.length;
+      buffer = buffer.slice(0, cursorPos) + str + buffer.slice(cursorPos);
+      cursorPos++;
       selectedCompletionIdx = 0;
-      if (wasSlash || buffer.startsWith('/')) {
+      // Wrapped after the insert (>= because at an exact row fill the input
+      // grows a forced row) → borders shift down; full redraw required.
+      const wrapped = promptVisibleLen + buffer.length >= termWidth();
+      if (wasSlash || buffer.startsWith('/') || wrapped) {
         redraw();
-      } else {
+      } else if (atEnd) {
         clearGhost();
         process.stdout.write(str);
         drawGhost();
+      } else {
+        renderInputLine();
       }
     }
   };
