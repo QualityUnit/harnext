@@ -374,6 +374,10 @@ export {
 export {
   OPENROUTER_BASE_URL,
   OPENROUTER_DEFAULT_MODEL,
+  OPENROUTER_APP_URL,
+  OPENROUTER_APP_TITLE,
+  OPENROUTER_APP_CATEGORIES,
+  openRouterAppHeaders,
   buildOpenRouterModel,
   listOpenRouterModels,
   type OpenRouterModelSummary,

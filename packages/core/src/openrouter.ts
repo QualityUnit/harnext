@@ -19,6 +19,42 @@ export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 /** Curated default surfaced before the user picks from the live list. */
 export const OPENROUTER_DEFAULT_MODEL = 'anthropic/claude-sonnet-4.6';
 
+// ── App attribution ───────────────────────────────────────────────────
+//
+// OpenRouter ranks the apps that route through it on a public leaderboard
+// (https://openrouter.ai/apps). Apps self-identify via per-request headers —
+// there is no manual submission. Sending these on every OpenRouter request
+// makes every harnext install's traffic accrue to one app entry.
+//
+//   HTTP-Referer            the app's URL — REQUIRED; the unique identity on
+//                           the leaderboard. Without it nothing is tracked.
+//   X-OpenRouter-Title      display name (X-Title is the legacy alias).
+//   X-OpenRouter-Categories taxonomy slugs that bucket the app (e.g. cli-agent).
+//
+// Each default is overridable via an env var so forks/embedders can re-attribute
+// traffic to their own listing without patching the source.
+// Docs: https://openrouter.ai/docs/app-attribution
+
+export const OPENROUTER_APP_URL = 'https://github.com/QualityUnit/harnext';
+export const OPENROUTER_APP_TITLE = 'Harnext';
+export const OPENROUTER_APP_CATEGORIES = 'cli-agent';
+
+/**
+ * Attribution headers that list harnext on the openrouter.ai/apps leaderboard.
+ * Merge these into every OpenRouter chat-completions request. Env vars
+ * (`OPENROUTER_APP_URL` / `OPENROUTER_APP_TITLE` / `OPENROUTER_APP_CATEGORIES`)
+ * override the defaults; empty/unset falls back to the bundled values.
+ */
+export function openRouterAppHeaders(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return {
+    'HTTP-Referer': env.OPENROUTER_APP_URL || OPENROUTER_APP_URL,
+    'X-OpenRouter-Title': env.OPENROUTER_APP_TITLE || OPENROUTER_APP_TITLE,
+    'X-OpenRouter-Categories': env.OPENROUTER_APP_CATEGORIES || OPENROUTER_APP_CATEGORIES,
+  };
+}
+
 export interface OpenRouterModelSummary {
   id: string;
   /** Human-readable name (`DeepSeek: DeepSeek V4 Pro`). */
