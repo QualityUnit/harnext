@@ -101,6 +101,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
 
+  // Set of recognized slash-command names (e.g. "/goal", "/skill:foo"), used
+  // to colorize the matching token wherever it appears in the buffer.
+  const commandNames = new Set((options.completions ?? []).map((c) => c.text));
+
   // Rows occupied / final column of an input line of `len` visible chars,
   // accounting for terminal wrapping. Terminals defer autowrap: a line that
   // exactly fills the row leaves the cursor on that row (pending-wrap), so
@@ -158,6 +162,20 @@ export function createTextarea(options: TextareaOptions): Textarea {
     return rows.join('\n');
   }
 
+  // Colorize any recognized slash-command token in the input so the user can
+  // see at a glance that it is special. Only tokens that exactly match a known
+  // command name are highlighted; arbitrary "/foo" text is left untouched.
+  // Inserts zero-width ANSI codes only, so terminal column accounting (which
+  // uses raw buffer length) is unaffected.
+  function highlightCommands(text: string): string {
+    if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
+    const ACCENT = `${ESC}38;5;74m`;
+    const RESET = `${ESC}39m`;
+    return text.replace(/\/[A-Za-z][\w:-]*/g, (token) =>
+      commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
+    );
+  }
+
   function clearGhost() {
     if (!hasTTY || ghostLen === 0) return;
     process.stdout.write(`${ESC}K`);
@@ -207,7 +225,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       lastTopLines = 0;
     }
     process.stdout.write(promptStr);
-    process.stdout.write(buffer);
+    process.stdout.write(highlightCommands(buffer));
     ghostLen = 0;
     drawGhost();
     if (options.getBottomBorder) {
@@ -360,7 +378,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
     if (key.name === 'backspace') {
       if (buffer.length > 0) {
-        const wasSlash = buffer.startsWith('/');
+        const hadSlash = buffer.includes('/');
         const oldLen = promptVisibleLen + buffer.length;
         buffer = buffer.slice(0, -1);
         selectedCompletionIdx = 0;
@@ -369,7 +387,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
         // cursor on the deleted char, so '\b \b' would erase its neighbor).
         const termW = Math.max(1, process.stdout.columns ?? 80);
         const wraps = inputRows(oldLen - 1) !== lastInputRows || oldLen % termW === 0;
-        if (wasSlash || wraps) {
+        // A '/' anywhere means a command token may need (re)coloring, which an
+        // in-place '\b \b' can't express — fall back to a full redraw.
+        if (hadSlash || buffer.includes('/') || wraps) {
           redraw();
         } else {
           clearGhost();
@@ -381,14 +401,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
-      const wasSlash = buffer.startsWith('/');
       buffer += str;
       selectedCompletionIdx = 0;
       // Crossing a wrap boundary needs a full redraw: an in-place write
       // would wrap the cursor down onto the bottom border instead of
       // re-flowing the frame to make room for the new input row.
       const wraps = inputRows(promptVisibleLen + buffer.length) !== lastInputRows;
-      if (wasSlash || buffer.startsWith('/') || wraps) {
+      // A '/' anywhere means a command token may need (re)coloring, which an
+      // in-place append can't express — fall back to a full redraw.
+      if (buffer.includes('/') || wraps) {
         redraw();
       } else {
         clearGhost();
