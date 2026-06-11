@@ -237,17 +237,16 @@ export function createTextarea(options: TextareaOptions): Textarea {
     redraw();
   }
 
-  // Panel rendered below the bottom border when the user is typing a
-  // slash command. Commands sit in a fixed-width column (accent slash,
-  // bright name) with dim descriptions beside them; the selected row gets
-  // an accent chevron + accent name. Up/down navigate, tab/enter complete.
+  // Panel rendered below the bottom border when the user is typing a slash
+  // command or an `@`-mention. Only the selected row is accent-colored; the
+  // others are dimmed so the active option stands out. Up/down navigate,
+  // tab/enter complete.
   function renderCompletionsPanel(): string {
     const active = getActiveCompletion();
     if (!active) return '';
     const matches = active.matches;
     if (selectedCompletionIdx >= matches.length) selectedCompletionIdx = 0;
     const ACCENT = `${ESC}38;5;74m`;
-    const BRIGHT = `${ESC}38;5;254m`;
     const DIM = `${ESC}38;5;245m`;
     const RESET = `${ESC}39m`;
     const termW = Math.max(20, process.stdout.columns ?? 80);
@@ -281,11 +280,13 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const m = matches[i];
       const sel = i === selectedCompletionIdx;
       const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
-      const slash = m.text.startsWith('/') ? `${ACCENT}/${RESET}` : '';
+      // Only the selected command is accent-colored (accent `/` + bold name);
+      // the rest are dimmed so the active option stands out.
+      const slash = m.text.startsWith('/') ? `${sel ? ACCENT : DIM}/${RESET}` : '';
       const name = m.text.startsWith('/') ? m.text.slice(1) : m.text;
       const nameStyled = sel
         ? `${ACCENT}${ESC}1m${name}${ESC}22m${RESET}`
-        : `${BRIGHT}${name}${RESET}`;
+        : `${DIM}${name}${RESET}`;
       const pad = ' '.repeat(Math.max(1, cmdColW - m.text.length));
       // Truncate hints so a panel row never wraps (a wrap breaks the
       // textarea's row accounting).
