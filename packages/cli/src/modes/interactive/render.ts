@@ -73,6 +73,46 @@ function truncateOneLine(text: string, max: number): string {
   return oneLine.length > max ? oneLine.slice(0, max) + '…' : oneLine;
 }
 
+// Greedy word-wrap to `width` columns. Long tokens (URLs, JSON blobs) are
+// hard-split so nothing overflows the terminal. Unlike fitToWidth this keeps
+// the full text across multiple rows rather than truncating it — used for
+// error messages, where every line matters.
+function wrapText(text: string, width: number): string[] {
+  const w = Math.max(1, width);
+  const out: string[] = [];
+  for (const rawLine of text.split('\n')) {
+    const words = rawLine.split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      out.push('');
+      continue;
+    }
+    let line = '';
+    for (const word of words) {
+      if (word.length > w) {
+        if (line) {
+          out.push(line);
+          line = '';
+        }
+        let rest = word;
+        while (rest.length > w) {
+          out.push(rest.slice(0, w));
+          rest = rest.slice(w);
+        }
+        line = rest;
+      } else if (line.length === 0) {
+        line = word;
+      } else if (line.length + 1 + word.length <= w) {
+        line += ' ' + word;
+      } else {
+        out.push(line);
+        line = word;
+      }
+    }
+    if (line) out.push(line);
+  }
+  return out;
+}
+
 // Compact decimal form for token counts. < 1K shows raw, otherwise scaled
 // with K/M and one decimal (trimmed when it's `.0`).
 function formatTokens(n: number): string {
@@ -698,6 +738,30 @@ export function planDecision(approved: boolean): string {
   return approved
     ? c.green('✓ plan approved') + c.faint(' — switching to ACCEPT EDITS and building')
     : c.amber('✎ keeping plan mode') + c.faint(' — tell the agent what to change');
+}
+
+// ── Error block ──────────────────────────────────────────────────────
+//
+// Surfaced when an LLM provider / transport call fails. The agent loop ends
+// the failed turn with stopReason "error" (it does not throw), so the
+// interactive and print layers detect that and route the message here.
+//
+//   ✗ error  the model request failed
+//   │ 401 Unauthorized — incorrect API key provided
+//   │ check your key with /model
+
+export function errorBlock(message: string, headline = 'the model request failed'): string {
+  const w = termWidth();
+  const head = chalk.bgAnsi256(X.red).ansi256(X.bg).bold(' ✗ error ');
+  const headBudget = Math.max(8, w - stripAnsi(head).length - 2);
+  const lines: string[] = [head + ' ' + c.red(fitToWidth(headline, headBudget))];
+
+  const rail = c.red('│') + ' ';
+  const detail = message.trim() || 'unknown error (the provider returned no message)';
+  for (const seg of wrapText(detail, Math.max(8, w - 2))) {
+    lines.push(rail + c.red(seg));
+  }
+  return lines.join('\n');
 }
 
 // ── Header ───────────────────────────────────────────────────────────

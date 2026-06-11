@@ -705,15 +705,25 @@ export async function runInteractiveMode(
       }
 
       case 'message_end':
-        if (event.message.role === 'assistant' && currentText.length > 0) {
-          const tail = markdown ? markdown.flush() : '';
-          const out = processAsstChunk(tail);
-          if (out.length > 0) textarea.writeAbove(out);
-          // End the block on a fresh row (column 0). Buffered trailing
-          // newlines are discarded — the next card's top_pad provides the
-          // separator, so extra LLM newlines would just pile on as blank rows.
-          if (!asstAtLineStart) textarea.writeAbove('\n');
-          asstPendingNewlines = '';
+        if (event.message.role === 'assistant') {
+          if (currentText.length > 0) {
+            const tail = markdown ? markdown.flush() : '';
+            const out = processAsstChunk(tail);
+            if (out.length > 0) textarea.writeAbove(out);
+            // End the block on a fresh row (column 0). Buffered trailing
+            // newlines are discarded — the next card's top_pad provides the
+            // separator, so extra LLM newlines would just pile on as blank rows.
+            if (!asstAtLineStart) textarea.writeAbove('\n');
+            asstPendingNewlines = '';
+          }
+          // A provider/transport failure ends the turn with stopReason
+          // "error" instead of throwing, so the runPrompt catch never fires.
+          // Surface it here in themed red so it isn't silently swallowed.
+          const msg = event.message as { stopReason?: string; errorMessage?: string };
+          if (msg.stopReason === 'error') {
+            const detail = (msg.errorMessage ?? '').trim() || session.state.errorMessage || '';
+            textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
+          }
         }
         markdown = null;
         break;
@@ -949,11 +959,11 @@ export async function runInteractiveMode(
             : text;
         await session.prompt(payload);
       } catch (error) {
-        textarea.writeAbove(
-          chalk.red('  Error: ') +
-            (error instanceof Error ? error.message : String(error)) +
-            '\n\n',
-        );
+        // Most provider failures surface as a stopReason "error" message
+        // (handled above); this catches the rarer case where prompt() itself
+        // throws (e.g. a transport error before the stream opens).
+        const detail = error instanceof Error ? error.message : String(error);
+        textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
       } finally {
         agentBusy = false;
         stopSpinner();

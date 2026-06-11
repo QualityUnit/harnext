@@ -2,7 +2,7 @@ import type { AgentEvent } from '@mariozechner/pi-agent-core';
 
 import type { AgentSession } from '@harnext/core';
 import type { OutputFormat } from '../cli/args.js';
-import { toolStart } from './interactive/render.js';
+import { errorBlock, toolStart } from './interactive/render.js';
 import {
   UsageAccumulator,
   buildAssistantEnvelope,
@@ -42,13 +42,18 @@ export async function runPrintMode(
 async function runTextMode(session: AgentSession, options: PrintModeOptions): Promise<number> {
   let lastAssistantText = '';
   let hasError = false;
+  let errorText = '';
 
   session.subscribe(async (event: AgentEvent) => {
     switch (event.type) {
       case 'message_end':
         if (event.message.role === 'assistant') {
           lastAssistantText = extractText(event.message.content);
-          if ((event.message as { stopReason?: string }).stopReason === 'error') hasError = true;
+          const msg = event.message as { stopReason?: string; errorMessage?: string };
+          if (msg.stopReason === 'error') {
+            hasError = true;
+            if (msg.errorMessage) errorText = msg.errorMessage;
+          }
         }
         break;
       case 'tool_execution_start':
@@ -62,16 +67,26 @@ async function runTextMode(session: AgentSession, options: PrintModeOptions): Pr
 
   try {
     await session.prompt(options.initialMessage);
-  } catch {
+  } catch (err) {
     hasError = true;
+    errorText = err instanceof Error ? err.message : String(err);
   } finally {
     await session.dispose();
   }
 
-  if (session.state.errorMessage) hasError = true;
+  // A run can fail without throwing — the LLM/transport error is surfaced on
+  // state rather than as a thrown exception.
+  if (session.state.errorMessage) {
+    hasError = true;
+    if (!errorText) errorText = session.state.errorMessage;
+  }
 
   if (lastAssistantText) {
     process.stdout.write(lastAssistantText + '\n');
+  }
+  // Errors go to stderr in themed red so stdout stays clean for piping.
+  if (hasError) {
+    process.stderr.write(errorBlock(errorText) + '\n');
   }
 
   return hasError ? 1 : 0;
