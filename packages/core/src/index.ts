@@ -5,6 +5,7 @@ export {
   getAgentDir,
   getHarnextHome,
   getProjectHash,
+  getProjectMemoryDir,
   getProjectSkillsDir,
   getProjectStateDir,
   getSessionsDir,
@@ -325,6 +326,16 @@ export {
 } from './project-context.js';
 
 export {
+  MEMORY_INDEX_FILE,
+  MEMORY_INDEX_MAX_LINES,
+  MEMORY_INDEX_MAX_BYTES,
+  memoryIndexPath,
+  truncateHead,
+  loadMemoryIndex,
+  buildMemorySection,
+} from './memory.js';
+
+export {
   createCompaction,
   compactNow,
   getContextTokens,
@@ -514,6 +525,10 @@ export {
   createExitPlanTool,
   type ExitPlanToolDetails,
   type ExitPlanToolInput,
+  memoryTool,
+  createMemoryTool,
+  type MemoryToolDetails,
+  type MemoryToolInput,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,

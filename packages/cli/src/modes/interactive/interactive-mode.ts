@@ -7,7 +7,9 @@ import {
   compactNow,
   ensureBundledSkills,
   getContextTokens,
+  getProjectMemoryDir,
   listAgentRunLogs,
+  loadMemoryIndex,
   normalizeToolName,
   reconstructMessagesFromRunLog,
   resolveGoalModels,
@@ -157,6 +159,23 @@ const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Clear conversation and start a new session',
     action: async (ctx) => {
       ctx.clearSession();
+      return true;
+    },
+  },
+  {
+    name: '/memory',
+    description: 'Show this project’s memory directory and index',
+    pause: false,
+    action: async (ctx) => {
+      const dir = getProjectMemoryDir(process.cwd());
+      const index = loadMemoryIndex(process.cwd());
+      const lines = [chalk.bold('  Memory'), chalk.dim(`  ${dir}`), ''];
+      if (index) {
+        lines.push(...index.split('\n').map((l) => `  ${l}`));
+      } else {
+        lines.push(chalk.dim('  (empty — the agent records durable facts here as it learns them)'));
+      }
+      ctx.writeAbove(lines.join('\n') + '\n\n');
       return true;
     },
   },

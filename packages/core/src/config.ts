@@ -99,3 +99,14 @@ export function getProjectHash(cwd: string): string {
 export function getProjectStateDir(cwd: string): string {
   return join(getHarnextHome(), 'projects', getProjectHash(cwd));
 }
+
+/**
+ * Per-project memory dir. Scoped by cwd hash and kept under the machine-state
+ * tree (not in the repo), mirroring Claude Code's auto-memory: a different
+ * working directory gets a different memory. The agent manages the markdown
+ * files here via the `memory` tool; `MEMORY.md` is the index loaded into the
+ * system prompt at session start.
+ */
+export function getProjectMemoryDir(cwd: string = process.cwd()): string {
+  return join(getProjectStateDir(cwd), 'memory');
+}
