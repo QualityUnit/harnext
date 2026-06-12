@@ -1,7 +1,7 @@
 import { createInterface } from 'node:readline';
 
-import { getModel, getModels } from '@mariozechner/pi-ai';
-import type { KnownProvider, Model } from '@mariozechner/pi-ai';
+import { getModel, getModels } from '@earendil-works/pi-ai';
+import type { KnownProvider, Model } from '@earendil-works/pi-ai';
 import chalk from 'chalk';
 
 import {

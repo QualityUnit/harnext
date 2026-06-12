@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import { getModels } from '@mariozechner/pi-ai';
-import type { KnownProvider } from '@mariozechner/pi-ai';
+import { getModels } from '@earendil-works/pi-ai';
+import type { KnownProvider } from '@earendil-works/pi-ai';
 
 import { getAgentDir } from './config.js';
 

@@ -5,7 +5,7 @@
  * and dispatches to the correct mode (interactive or print).
  */
 
-import type { ThinkingLevel } from '@mariozechner/pi-agent-core';
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import chalk from 'chalk';
 
 import { parseArgs } from './cli/args.js';

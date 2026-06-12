@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type, type Static } from '@sinclair/typebox';
 import { DEFAULT_MAX_LINES, formatSize } from './truncate.js';
 

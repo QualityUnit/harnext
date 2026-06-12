@@ -1,7 +1,7 @@
-import { Agent } from '@mariozechner/pi-agent-core';
-import type { AgentMessage, ThinkingLevel } from '@mariozechner/pi-agent-core';
-import { getModel, streamSimple } from '@mariozechner/pi-ai';
-import type { KnownProvider, Message, Model } from '@mariozechner/pi-ai';
+import { Agent } from '@earendil-works/pi-agent-core';
+import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core';
+import { getModel, streamSimple } from '@earendil-works/pi-ai';
+import type { KnownProvider, Message, Model } from '@earendil-works/pi-ai';
 
 import { AgentSession } from './agent-session.js';
 import { getProviderConfig } from './auth.js';

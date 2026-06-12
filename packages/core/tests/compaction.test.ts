@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { AgentMessage } from '@mariozechner/pi-agent-core';
-import type { AssistantMessage, ToolResultMessage, UserMessage } from '@mariozechner/pi-ai';
+import type { AgentMessage } from '@earendil-works/pi-agent-core';
+import type { AssistantMessage, ToolResultMessage, UserMessage } from '@earendil-works/pi-ai';
 
 import {
   compactNow,
@@ -219,9 +219,9 @@ describe('serializeConversation', () => {
   });
 });
 
-vi.mock('@mariozechner/pi-ai', async () => {
-  const actual = await vi.importActual<typeof import('@mariozechner/pi-ai')>(
-    '@mariozechner/pi-ai',
+vi.mock('@earendil-works/pi-ai', async () => {
+  const actual = await vi.importActual<typeof import('@earendil-works/pi-ai')>(
+    '@earendil-works/pi-ai',
   );
   return {
     ...actual,
@@ -254,7 +254,7 @@ describe('compactNow', () => {
   });
 
   it('forwards custom instructions to the summarizer', async () => {
-    const piAi = await import('@mariozechner/pi-ai');
+    const piAi = await import('@earendil-works/pi-ai');
     const streamSpy = piAi.streamSimple as unknown as ReturnType<typeof vi.fn>;
     streamSpy.mockClear();
 

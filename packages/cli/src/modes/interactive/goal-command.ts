@@ -1,4 +1,4 @@
-import type { AgentEvent } from '@mariozechner/pi-agent-core';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import { runGoal } from '@harnext/core';
 import type { GoalPhase, GoalPhaseModel, ResolvedGoalModels } from '@harnext/core';
 import chalk from 'chalk';
