@@ -15,6 +15,13 @@ export interface TextareaOptions {
   getTopBorder?: () => string;
   getBottomBorder?: () => string;
   completions?: CompletionItem[];
+  /**
+   * Resolver for `@`-mention path completions. Given the text typed after an
+   * `@` (the query), returns ranked file/directory candidates. Directories are
+   * marked with `hint: 'dir'`. Called synchronously from the keypress handler,
+   * so it must never throw.
+   */
+  getPathCompletions?: (query: string) => CompletionItem[];
   /** Called on shift+tab. Used by interactive mode to cycle modes. */
   onShiftTab?: () => void;
 }
@@ -140,6 +147,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // Index into the current matches list for the inline completion panel.
   // Always clamped to [0, matches.length) at render time.
   let selectedCompletionIdx = 0;
+  // Set when the user presses Esc to dismiss an open `@`-mention panel without
+  // interrupting a run. Cleared as soon as a fresh `@` is typed so the picker
+  // re-arms; suppresses the path panel while set.
+  let panelDismissed = false;
   // Pending modal key capture (captureKey). While set, onKeypress routes
   // every key here instead of the editing logic.
   let keyCapture: { keys: Set<string>; resolve: (key: string) => void } | null = null;
@@ -151,37 +162,131 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // to colorize the matching token wherever it appears in the buffer.
   const commandNames = new Set((options.completions ?? []).map((c) => c.text));
 
-  function getMatchingCompletions(): CompletionItem[] {
-    if (!options.completions || buffer.length === 0) return [];
-    if (!buffer.startsWith('/')) return [];
-    const lower = buffer.toLowerCase();
-    return options.completions.filter((c) => c.text.toLowerCase().startsWith(lower));
+  // The inline panel serves two modes:
+  //   slash — the whole buffer is a "/command" prefix; selection replaces the
+  //           entire buffer (preserves the original behavior).
+  //   path  — an "@token" sits under the caret; selection replaces just that
+  //           token span with the chosen path.
+  // `replaceStart`/`replaceEnd` mark the buffer span a selection overwrites.
+  interface ActiveCompletion {
+    mode: 'slash' | 'path';
+    matches: CompletionItem[];
+    replaceStart: number;
+    replaceEnd: number;
   }
 
-  // Panel rendered below the bottom border when the user is typing a
-  // slash command. Commands sit in a fixed-width column (accent slash,
-  // bright name) with dim descriptions beside them; the selected row gets
-  // an accent chevron + accent name. Up/down navigate, tab/enter complete.
+  // Index of the `@` that begins the mention currently under the caret, or -1.
+  // The `@` must sit at start-of-buffer or immediately after whitespace (so
+  // `email@host` never triggers), with no whitespace between it and the caret.
+  function activeAtIndex(): number {
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const ch = buffer[i];
+      if (ch === '@') {
+        const prev = i === 0 ? '' : buffer[i - 1];
+        return prev === '' || /\s/.test(prev) ? i : -1;
+      }
+      if (/\s/.test(ch)) return -1;
+    }
+    return -1;
+  }
+
+  function getActiveCompletion(): ActiveCompletion | null {
+    // Slash command: whole-buffer prefix match.
+    if (options.completions && buffer.startsWith('/')) {
+      const lower = buffer.toLowerCase();
+      const matches = options.completions.filter((c) => c.text.toLowerCase().startsWith(lower));
+      if (matches.length > 0) {
+        return { mode: 'slash', matches, replaceStart: 0, replaceEnd: buffer.length };
+      }
+      return null;
+    }
+    // `@`-mention path completion under the caret.
+    if (options.getPathCompletions && !panelDismissed) {
+      const at = activeAtIndex();
+      if (at >= 0) {
+        const query = buffer.slice(at + 1, cursorPos);
+        const matches = options.getPathCompletions(query);
+        if (matches.length > 0) {
+          return { mode: 'path', matches, replaceStart: at, replaceEnd: cursorPos };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Apply the highlighted completion. Slash replaces the whole buffer; a path
+  // mention replaces its `@token` span — files gain a trailing space (the
+  // mention is done, panel closes), directories gain a trailing `/` and leave
+  // the panel open so typing narrows into the folder (drill-down).
+  function applyCompletion(active: ActiveCompletion) {
+    const item = active.matches[selectedCompletionIdx] ?? active.matches[0];
+    if (!item) return;
+    if (active.mode === 'slash') {
+      if (item.text === buffer) return;
+      buffer = item.text;
+      cursorPos = buffer.length;
+      selectedCompletionIdx = 0;
+      redraw();
+      return;
+    }
+    const isDir = item.hint === 'dir' || item.text.endsWith('/');
+    const insert = `@${item.text}${isDir ? '' : ' '}`;
+    buffer = buffer.slice(0, active.replaceStart) + insert + buffer.slice(active.replaceEnd);
+    cursorPos = active.replaceStart + insert.length;
+    selectedCompletionIdx = 0;
+    redraw();
+  }
+
+  // Panel rendered below the bottom border when the user is typing a slash
+  // command or an `@`-mention. Only the selected row is accent-colored; the
+  // others are dimmed so the active option stands out. Up/down navigate,
+  // tab/enter complete.
   function renderCompletionsPanel(): string {
-    const matches = getMatchingCompletions();
-    if (matches.length === 0) return '';
+    const active = getActiveCompletion();
+    if (!active) return '';
+    const matches = active.matches;
     if (selectedCompletionIdx >= matches.length) selectedCompletionIdx = 0;
     const ACCENT = `${ESC}38;5;74m`;
-    const BRIGHT = `${ESC}38;5;254m`;
     const DIM = `${ESC}38;5;245m`;
     const RESET = `${ESC}39m`;
     const termW = Math.max(20, process.stdout.columns ?? 80);
+
+    // `@`-mention rows: only the selected row is accent-colored (accent `@` +
+    // bold accent path); the rest are dimmed so it's clear which option is
+    // active. The trailing `/` in a directory's text already marks it as a
+    // folder, so no separate color is needed. Long paths are head-truncated so
+    // a row never wraps (which would break the textarea's row accounting).
+    if (active.mode === 'path') {
+      const budget = Math.max(8, termW - 6);
+      const rows: string[] = [''];
+      for (let i = 0; i < matches.length; i++) {
+        const m = matches[i];
+        const sel = i === selectedCompletionIdx;
+        const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
+        let label = m.text;
+        if (label.length > budget) label = '…' + label.slice(label.length - (budget - 1));
+        const at = sel ? `${ACCENT}@${RESET}` : `${DIM}@${RESET}`;
+        const styled = sel
+          ? `${ACCENT}${ESC}1m${label}${ESC}22m${RESET}`
+          : `${DIM}${label}${RESET}`;
+        rows.push('  ' + chevron + at + styled);
+      }
+      return rows.join('\n');
+    }
+
     const cmdColW = Math.max(...matches.map((m) => m.text.length)) + 2;
     const rows: string[] = [''];
     for (let i = 0; i < matches.length; i++) {
       const m = matches[i];
       const sel = i === selectedCompletionIdx;
       const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
-      const slash = m.text.startsWith('/') ? `${ACCENT}/${RESET}` : '';
+      // Only the selected command is accent-colored (accent `/` + bold name);
+      // the rest are dimmed so the active option stands out.
+      const slash = m.text.startsWith('/') ? `${sel ? ACCENT : DIM}/${RESET}` : '';
       const name = m.text.startsWith('/') ? m.text.slice(1) : m.text;
       const nameStyled = sel
         ? `${ACCENT}${ESC}1m${name}${ESC}22m${RESET}`
-        : `${BRIGHT}${name}${RESET}`;
+        : `${DIM}${name}${RESET}`;
       const pad = ' '.repeat(Math.max(1, cmdColW - m.text.length));
       // Truncate hints so a panel row never wraps (a wrap breaks the
       // textarea's row accounting).
@@ -202,8 +307,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   function drawGhost() {
     if (!hasTTY || buffer.length === 0) return;
-    const matches = getMatchingCompletions();
-    const match = matches[selectedCompletionIdx] ?? matches[0];
+    // Ghost text only makes sense for slash mode, where the whole buffer is the
+    // completion prefix; `@`-path completions are too long to ghost.
+    const active = getActiveCompletion();
+    if (!active || active.mode !== 'slash') return;
+    const match = active.matches[selectedCompletionIdx] ?? active.matches[0];
     if (match && match.text !== buffer) {
       const rest = match.text.slice(buffer.length);
       // Ghost rendering is single-row only: skip it when prompt + buffer +
@@ -390,11 +498,18 @@ export function createTextarea(options: TextareaOptions): Textarea {
       return;
     }
 
-    // Esc interrupts an in-flight agent run. The handler (interactive mode)
-    // decides whether anything is running; here we just surface the intent.
+    // Esc with an open `@`-mention panel dismisses the panel (keeping the typed
+    // text) rather than interrupting. Otherwise Esc interrupts an in-flight run
+    // — the handler (interactive mode) decides whether anything is running.
     // Note: emitKeypressEvents parses arrow keys etc. into their own named
     // keys, so `escape` only fires for a bare Esc press.
     if (key.name === 'escape') {
+      const active = getActiveCompletion();
+      if (active && active.mode === 'path') {
+        panelDismissed = true;
+        redraw();
+        return;
+      }
       emitter.emit('interrupt');
       return;
     }
@@ -408,11 +523,16 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (key.name === 'return') {
-      // If the inline panel is open, submit the selected command verbatim
-      // (so partial input like "/co" submits as "/compact"). Otherwise
-      // submit the buffer as-is.
-      const matches = getMatchingCompletions();
-      const chosen = matches[selectedCompletionIdx];
+      const active = getActiveCompletion();
+      // An open `@`-mention panel: Enter inserts the selected path (and, for a
+      // directory, keeps the panel open to drill in) rather than submitting.
+      if (active && active.mode === 'path') {
+        applyCompletion(active);
+        return;
+      }
+      // A slash panel: submit the selected command verbatim (so partial input
+      // like "/co" submits as "/compact"). Otherwise submit the buffer as-is.
+      const chosen = active ? active.matches[selectedCompletionIdx] : undefined;
       const value = chosen ? chosen.text : buffer.trim();
       // Full erase/redraw: a single-row clear would leave stale wrapped
       // input rows and any open completions panel on screen.
@@ -420,20 +540,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
       buffer = '';
       cursorPos = 0;
       selectedCompletionIdx = 0;
+      panelDismissed = false;
       drawTextarea();
       emitter.emit('submit', value);
       return;
     }
 
-    if (key.name === 'tab' && buffer.length > 0) {
-      const matches = getMatchingCompletions();
-      const match = matches[selectedCompletionIdx] ?? matches[0];
-      if (match && match.text !== buffer) {
-        buffer = match.text;
-        cursorPos = buffer.length;
-        selectedCompletionIdx = 0;
-        redraw();
-      }
+    if (key.name === 'tab') {
+      const active = getActiveCompletion();
+      if (active) applyCompletion(active);
       return;
     }
 
@@ -458,12 +573,13 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (key.name === 'up' || key.name === 'down') {
-      const matches = getMatchingCompletions();
-      if (matches.length > 1) {
+      const active = getActiveCompletion();
+      if (active && active.matches.length > 1) {
+        const len = active.matches.length;
         selectedCompletionIdx =
           key.name === 'up'
-            ? (selectedCompletionIdx - 1 + matches.length) % matches.length
-            : (selectedCompletionIdx + 1) % matches.length;
+            ? (selectedCompletionIdx - 1 + len) % len
+            : (selectedCompletionIdx + 1) % len;
         redraw();
         return;
       }
@@ -484,6 +600,8 @@ export function createTextarea(options: TextareaOptions): Textarea {
     if (key.name === 'backspace') {
       if (cursorPos > 0) {
         const hadSlash = buffer.includes('/');
+        // An '@' anywhere means the path panel may need to open/close/refresh.
+        const hadAt = buffer.includes('@');
         const atEnd = cursorPos === buffer.length;
         // Wrapped before the delete → the input may shrink a row and the
         // borders move up; only a full redraw keeps the frame consistent.
@@ -491,10 +609,9 @@ export function createTextarea(options: TextareaOptions): Textarea {
         buffer = buffer.slice(0, cursorPos - 1) + buffer.slice(cursorPos);
         cursorPos--;
         selectedCompletionIdx = 0;
-        // A '/' anywhere means a command token may need (re)coloring, which an
-        // in-place '\b \b' / mid-row rewrite can't reliably express — fall back
-        // to a full redraw.
-        if (hadSlash || buffer.includes('/') || wrapped) {
+        // A '/' (command recoloring) or '@' (path panel) anywhere can't be
+        // expressed by an in-place '\b \b' / mid-row rewrite — full redraw.
+        if (hadSlash || hadAt || wrapped) {
           redraw();
         } else if (atEnd) {
           clearGhost();
@@ -512,12 +629,14 @@ export function createTextarea(options: TextareaOptions): Textarea {
       buffer = buffer.slice(0, cursorPos) + str + buffer.slice(cursorPos);
       cursorPos++;
       selectedCompletionIdx = 0;
+      // A fresh `@` re-arms a panel the user previously dismissed with Esc.
+      if (str === '@') panelDismissed = false;
       // Wrapped after the insert (>= because at an exact row fill the input
       // grows a forced row) → borders shift down; full redraw required.
       const wrapped = promptVisibleLen + buffer.length >= termWidth();
-      // A '/' anywhere means a command token may need (re)coloring, which an
-      // in-place write can't express — fall back to a full redraw.
-      if (buffer.includes('/') || wrapped) {
+      // A '/' (command recoloring) or '@' (path panel) anywhere can't be
+      // expressed by an in-place write — fall back to a full redraw.
+      if (buffer.includes('/') || buffer.includes('@') || wrapped) {
         redraw();
       } else if (atEnd) {
         clearGhost();

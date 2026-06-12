@@ -22,6 +22,8 @@ import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
 import { runGoalCommand } from './goal-command.js';
 import { runMcpPanel } from './mcp-panel.js';
+import { expandAtMentions } from '../../cli/at-mentions.js';
+import { createPathCompleter } from '../../cli/file-search.js';
 import { createTextarea } from '../../cli/input.js';
 import type { Textarea } from '../../cli/input.js';
 import { pickModel } from '../../cli/model-picker.js';
@@ -672,6 +674,7 @@ export async function runInteractiveMode(
       textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
     },
     completions,
+    getPathCompletions: createPathCompleter(cwd),
   });
 
   session.subscribe(async (event: AgentEvent) => {
@@ -1111,11 +1114,12 @@ export async function runInteractiveMode(
 
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
+        // Echo the raw text; send the @-mention-expanded payload to the agent.
         textarea.writeAbove('\n' + render.userMessage(input) + '\n');
         try {
           session.agent.steer({
             role: 'user',
-            content: input,
+            content: expandAtMentions(input, cwd),
             timestamp: Date.now(),
           });
         } catch (err) {
@@ -1128,7 +1132,8 @@ export async function runInteractiveMode(
         return;
       }
 
-      await runPrompt(input);
+      // Expand @-mentions into the agent payload; keep the raw text as the echo.
+      await runPrompt(expandAtMentions(input, cwd), input);
     });
   });
 
