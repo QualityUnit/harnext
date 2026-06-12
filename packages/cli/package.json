@@ -1,6 +1,6 @@
 {
   "name": "harnext",
-  "version": "1.7.2",
+  "version": "1.7.7",
   "description": "AI coding agent with harness engineering — interactive REPL, MCP support, and a GitHub-issue-driven workflow runner.",
   "type": "module",
   "bin": {
@@ -19,9 +19,9 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.2",
+    "@earendil-works/pi-ai": "^0.74.2",
     "@huggingface/transformers": "^4.2.0",
-    "@mariozechner/pi-agent-core": "^0.73.1",
-    "@mariozechner/pi-ai": "^0.73.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chalk": "^5.4.1",
     "yaml": "^2.5.0"

@@ -1,4 +1,4 @@
-import type { Model } from '@mariozechner/pi-ai';
+import type { Model } from '@earendil-works/pi-ai';
 
 /**
  * NVIDIA NIM (build.nvidia.com) is OpenAI-compatible — same chat-completions

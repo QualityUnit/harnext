@@ -15,6 +15,13 @@ export interface TextareaOptions {
   getTopBorder?: () => string;
   getBottomBorder?: () => string;
   completions?: CompletionItem[];
+  /**
+   * Resolver for `@`-mention path completions. Given the text typed after an
+   * `@` (the query), returns ranked file/directory candidates. Directories are
+   * marked with `hint: 'dir'`. Called synchronously from the keypress handler,
+   * so it must never throw.
+   */
+  getPathCompletions?: (query: string) => CompletionItem[];
   /** Called on shift+tab. Used by interactive mode to cycle modes. */
   onShiftTab?: () => void;
 }
@@ -44,10 +51,44 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
-function countLines(s: string): number {
+function termWidth(): number {
+  return Math.max(1, process.stdout.columns ?? 80);
+}
+
+// Matches a slash-command-shaped token: a leading slash, an initial letter,
+// then word chars / ':' / '-' (covers "/goal" and "/skill:foo"). Exported for
+// reuse by the highlighter and its tests.
+const SLASH_TOKEN = /\/[A-Za-z][\w:-]*/g;
+
+/**
+ * Colorize any recognized slash-command token in `text` so the user can see at
+ * a glance that it is special. Only tokens that *exactly* match a name in
+ * `commandNames` are highlighted; arbitrary "/foo" text is left untouched, and
+ * the token may appear anywhere in the line, not just at the start.
+ *
+ * Inserts zero-width ANSI codes only, so callers that compute terminal columns
+ * from the raw (unhighlighted) string stay correct.
+ */
+export function highlightSlashCommands(text: string, commandNames: ReadonlySet<string>): string {
+  if (commandNames.size === 0 || text.indexOf('/') < 0) return text;
+  const ACCENT = `${ESC}38;5;74m`;
+  const RESET = `${ESC}39m`;
+  return text.replace(SLASH_TOKEN, (token) =>
+    commandNames.has(token) ? `${ACCENT}${token}${RESET}` : token,
+  );
+}
+
+// Number of physical terminal rows `s` occupies when printed starting at
+// column 0 of a `termW`-column terminal: one row per logical line plus the
+// extra rows long lines soft-wrap onto (a narrow terminal wraps the footer,
+// and an undercount here would skew every relative cursor move).
+function screenRows(s: string, termW: number): number {
   if (!s) return 0;
-  const nl = (s.match(/\n/g) || []).length;
-  return nl + (s.endsWith('\n') ? 0 : 1);
+  const lines = s.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  let rows = 0;
+  for (const line of lines) rows += Math.max(1, Math.ceil(stripAnsi(line).length / termW));
+  return rows;
 }
 
 /**
@@ -67,6 +108,11 @@ function countLines(s: string): number {
  * All cursor movement is relative (no DEC scroll region, no absolute row
  * positioning) so the frame stays correct across terminals with inconsistent
  * dimension reporting.
+ *
+ * The buffer is a single logical line. When prompt + buffer exceed the
+ * terminal width it soft-wraps; caret math maps the buffer offset to a
+ * wrapped (row, col) so arrows — including up/down — navigate within the
+ * wrapped input, and editing falls back to full redraws.
  */
 export function createTextarea(options: TextareaOptions): Textarea {
   const emitter = new EventEmitter();
@@ -75,6 +121,12 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const hasTTY = !!stdin.isTTY;
 
   let buffer = '';
+  // Caret index into `buffer` (0..buffer.length). Insertion and deletion
+  // happen at this position; left/right/home/end move it, and up/down move
+  // it by one terminal row when the input soft-wraps. All screen math maps
+  // the offset `promptVisibleLen + cursorPos` to a wrapped (row, col) via
+  // the terminal width.
+  let cursorPos = 0;
   let ghostLen = 0;
   let textareaDrawn = false;
   // Column where the next content append should land. 0 means "fresh row".
@@ -88,12 +140,17 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // (e.g. a spinner line appearing) between draws.
   let lastTopLines = 0;
   let lastBottomLines = 0;
-  // Rows the prompt+buffer occupied at draw time. Long input wraps across
-  // multiple terminal rows; erase must unwind past all of them.
-  let lastInputRows = 1;
+  // Wrapped input row the physical cursor currently sits on (0-based within
+  // the input area). Erase unwinds from here — it must not be derived from
+  // cursorPos, which handlers mutate before the screen catches up.
+  let drawnCaretRow = 0;
   // Index into the current matches list for the inline completion panel.
   // Always clamped to [0, matches.length) at render time.
   let selectedCompletionIdx = 0;
+  // Set when the user presses Esc to dismiss an open `@`-mention panel without
+  // interrupting a run. Cleared as soon as a fresh `@` is typed so the picker
+  // re-arms; suppresses the path panel while set.
+  let panelDismissed = false;
   // Pending modal key capture (captureKey). While set, onKeypress routes
   // every key here instead of the editing logic.
   let keyCapture: { keys: Set<string>; resolve: (key: string) => void } | null = null;
@@ -101,51 +158,135 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
 
-  // Rows occupied / final column of an input line of `len` visible chars,
-  // accounting for terminal wrapping. Terminals defer autowrap: a line that
-  // exactly fills the row leaves the cursor on that row (pending-wrap), so
-  // the math uses len - 1. inputEndCol returns termW (not 0) in that state.
-  function inputRows(len: number): number {
-    const termW = Math.max(1, process.stdout.columns ?? 80);
-    return len === 0 ? 1 : Math.floor((len - 1) / termW) + 1;
+  // Set of recognized slash-command names (e.g. "/goal", "/skill:foo"), used
+  // to colorize the matching token wherever it appears in the buffer.
+  const commandNames = new Set((options.completions ?? []).map((c) => c.text));
+
+  // The inline panel serves two modes:
+  //   slash — the whole buffer is a "/command" prefix; selection replaces the
+  //           entire buffer (preserves the original behavior).
+  //   path  — an "@token" sits under the caret; selection replaces just that
+  //           token span with the chosen path.
+  // `replaceStart`/`replaceEnd` mark the buffer span a selection overwrites.
+  interface ActiveCompletion {
+    mode: 'slash' | 'path';
+    matches: CompletionItem[];
+    replaceStart: number;
+    replaceEnd: number;
   }
 
-  function inputEndCol(len: number): number {
-    const termW = Math.max(1, process.stdout.columns ?? 80);
-    return len === 0 ? 0 : ((len - 1) % termW) + 1;
+  // Index of the `@` that begins the mention currently under the caret, or -1.
+  // The `@` must sit at start-of-buffer or immediately after whitespace (so
+  // `email@host` never triggers), with no whitespace between it and the caret.
+  function activeAtIndex(): number {
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const ch = buffer[i];
+      if (ch === '@') {
+        const prev = i === 0 ? '' : buffer[i - 1];
+        return prev === '' || /\s/.test(prev) ? i : -1;
+      }
+      if (/\s/.test(ch)) return -1;
+    }
+    return -1;
   }
 
-  function getMatchingCompletions(): CompletionItem[] {
-    if (!options.completions || buffer.length === 0) return [];
-    if (!buffer.startsWith('/')) return [];
-    const lower = buffer.toLowerCase();
-    return options.completions.filter((c) => c.text.toLowerCase().startsWith(lower));
+  function getActiveCompletion(): ActiveCompletion | null {
+    // Slash command: whole-buffer prefix match.
+    if (options.completions && buffer.startsWith('/')) {
+      const lower = buffer.toLowerCase();
+      const matches = options.completions.filter((c) => c.text.toLowerCase().startsWith(lower));
+      if (matches.length > 0) {
+        return { mode: 'slash', matches, replaceStart: 0, replaceEnd: buffer.length };
+      }
+      return null;
+    }
+    // `@`-mention path completion under the caret.
+    if (options.getPathCompletions && !panelDismissed) {
+      const at = activeAtIndex();
+      if (at >= 0) {
+        const query = buffer.slice(at + 1, cursorPos);
+        const matches = options.getPathCompletions(query);
+        if (matches.length > 0) {
+          return { mode: 'path', matches, replaceStart: at, replaceEnd: cursorPos };
+        }
+      }
+    }
+    return null;
   }
 
-  // Panel rendered below the bottom border when the user is typing a
-  // slash command. Commands sit in a fixed-width column (accent slash,
-  // bright name) with dim descriptions beside them; the selected row gets
-  // an accent chevron + accent name. Up/down navigate, tab/enter complete.
+  // Apply the highlighted completion. Slash replaces the whole buffer; a path
+  // mention replaces its `@token` span — files gain a trailing space (the
+  // mention is done, panel closes), directories gain a trailing `/` and leave
+  // the panel open so typing narrows into the folder (drill-down).
+  function applyCompletion(active: ActiveCompletion) {
+    const item = active.matches[selectedCompletionIdx] ?? active.matches[0];
+    if (!item) return;
+    if (active.mode === 'slash') {
+      if (item.text === buffer) return;
+      buffer = item.text;
+      cursorPos = buffer.length;
+      selectedCompletionIdx = 0;
+      redraw();
+      return;
+    }
+    const isDir = item.hint === 'dir' || item.text.endsWith('/');
+    const insert = `@${item.text}${isDir ? '' : ' '}`;
+    buffer = buffer.slice(0, active.replaceStart) + insert + buffer.slice(active.replaceEnd);
+    cursorPos = active.replaceStart + insert.length;
+    selectedCompletionIdx = 0;
+    redraw();
+  }
+
+  // Panel rendered below the bottom border when the user is typing a slash
+  // command or an `@`-mention. Only the selected row is accent-colored; the
+  // others are dimmed so the active option stands out. Up/down navigate,
+  // tab/enter complete.
   function renderCompletionsPanel(): string {
-    const matches = getMatchingCompletions();
-    if (matches.length === 0) return '';
+    const active = getActiveCompletion();
+    if (!active) return '';
+    const matches = active.matches;
     if (selectedCompletionIdx >= matches.length) selectedCompletionIdx = 0;
     const ACCENT = `${ESC}38;5;74m`;
-    const BRIGHT = `${ESC}38;5;254m`;
     const DIM = `${ESC}38;5;245m`;
     const RESET = `${ESC}39m`;
     const termW = Math.max(20, process.stdout.columns ?? 80);
+
+    // `@`-mention rows: only the selected row is accent-colored (accent `@` +
+    // bold accent path); the rest are dimmed so it's clear which option is
+    // active. The trailing `/` in a directory's text already marks it as a
+    // folder, so no separate color is needed. Long paths are head-truncated so
+    // a row never wraps (which would break the textarea's row accounting).
+    if (active.mode === 'path') {
+      const budget = Math.max(8, termW - 6);
+      const rows: string[] = [''];
+      for (let i = 0; i < matches.length; i++) {
+        const m = matches[i];
+        const sel = i === selectedCompletionIdx;
+        const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
+        let label = m.text;
+        if (label.length > budget) label = '…' + label.slice(label.length - (budget - 1));
+        const at = sel ? `${ACCENT}@${RESET}` : `${DIM}@${RESET}`;
+        const styled = sel
+          ? `${ACCENT}${ESC}1m${label}${ESC}22m${RESET}`
+          : `${DIM}${label}${RESET}`;
+        rows.push('  ' + chevron + at + styled);
+      }
+      return rows.join('\n');
+    }
+
     const cmdColW = Math.max(...matches.map((m) => m.text.length)) + 2;
     const rows: string[] = [''];
     for (let i = 0; i < matches.length; i++) {
       const m = matches[i];
       const sel = i === selectedCompletionIdx;
       const chevron = sel ? `${ACCENT}❯${RESET} ` : '  ';
-      const slash = m.text.startsWith('/') ? `${ACCENT}/${RESET}` : '';
+      // Only the selected command is accent-colored (accent `/` + bold name);
+      // the rest are dimmed so the active option stands out.
+      const slash = m.text.startsWith('/') ? `${sel ? ACCENT : DIM}/${RESET}` : '';
       const name = m.text.startsWith('/') ? m.text.slice(1) : m.text;
       const nameStyled = sel
         ? `${ACCENT}${ESC}1m${name}${ESC}22m${RESET}`
-        : `${BRIGHT}${name}${RESET}`;
+        : `${DIM}${name}${RESET}`;
       const pad = ' '.repeat(Math.max(1, cmdColW - m.text.length));
       // Truncate hints so a panel row never wraps (a wrap breaks the
       // textarea's row accounting).
@@ -166,10 +307,17 @@ export function createTextarea(options: TextareaOptions): Textarea {
 
   function drawGhost() {
     if (!hasTTY || buffer.length === 0) return;
-    const matches = getMatchingCompletions();
-    const match = matches[selectedCompletionIdx] ?? matches[0];
+    // Ghost text only makes sense for slash mode, where the whole buffer is the
+    // completion prefix; `@`-path completions are too long to ghost.
+    const active = getActiveCompletion();
+    if (!active || active.mode !== 'slash') return;
+    const match = active.matches[selectedCompletionIdx] ?? active.matches[0];
     if (match && match.text !== buffer) {
       const rest = match.text.slice(buffer.length);
+      // Ghost rendering is single-row only: skip it when prompt + buffer +
+      // ghost would reach the terminal edge, where the cursor-left rewind
+      // could not cross the wrap.
+      if (promptVisibleLen + buffer.length + rest.length >= termWidth()) return;
       process.stdout.write(`${ESC}2m${rest}${ESC}22m`);
       process.stdout.write(`${ESC}${rest.length}D`);
       ghostLen = rest.length;
@@ -194,6 +342,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // first so the top border lands on a fresh row.
   function drawTextarea() {
     if (!hasTTY) return;
+    const termW = termWidth();
     process.stdout.write(HIDE_CURSOR);
     if (contentCol > 0) {
       process.stdout.write('\n');
@@ -202,45 +351,89 @@ export function createTextarea(options: TextareaOptions): Textarea {
       const top = options.getTopBorder();
       process.stdout.write(top);
       process.stdout.write('\n');
-      lastTopLines = countLines(top);
+      lastTopLines = screenRows(top, termW);
     } else {
       lastTopLines = 0;
     }
     process.stdout.write(promptStr);
-    process.stdout.write(buffer);
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
     ghostLen = 0;
     drawGhost();
+    const endOffset = promptVisibleLen + buffer.length;
+    // When the input exactly fills its last row the terminal holds the
+    // cursor in deferred-wrap state on that row. Print-and-backspace forces
+    // the next row to exist so the caret can sit at column 0 of it and the
+    // border/erase row accounting stays consistent.
+    if (endOffset > 0 && endOffset % termW === 0) process.stdout.write(' \b');
     if (options.getBottomBorder) {
       const bot = options.getBottomBorder();
       process.stdout.write('\n');
       process.stdout.write(bot);
-      lastBottomLines = countLines(bot);
+      lastBottomLines = screenRows(bot, termW);
       const panel = renderCompletionsPanel();
       if (panel) {
         process.stdout.write('\n');
         process.stdout.write(panel);
-        lastBottomLines += countLines(panel);
+        lastBottomLines += screenRows(panel, termW);
       }
       if (lastBottomLines > 0) process.stdout.write(`${ESC}${lastBottomLines}A`);
     } else {
       lastBottomLines = 0;
     }
-    // Relative-only reposition to end of buffer. The ESC A above already
-    // landed on the last input row (wrapped input ends there), so only the
-    // column needs fixing — modulo the terminal width, since a wrapped
-    // buffer's end column is not promptLen + bufferLen.
+    // Relative-only reposition from the last wrapped input row (where the
+    // cursor sits after the border dance) to the caret's row and column.
+    const lastRow = Math.floor(endOffset / termW);
+    const caretOffset = promptVisibleLen + cursorPos;
+    const caretRow = Math.floor(caretOffset / termW);
     process.stdout.write('\r');
-    const col = inputEndCol(promptVisibleLen + buffer.length);
+    if (lastRow > caretRow) process.stdout.write(`${ESC}${lastRow - caretRow}A`);
+    const col = caretOffset % termW;
     if (col > 0) process.stdout.write(`${ESC}${col}C`);
-    lastInputRows = inputRows(promptVisibleLen + buffer.length);
+    drawnCaretRow = caretRow;
     textareaDrawn = true;
     process.stdout.write(SHOW_CURSOR);
   }
 
-  // Erase the textarea. Assumes cursor is on the *last* input row at buffer
-  // end (wrapped input spans lastInputRows rows). Uses the *last-drawn* line
-  // counts so dynamic shape changes (spinner line appearing/vanishing, input
-  // wrapping) unwind to the correct origin.
+  // Move the caret to `newPos` and emit the relative cursor motion to get
+  // there from the current caret position, crossing soft-wrap row
+  // boundaries when the input spans multiple terminal rows.
+  function moveCaretTo(newPos: number) {
+    const from = promptVisibleLen + cursorPos;
+    const to = promptVisibleLen + newPos;
+    cursorPos = newPos;
+    if (!hasTTY || !textareaDrawn || from === to) return;
+    const termW = termWidth();
+    const fromRow = Math.floor(from / termW);
+    const toRow = Math.floor(to / termW);
+    if (toRow < fromRow) process.stdout.write(`${ESC}${fromRow - toRow}A`);
+    else if (toRow > fromRow) process.stdout.write(`${ESC}${toRow - fromRow}B`);
+    process.stdout.write('\r');
+    const col = to % termW;
+    if (col > 0) process.stdout.write(`${ESC}${col}C`);
+    drawnCaretRow = toRow;
+  }
+
+  // Re-render only the input row in place. Used for mid-buffer edits where
+  // the tail of the line changes — cheaper than a full erase/redraw and
+  // avoids frame flicker. Callers guarantee the input fits a single
+  // terminal row; wrapped input (and any '/' that may need recoloring) always
+  // goes through a full redraw, so highlighting here is a zero-width no-op.
+  function renderInputLine() {
+    if (!hasTTY) return;
+    ghostLen = 0;
+    process.stdout.write('\r');
+    process.stdout.write(`${ESC}K`);
+    process.stdout.write(promptStr);
+    process.stdout.write(highlightSlashCommands(buffer, commandNames));
+    drawGhost();
+    process.stdout.write('\r');
+    const col = promptVisibleLen + cursorPos;
+    if (col > 0) process.stdout.write(`${ESC}${col}C`);
+  }
+
+  // Erase the textarea. Assumes cursor is on the input line at buffer end.
+  // Uses the *last-drawn* top/bottom line counts so dynamic shape changes
+  // (spinner line appearing/vanishing) unwind to the correct origin.
   // After: cursor is positioned where the next content write should land —
   // either at col 1 of a fresh row (contentCol == 0) or at contentCol of
   // the row directly above the textarea (contentCol > 0).
@@ -249,7 +442,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
     process.stdout.write(HIDE_CURSOR);
     clearGhost();
     process.stdout.write('\r');
-    const up = lastTopLines + lastInputRows - 1;
+    // The cursor sits on the wrapped row last placed on screen; unwind past
+    // any wrapped input rows above it plus the top border before clearing
+    // downward. drawnCaretRow (not cursorPos) is authoritative: handlers
+    // mutate cursorPos before the redraw that re-syncs the screen.
+    const up = lastTopLines + drawnCaretRow;
     if (up > 0) process.stdout.write(`${ESC}${up}A`);
     // Clear from top-border-row to end of screen.
     process.stdout.write(`${ESC}J`);
@@ -301,11 +498,18 @@ export function createTextarea(options: TextareaOptions): Textarea {
       return;
     }
 
-    // Esc interrupts an in-flight agent run. The handler (interactive mode)
-    // decides whether anything is running; here we just surface the intent.
+    // Esc with an open `@`-mention panel dismisses the panel (keeping the typed
+    // text) rather than interrupting. Otherwise Esc interrupts an in-flight run
+    // — the handler (interactive mode) decides whether anything is running.
     // Note: emitKeypressEvents parses arrow keys etc. into their own named
     // keys, so `escape` only fires for a bare Esc press.
     if (key.name === 'escape') {
+      const active = getActiveCompletion();
+      if (active && active.mode === 'path') {
+        panelDismissed = true;
+        redraw();
+        return;
+      }
       emitter.emit('interrupt');
       return;
     }
@@ -319,81 +523,127 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (key.name === 'return') {
-      // If the inline panel is open, submit the selected command verbatim
-      // (so partial input like "/co" submits as "/compact"). Otherwise
-      // submit the buffer as-is.
-      const matches = getMatchingCompletions();
-      const chosen = matches[selectedCompletionIdx];
+      const active = getActiveCompletion();
+      // An open `@`-mention panel: Enter inserts the selected path (and, for a
+      // directory, keeps the panel open to drill in) rather than submitting.
+      if (active && active.mode === 'path') {
+        applyCompletion(active);
+        return;
+      }
+      // A slash panel: submit the selected command verbatim (so partial input
+      // like "/co" submits as "/compact"). Otherwise submit the buffer as-is.
+      const chosen = active ? active.matches[selectedCompletionIdx] : undefined;
       const value = chosen ? chosen.text : buffer.trim();
-      clearGhost();
+      // Full erase/redraw: a single-row clear would leave stale wrapped
+      // input rows and any open completions panel on screen.
+      if (textareaDrawn) eraseTextarea();
       buffer = '';
+      cursorPos = 0;
       selectedCompletionIdx = 0;
-      // Full redraw rather than a single-row clear: wrapped input occupied
-      // multiple rows, and all of them must be erased with the frame.
-      redraw();
+      panelDismissed = false;
+      drawTextarea();
       emitter.emit('submit', value);
       return;
     }
 
-    if (key.name === 'tab' && buffer.length > 0) {
-      const matches = getMatchingCompletions();
-      const match = matches[selectedCompletionIdx] ?? matches[0];
-      if (match && match.text !== buffer) {
-        buffer = match.text;
-        selectedCompletionIdx = 0;
-        redraw();
-      }
+    if (key.name === 'tab') {
+      const active = getActiveCompletion();
+      if (active) applyCompletion(active);
+      return;
+    }
+
+    if (key.name === 'left') {
+      if (cursorPos > 0) moveCaretTo(cursorPos - 1);
+      return;
+    }
+
+    if (key.name === 'right') {
+      if (cursorPos < buffer.length) moveCaretTo(cursorPos + 1);
+      return;
+    }
+
+    if (key.name === 'home' || (key.ctrl && key.name === 'a')) {
+      if (cursorPos > 0) moveCaretTo(0);
+      return;
+    }
+
+    if (key.name === 'end' || (key.ctrl && key.name === 'e')) {
+      if (cursorPos < buffer.length) moveCaretTo(buffer.length);
       return;
     }
 
     if (key.name === 'up' || key.name === 'down') {
-      const matches = getMatchingCompletions();
-      if (matches.length > 1) {
+      const active = getActiveCompletion();
+      if (active && active.matches.length > 1) {
+        const len = active.matches.length;
         selectedCompletionIdx =
           key.name === 'up'
-            ? (selectedCompletionIdx - 1 + matches.length) % matches.length
-            : (selectedCompletionIdx + 1) % matches.length;
+            ? (selectedCompletionIdx - 1 + len) % len
+            : (selectedCompletionIdx + 1) % len;
         redraw();
+        return;
+      }
+      // No completions panel: move the caret one terminal row up/down
+      // within a soft-wrapped input, clamping to the buffer edges.
+      const termW = termWidth();
+      const caretOffset = promptVisibleLen + cursorPos;
+      const lastRow = Math.floor((promptVisibleLen + buffer.length) / termW);
+      const row = Math.floor(caretOffset / termW);
+      if (key.name === 'up' && row > 0) {
+        moveCaretTo(Math.max(0, caretOffset - termW - promptVisibleLen));
+      } else if (key.name === 'down' && row < lastRow) {
+        moveCaretTo(Math.min(buffer.length, caretOffset + termW - promptVisibleLen));
       }
       return;
     }
 
     if (key.name === 'backspace') {
-      if (buffer.length > 0) {
-        const wasSlash = buffer.startsWith('/');
-        const oldLen = promptVisibleLen + buffer.length;
-        buffer = buffer.slice(0, -1);
+      if (cursorPos > 0) {
+        const hadSlash = buffer.includes('/');
+        // An '@' anywhere means the path panel may need to open/close/refresh.
+        const hadAt = buffer.includes('@');
+        const atEnd = cursorPos === buffer.length;
+        // Wrapped before the delete → the input may shrink a row and the
+        // borders move up; only a full redraw keeps the frame consistent.
+        const wrapped = promptVisibleLen + buffer.length >= termWidth();
+        buffer = buffer.slice(0, cursorPos - 1) + buffer.slice(cursorPos);
+        cursorPos--;
         selectedCompletionIdx = 0;
-        // Full redraw when the deletion crosses a wrap boundary ('\b' cannot
-        // move up a row) or the row was exactly full (pending-wrap leaves the
-        // cursor on the deleted char, so '\b \b' would erase its neighbor).
-        const termW = Math.max(1, process.stdout.columns ?? 80);
-        const wraps = inputRows(oldLen - 1) !== lastInputRows || oldLen % termW === 0;
-        if (wasSlash || wraps) {
+        // A '/' (command recoloring) or '@' (path panel) anywhere can't be
+        // expressed by an in-place '\b \b' / mid-row rewrite — full redraw.
+        if (hadSlash || hadAt || wrapped) {
           redraw();
-        } else {
+        } else if (atEnd) {
           clearGhost();
           process.stdout.write('\b \b');
           drawGhost();
+        } else {
+          renderInputLine();
         }
       }
       return;
     }
 
     if (str && str.length === 1 && !key.ctrl && !key.meta && str.charCodeAt(0) >= 32) {
-      const wasSlash = buffer.startsWith('/');
-      buffer += str;
+      const atEnd = cursorPos === buffer.length;
+      buffer = buffer.slice(0, cursorPos) + str + buffer.slice(cursorPos);
+      cursorPos++;
       selectedCompletionIdx = 0;
-      // Crossing a wrap boundary needs a full redraw: an in-place write
-      // would wrap the cursor down onto the bottom border instead of
-      // re-flowing the frame to make room for the new input row.
-      const wraps = inputRows(promptVisibleLen + buffer.length) !== lastInputRows;
-      if (wasSlash || buffer.startsWith('/') || wraps) {
+      // A fresh `@` re-arms a panel the user previously dismissed with Esc.
+      if (str === '@') panelDismissed = false;
+      // Wrapped after the insert (>= because at an exact row fill the input
+      // grows a forced row) → borders shift down; full redraw required.
+      const wrapped = promptVisibleLen + buffer.length >= termWidth();
+      // A '/' (command recoloring) or '@' (path panel) anywhere can't be
+      // expressed by an in-place write — fall back to a full redraw.
+      if (buffer.includes('/') || buffer.includes('@') || wrapped) {
         redraw();
-      } else {
+      } else if (atEnd) {
         clearGhost();
         process.stdout.write(str);
         drawGhost();
+      } else {
+        renderInputLine();
       }
     }
   };

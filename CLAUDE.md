@@ -75,8 +75,8 @@ packages/
 ```
 
 **Key dependencies:**
-- `@mariozechner/pi-agent-core` — Stateful agent runtime with event streaming
-- `@mariozechner/pi-ai` — Multi-provider LLM API (Anthropic, OpenAI, Google, 25+ providers)
+- `@earendil-works/pi-agent-core` — Stateful agent runtime with event streaming
+- `@earendil-works/pi-ai` — Multi-provider LLM API (Anthropic, OpenAI, Google, 25+ providers)
 - `@sinclair/typebox` — Tool parameter schemas
 - `chalk` — Terminal styling (CLI only)
 

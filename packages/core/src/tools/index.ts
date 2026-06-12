@@ -48,7 +48,7 @@ export {
   type TruncationResult,
 } from './truncate.js';
 
-import type { AgentTool } from '@mariozechner/pi-agent-core';
+import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { bashTool, createBashTool } from './bash.js';
 import { editTool, createEditTool } from './edit.js';
 import { exitPlanTool, createExitPlanTool } from './exit-plan.js';

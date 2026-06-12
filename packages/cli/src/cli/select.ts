@@ -14,6 +14,30 @@ export interface SelectOptions {
 }
 
 /**
+ * Fuzzy-match a pattern against a target string. Each character in `pattern`
+ * must appear in `target` in order (but not necessarily contiguously). The
+ * match is anchored: the first pattern char must match the first target char,
+ * and after that the algorithm prefers consecutive matches (lower gap penalty).
+ *
+ * Returns a score ≥ 0 when matched, or -1 when unmatched. Lower scores are
+ * better (fewer gaps = more consecutive).
+ */
+function fuzzyScore(pattern: string, target: string): number {
+  let pi = 0;
+  let score = 0;
+  let prevMatch = -2;
+  for (let ti = 0; ti < target.length && pi < pattern.length; ti++) {
+    if (target[ti] === pattern[pi]) {
+      // Penalty for gaps between matches (consecutive = no penalty)
+      if (ti > prevMatch + 1) score += ti - prevMatch - 1;
+      prevMatch = ti;
+      pi++;
+    }
+  }
+  return pi === pattern.length ? score : -1;
+}
+
+/**
  * Interactive select box with arrow-key navigation and type-ahead filtering.
  *
  * - Up/Down arrows to navigate
@@ -52,7 +76,20 @@ export async function select<T>(
       filtered = items;
     } else {
       const lower = filter.toLowerCase();
-      filtered = items.filter((i) => i.label.toLowerCase().includes(lower));
+      // Primary: fuzzy match on label. Fallback: substring match on hint.
+      const scored = items.map((item) => {
+        const labelScore = fuzzyScore(lower, item.label.toLowerCase());
+        if (labelScore >= 0) return { item, score: labelScore };
+        // Fallback: substring match on hint (if present)
+        if (item.hint && item.hint.toLowerCase().includes(lower)) {
+          return { item, score: 1000 }; // hint matches rank below label matches
+        }
+        return { item, score: -1 };
+      });
+      filtered = scored
+        .filter((s) => s.score >= 0)
+        .sort((a, b) => a.score - b.score)
+        .map((s) => s.item);
     }
     cursor = Math.min(cursor, Math.max(0, filtered.length - 1));
   }
@@ -63,8 +100,12 @@ export async function select<T>(
     const lines: string[] = [];
     lines.push(chalk.bold(`  ${title}`));
 
+    // Always show the search bar with a blinking cursor so the user knows
+    // they can start typing immediately — no need to "focus" anything.
     if (filter) {
-      lines.push(chalk.dim(`  search: `) + chalk.cyan(filter));
+      lines.push(chalk.dim('  search: ') + chalk.cyan(filter) + '█');
+    } else {
+      lines.push(chalk.dim('  search: ') + '█  ' + chalk.dim.italic('type to search…'));
     }
 
     lines.push('');
@@ -97,8 +138,7 @@ export async function select<T>(
 
     lines.push('');
     lines.push(
-      chalk.dim('  ↑↓ navigate  ⏎ select  esc cancel') +
-        (items.length > pageSize ? chalk.dim('  type to filter') : ''),
+      chalk.dim('  ↑↓ navigate  ⏎ select  esc cancel  type to search'),
     );
 
     for (const line of lines) {

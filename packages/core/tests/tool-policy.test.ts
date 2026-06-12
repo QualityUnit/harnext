@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BeforeToolCallContext } from '@mariozechner/pi-agent-core';
+import type { BeforeToolCallContext } from '@earendil-works/pi-agent-core';
 
 import {
   canonicalToolName,

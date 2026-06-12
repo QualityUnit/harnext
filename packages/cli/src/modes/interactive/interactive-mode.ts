@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 
-import type { AgentEvent } from '@mariozechner/pi-agent-core';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
   classifyInteractive,
   compactNow,
@@ -22,6 +22,8 @@ import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
 import { runGoalCommand } from './goal-command.js';
 import { runMcpPanel } from './mcp-panel.js';
+import { expandAtMentions } from '../../cli/at-mentions.js';
+import { createPathCompleter } from '../../cli/file-search.js';
 import { createTextarea } from '../../cli/input.js';
 import type { Textarea } from '../../cli/input.js';
 import { pickModel } from '../../cli/model-picker.js';
@@ -573,7 +575,9 @@ export async function runInteractiveMode(
 
   // Print the static header before the textarea — it stays above content
   // and scrolls out naturally as the session grows.
-  process.stdout.write(render.header());
+  process.stdout.write(
+    render.header({ provider: activeProvider, model: activeModel, cwd }),
+  );
 
   const completions = [
     ...SLASH_COMMANDS.map((cmd) => ({
@@ -670,6 +674,7 @@ export async function runInteractiveMode(
       textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
     },
     completions,
+    getPathCompletions: createPathCompleter(cwd),
   });
 
   session.subscribe(async (event: AgentEvent) => {
@@ -703,15 +708,25 @@ export async function runInteractiveMode(
       }
 
       case 'message_end':
-        if (event.message.role === 'assistant' && currentText.length > 0) {
-          const tail = markdown ? markdown.flush() : '';
-          const out = processAsstChunk(tail);
-          if (out.length > 0) textarea.writeAbove(out);
-          // End the block on a fresh row (column 0). Buffered trailing
-          // newlines are discarded — the next card's top_pad provides the
-          // separator, so extra LLM newlines would just pile on as blank rows.
-          if (!asstAtLineStart) textarea.writeAbove('\n');
-          asstPendingNewlines = '';
+        if (event.message.role === 'assistant') {
+          if (currentText.length > 0) {
+            const tail = markdown ? markdown.flush() : '';
+            const out = processAsstChunk(tail);
+            if (out.length > 0) textarea.writeAbove(out);
+            // End the block on a fresh row (column 0). Buffered trailing
+            // newlines are discarded — the next card's top_pad provides the
+            // separator, so extra LLM newlines would just pile on as blank rows.
+            if (!asstAtLineStart) textarea.writeAbove('\n');
+            asstPendingNewlines = '';
+          }
+          // A provider/transport failure ends the turn with stopReason
+          // "error" instead of throwing, so the runPrompt catch never fires.
+          // Surface it here in themed red so it isn't silently swallowed.
+          const msg = event.message as { stopReason?: string; errorMessage?: string };
+          if (msg.stopReason === 'error') {
+            const detail = (msg.errorMessage ?? '').trim() || session.state.errorMessage || '';
+            textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
+          }
         }
         markdown = null;
         break;
@@ -947,11 +962,11 @@ export async function runInteractiveMode(
             : text;
         await session.prompt(payload);
       } catch (error) {
-        textarea.writeAbove(
-          chalk.red('  Error: ') +
-            (error instanceof Error ? error.message : String(error)) +
-            '\n\n',
-        );
+        // Most provider failures surface as a stopReason "error" message
+        // (handled above); this catches the rarer case where prompt() itself
+        // throws (e.g. a transport error before the stream opens).
+        const detail = error instanceof Error ? error.message : String(error);
+        textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
       } finally {
         agentBusy = false;
         stopSpinner();
@@ -999,7 +1014,9 @@ export async function runInteractiveMode(
         // Clear the visible screen (ESC[2J) and move cursor home (ESC[H),
         // then reprint the static header so the session starts fresh.
         process.stdout.write('\x1B[2J\x1B[H');
-        process.stdout.write(render.header());
+        process.stdout.write(
+          render.header({ provider: activeProvider, model: activeModel, cwd }),
+        );
       },
       ensureBundledSkills,
       invokeSkill,
@@ -1097,11 +1114,12 @@ export async function runInteractiveMode(
 
       // Mid-run submit → queue as steering rather than starting a new prompt.
       if (agentBusy) {
+        // Echo the raw text; send the @-mention-expanded payload to the agent.
         textarea.writeAbove('\n' + render.userMessage(input) + '\n');
         try {
           session.agent.steer({
             role: 'user',
-            content: input,
+            content: expandAtMentions(input, cwd),
             timestamp: Date.now(),
           });
         } catch (err) {
@@ -1114,7 +1132,8 @@ export async function runInteractiveMode(
         return;
       }
 
-      await runPrompt(input);
+      // Expand @-mentions into the agent payload; keep the raw text as the echo.
+      await runPrompt(expandAtMentions(input, cwd), input);
     });
   });
 
