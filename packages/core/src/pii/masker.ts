@@ -1,6 +1,5 @@
 import { join } from 'node:path';
 
-import { env, pipeline } from '@huggingface/transformers';
 import type { TokenClassificationPipeline } from '@huggingface/transformers';
 
 import { getHarnextHome } from '../config.js';
@@ -76,11 +75,15 @@ class PiiMaskerImpl implements PiiMasker {
   }
 
   private async load(): Promise<void> {
-    // Setting cacheDir is process-global in transformers.js. That's fine —
-    // there's only ever one masker per harnext process.
-    env.cacheDir = this.opts.cacheDir;
     this.opts.onProgress?.({ type: 'loading' });
     try {
+      // Imported lazily so requiring @harnext/core never loads onnxruntime's
+      // native binding — it's missing on some platforms (e.g. macOS x64) and
+      // would crash the whole CLI at startup even when masking is unused.
+      const { env, pipeline } = await import('@huggingface/transformers');
+      // Setting cacheDir is process-global in transformers.js. That's fine —
+      // there's only ever one masker per harnext process.
+      env.cacheDir = this.opts.cacheDir;
       this.nlp = (await pipeline('token-classification', this.opts.modelId, {
         dtype: this.opts.dtype,
         progress_callback: (event: unknown) => this.handleProgress(event),
