@@ -17,7 +17,7 @@ export interface CompactionSettings {
  */
 export interface CloudSyncSettings {
   enabled: boolean;
-  /** Base URL of the context engine ingest API, e.g. https://engine.example.com */
+  /** Base URL of the context engine ingest API, e.g. https://app.harnext.dev/api */
   endpoint?: string;
   /** Harness name reported with each session (recommended: "harnext"). */
   harness: string;

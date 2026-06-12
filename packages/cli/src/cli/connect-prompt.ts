@@ -28,9 +28,28 @@ async function readLine(prompt: string): Promise<string> {
   });
 }
 
-function normalizeEndpoint(raw: string): string {
+/** The official hosted context engine — used when the user doesn't pick one. */
+export const DEFAULT_ENDPOINT = 'https://app.harnext.dev';
+
+/**
+ * Turn whatever the user typed into the engine's API base URL: default the
+ * scheme to https, drop any trailing slash, and — when they gave a bare origin
+ * (no path) — point at the engine's `/api` base, where the device-flow and
+ * ingest routes live (e.g. `app.harnext.dev` → `https://app.harnext.dev/api`).
+ * An explicit path is left untouched so self-hosted engines can mount elsewhere.
+ */
+export function normalizeEndpoint(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
-  if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`;
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  try {
+    const parsed = new URL(url);
+    if (parsed.pathname === '' || parsed.pathname === '/') {
+      return `${parsed.protocol}//${parsed.host}/api`;
+    }
+  } catch {
+    // Unparseable input — fall through and let the connect attempt surface it.
+  }
   return url;
 }
 
@@ -44,13 +63,8 @@ export async function runConnectCommand(opts: ConnectOptions): Promise<number> {
   const configured = loadSettings(opts.cwd).cloudSync.endpoint;
   let endpoint = normalizeEndpoint(opts.endpoint ?? configured ?? '');
   if (!endpoint) {
-    endpoint = normalizeEndpoint(
-      await readLine(chalk.cyan('  Context engine URL (e.g. https://engine.example.com): ')),
-    );
-  }
-  if (!endpoint) {
-    console.error(chalk.red('  A context engine URL is required.'));
-    return 1;
+    const entered = await readLine(chalk.cyan(`  Context engine URL [${DEFAULT_ENDPOINT}]: `));
+    endpoint = normalizeEndpoint(entered || DEFAULT_ENDPOINT);
   }
 
   console.log();
