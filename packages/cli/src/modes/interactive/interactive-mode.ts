@@ -20,6 +20,7 @@ import type { AgentRunLogSummary, EnsureResult, PermissionMode } from '@harnext/
 import chalk from 'chalk';
 
 import { runSetGoalConfigCommand } from '../../cli/goal-config-prompt.js';
+import { runConnectCommand, runDisconnectCommand } from '../../cli/connect-prompt.js';
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
 import { runGoalCommand } from './goal-command.js';
@@ -229,6 +230,20 @@ const SLASH_COMMANDS: SlashCommand[] = [
         cliPath: process.argv[1] ?? '',
         nodePath: process.execPath,
       });
+      return true;
+    },
+  },
+  {
+    name: '/connect',
+    description: 'Connect this machine to a context engine to push conversations',
+    acceptsArgs: true,
+    action: async (_ctx, args) => {
+      const arg = args.trim();
+      if (arg === '--disable' || arg === '--disconnect') {
+        runDisconnectCommand();
+        return true;
+      }
+      await runConnectCommand({ cwd: process.cwd(), endpoint: arg || undefined });
       return true;
     },
   },
