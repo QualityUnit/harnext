@@ -9,8 +9,10 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import chalk from 'chalk';
 
 import { parseArgs } from './cli/args.js';
+import { runConnectCommand, runDisconnectCommand } from './cli/connect-prompt.js';
 import { runConnectGithubCommand } from './cli/github-prompt.js';
 import { ensureAuth } from './cli/onboarding.js';
+import { attachConversationUploader } from './cloud/uploader.js';
 import {
   appendHeartbeatTick,
   createAgentSession,
@@ -88,6 +90,13 @@ export async function main(argv: string[]): Promise<void> {
     process.exit(exitCode);
   }
 
+  if (args.mode === 'connect') {
+    const exitCode = args.connectDisable
+      ? runDisconnectCommand()
+      : await runConnectCommand({ cwd: args.cwd, endpoint: args.connectEndpoint });
+    process.exit(exitCode);
+  }
+
   if (args.mode === 'setup') {
     await runConnectGithubCommand({
       cwd: args.cwd,
@@ -134,14 +143,25 @@ export async function main(argv: string[]): Promise<void> {
       args.inputFormat === 'stream-json'
         ? await readStreamJsonPrompt()
         : args.messages.join(' ');
+    // Stream this conversation to the context engine (no-op unless connected).
+    const uploader = attachConversationUploader(session, {
+      cwd: args.cwd,
+      permissionMode: args.permissionMode,
+      title: initialMessage,
+    });
     const exitCode = await runPrintMode(session, {
       initialMessage,
       outputFormat: args.outputFormat ?? 'text',
       cwd: args.cwd,
       permissionMode: args.permissionMode,
     });
+    await uploader.finalize();
     process.exit(exitCode);
   } else {
+    const uploader = attachConversationUploader(session, {
+      cwd: args.cwd,
+      permissionMode,
+    });
     try {
       await runInteractiveMode(session, {
         provider,
@@ -149,6 +169,7 @@ export async function main(argv: string[]): Promise<void> {
         initialMode: permissionMode,
       });
     } finally {
+      await uploader.finalize();
       await session.dispose();
     }
   }
@@ -236,7 +257,12 @@ async function runHeartbeat(
       thinkingLevel,
       quiet: true,
     });
-    return await runHeartbeatMode(session, { cwd, name, prompt: config.prompt });
+    const uploader = attachConversationUploader(session, { cwd, title: config.prompt });
+    try {
+      return await runHeartbeatMode(session, { cwd, name, prompt: config.prompt });
+    } finally {
+      await uploader.finalize();
+    }
   } catch (err) {
     appendHeartbeatTick(cwd, name, {
       ts: new Date().toISOString(),

@@ -8,7 +8,8 @@ export type Mode =
   | 'runner'
   | 'setup'
   | 'status'
-  | 'upgrade';
+  | 'upgrade'
+  | 'connect';
 export type McpVerb = 'add' | 'remove' | 'list' | 'reconnect';
 export type McpScopeArg = 'user' | 'project';
 export type RunnerVerb = 'status' | 'logs';
@@ -69,6 +70,10 @@ export interface Args {
   runnerLogLines?: number;
   /** `harnext runner logs --no-follow` — dump and exit instead of `tail -f`. */
   runnerLogNoFollow?: boolean;
+  /** `harnext connect --endpoint <url>` — context engine to link this machine to. */
+  connectEndpoint?: string;
+  /** `harnext connect --disable` — turn cloud sync off (keep the stored login). */
+  connectDisable?: boolean;
 }
 
 /**
@@ -112,6 +117,10 @@ export function parseArgs(argv: string[]): Args {
 
   if (argv[0] === 'runner') {
     return parseRunnerArgs(argv.slice(1), args);
+  }
+
+  if (argv[0] === 'connect') {
+    return parseConnectArgs(argv.slice(1), args);
   }
 
   let i = 0;
@@ -339,6 +348,56 @@ start, stop, or reconfigure the daemon.
 `);
 }
 
+function parseConnectArgs(rest: string[], args: Args): Args {
+  args.mode = 'connect';
+  let i = 0;
+  while (i < rest.length) {
+    const arg = rest[i];
+    switch (arg) {
+      case '--endpoint':
+      case '--url':
+        args.connectEndpoint = rest[++i];
+        break;
+      case '--disable':
+      case '--disconnect':
+        args.connectDisable = true;
+        break;
+      case '--cwd':
+        args.cwd = rest[++i] ?? args.cwd;
+        break;
+      case '-h':
+      case '--help':
+        printConnectHelp();
+        process.exit(0);
+        break;
+      default:
+        if (!arg.startsWith('-') && !args.connectEndpoint) args.connectEndpoint = arg;
+        break;
+    }
+    i++;
+  }
+  return args;
+}
+
+export function printConnectHelp(): void {
+  console.log(`
+harnext connect - Link this machine to a context engine (push conversations)
+
+Usage:
+  harnext connect [--endpoint <url>]
+  harnext connect --disable
+
+Runs the OAuth device flow: prints a URL to approve in the engine's dashboard,
+waits for approval, then stores the tokens and turns on cloud sync. Every
+conversation is then streamed to the engine, turn by turn.
+
+Options:
+  --endpoint, --url <url>  Context engine base URL (else uses the saved one or prompts)
+  --disable                Turn cloud sync off (keeps the stored login)
+  --cwd <directory>        Working directory [default: .]
+`);
+}
+
 function parseSetupArgs(rest: string[], args: Args): Args {
   args.mode = 'setup';
   let i = 0;
@@ -489,5 +548,6 @@ Subcommands:
   upgrade, update          Install the latest harnext from npm
   mcp                      Manage MCP servers (run \`harnext mcp --help\`)
   runner                   Inspect the self-hosted runner (run \`harnext runner --help\`)
+  connect                  Link a context engine to push conversations (run \`harnext connect --help\`)
 `);
 }

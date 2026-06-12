@@ -293,6 +293,27 @@ export {
   type CreateAgentSessionResult,
 } from './sdk.js';
 
+export {
+  loadCloudTokens,
+  saveCloudTokens,
+  clearCloudTokens,
+  discoverClientId,
+  requestDeviceCode,
+  pollForToken,
+  refreshTokens,
+  CloudAuthError,
+  CloudIngestClient,
+  type CloudTokens,
+  type DeviceCodeResponse,
+  type TokenResponse,
+  type PollOptions,
+  type AgentSessionMeta,
+  type AgentEventInput,
+  type OpenSessionResult,
+  type AppendResult,
+  type FinalizeInput,
+} from './cloud/index.js';
+
 export { buildSystemPrompt, type BuildSystemPromptOptions } from './system-prompt.js';
 
 export {
@@ -348,9 +369,12 @@ export {
 
 export {
   loadSettings,
+  setCloudSyncSettings,
   DEFAULT_SETTINGS,
   DEFAULT_COMPACTION_SETTINGS,
+  DEFAULT_CLOUD_SYNC_SETTINGS,
   type CompactionSettings,
+  type CloudSyncSettings,
   type HarnextSettings,
 } from './settings.js';
 

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { CONFIG_DIR_NAME, getAgentDir } from './config.js';
 
@@ -9,8 +9,23 @@ export interface CompactionSettings {
   keepRecentTokens: number;
 }
 
+/**
+ * Push each conversation with the harness to a context engine (the harnext
+ * cloud backend). Off by default; `harnext connect` runs the device-flow login
+ * and flips `enabled` on while storing the endpoint here. The OAuth tokens
+ * themselves live separately (see `cloud/tokens.ts`), never in settings.
+ */
+export interface CloudSyncSettings {
+  enabled: boolean;
+  /** Base URL of the context engine ingest API, e.g. https://engine.example.com */
+  endpoint?: string;
+  /** Harness name reported with each session (recommended: "harnext"). */
+  harness: string;
+}
+
 export interface HarnextSettings {
   compaction: CompactionSettings;
+  cloudSync: CloudSyncSettings;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
@@ -19,12 +34,19 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
   keepRecentTokens: 20000,
 };
 
+export const DEFAULT_CLOUD_SYNC_SETTINGS: CloudSyncSettings = {
+  enabled: false,
+  harness: 'harnext',
+};
+
 export const DEFAULT_SETTINGS: HarnextSettings = {
   compaction: DEFAULT_COMPACTION_SETTINGS,
+  cloudSync: DEFAULT_CLOUD_SYNC_SETTINGS,
 };
 
 interface PartialFileSettings {
   compaction?: Partial<CompactionSettings>;
+  cloudSync?: Partial<CloudSyncSettings>;
 }
 
 function readJsonIfExists(path: string): PartialFileSettings | undefined {
@@ -65,6 +87,24 @@ function mergeCompaction(
   };
 }
 
+function mergeCloudSync(
+  base: CloudSyncSettings,
+  override: Partial<CloudSyncSettings> | undefined,
+): CloudSyncSettings {
+  if (!override) return base;
+  return {
+    enabled: typeof override.enabled === 'boolean' ? override.enabled : base.enabled,
+    endpoint:
+      typeof override.endpoint === 'string' && override.endpoint.trim().length > 0
+        ? override.endpoint.trim()
+        : base.endpoint,
+    harness:
+      typeof override.harness === 'string' && override.harness.trim().length > 0
+        ? override.harness.trim()
+        : base.harness,
+  };
+}
+
 /**
  * Load harnext settings, merging defaults < user-wide < project-local.
  *
@@ -80,5 +120,22 @@ export function loadSettings(cwd: string = process.cwd()): HarnextSettings {
   let compaction = mergeCompaction(DEFAULT_COMPACTION_SETTINGS, user?.compaction);
   compaction = mergeCompaction(compaction, project?.compaction);
 
-  return { compaction };
+  let cloudSync = mergeCloudSync(DEFAULT_CLOUD_SYNC_SETTINGS, user?.cloudSync);
+  cloudSync = mergeCloudSync(cloudSync, project?.cloudSync);
+
+  return { compaction, cloudSync };
+}
+
+/**
+ * Persist a partial `cloudSync` patch into the user-wide settings file,
+ * preserving every other field already on disk. Used by `harnext connect` to
+ * enable sync and record the endpoint after a successful login.
+ */
+export function setCloudSyncSettings(patch: Partial<CloudSyncSettings>): void {
+  const path = getUserSettingsPath();
+  const raw = readJsonIfExists(path) ?? {};
+  const next = { ...raw, cloudSync: { ...(raw.cloudSync ?? {}), ...patch } };
+  const dir = dirname(path);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(path, JSON.stringify(next, null, 2) + '\n');
 }
