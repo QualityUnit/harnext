@@ -11,7 +11,7 @@
  * and retried on the next flush; nothing is thrown back into the session.
  */
 
-import type { AgentEvent } from '@mariozechner/pi-agent-core';
+import type { AgentEvent } from '@earendil-works/pi-agent-core';
 
 import {
   CloudIngestClient,
