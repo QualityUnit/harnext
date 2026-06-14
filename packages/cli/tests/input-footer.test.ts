@@ -18,3 +18,14 @@ describe('inputFooter background-jobs chip', () => {
     expect(stripAnsi(inputFooter(base))).not.toContain('⚙');
   });
 });
+
+describe('inputFooter attached-images chip', () => {
+  it('shows a 🖼 chip with the count when images are attached', () => {
+    expect(stripAnsi(inputFooter({ ...base, attachedImages: 2 }))).toContain('🖼 2');
+  });
+
+  it('omits the chip when there are no attached images', () => {
+    expect(stripAnsi(inputFooter({ ...base, attachedImages: 0 }))).not.toContain('🖼');
+    expect(stripAnsi(inputFooter(base))).not.toContain('🖼');
+  });
+});

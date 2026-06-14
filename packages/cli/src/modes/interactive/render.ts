@@ -896,6 +896,8 @@ export interface StatusBarOptions {
   backgroundJobs?: number;
   /** When true, the background-jobs chip is focused (↓ pressed) and highlighted. */
   backgroundJobsFocused?: boolean;
+  /** Number of Ctrl+V-pasted images queued for the next prompt; shows a 🖼 chip. */
+  attachedImages?: number;
 }
 
 const CTX_BAR_CELLS = 6;
@@ -948,6 +950,12 @@ export function inputFooter(opts: StatusBarOptions): string {
     }
   }
 
+  // Attached-images chip (🖼 N) for Ctrl+V-pasted images queued for the prompt.
+  const imgN = opts.attachedImages ?? 0;
+  const imgLabel = `🖼 ${imgN}`;
+  const imgRendered = imgN > 0 ? ' ' + c.magenta(imgLabel) : '';
+  const imgW = imgN > 0 ? 1 + imgLabel.length + 1 : 0; // ' ' + label (+1: 🖼 is wide)
+
   // Right: tokens · cost · provider/model · ctx meter.
   const segs: { rendered: string; width: number }[] = [];
   if (opts.inputTokens != null && opts.outputTokens != null) {
@@ -984,25 +992,33 @@ export function inputFooter(opts: StatusBarOptions): string {
     return { rendered, width };
   };
 
-  // Fixed chrome: pill + space + git + jobs + min 1-space gap before the right
-  // side. Drop right-side segments from the left inward until the bar fits.
+  // Fixed chrome: pill + space + git + jobs + images + min 1-space gap before
+  // the right side. Drop right-side segments from the left inward until it fits.
+  const chromeW = pillW + 1 + gitW + jobsW + imgW;
   let right = joinSegs();
-  while (pillW + 1 + gitW + jobsW + 1 + right.width > w && segs.length > 1) {
+  while (chromeW + 1 + right.width > w && segs.length > 1) {
     segs.shift();
     right = joinSegs();
   }
 
   // cwd gets whatever is left, truncated from the front.
-  const leftBudget = Math.max(0, w - pillW - 1 - gitW - jobsW - right.width - 1);
+  const leftBudget = Math.max(0, w - chromeW - right.width - 1);
   let cwdStr = shortCwd;
   if (cwdStr.length > leftBudget) {
     cwdStr = leftBudget <= 1 ? cwdStr.slice(0, leftBudget) : '…' + cwdStr.slice(-(leftBudget - 1));
   }
-  const leftW = pillW + 1 + cwdStr.length + gitW + jobsW;
+  const leftW = pillW + 1 + cwdStr.length + gitW + jobsW + imgW;
   const gap = Math.max(1, w - leftW - right.width);
 
   const infoLine =
-    pill + ' ' + c.dim(cwdStr) + gitRendered + jobsRendered + ' '.repeat(gap) + right.rendered;
+    pill +
+    ' ' +
+    c.dim(cwdStr) +
+    gitRendered +
+    jobsRendered +
+    imgRendered +
+    ' '.repeat(gap) +
+    right.rendered;
   return separator() + '\n' + infoLine;
 }
 

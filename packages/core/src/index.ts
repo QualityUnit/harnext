@@ -288,6 +288,14 @@ export {
 } from './background-shells.js';
 
 export {
+  resolveImage,
+  resolveImages,
+  MAX_IMAGE_BYTES,
+  type ImageContent,
+  type ImageInput,
+} from './images.js';
+
+export {
   AgentSession,
   type AgentSessionConfig,
   type AgentSessionEventListener,
