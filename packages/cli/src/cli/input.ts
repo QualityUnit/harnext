@@ -40,6 +40,12 @@ export interface TextareaOptions {
    * mode opens the background-jobs viewer here.
    */
   onFooterActivate?: () => void;
+  /**
+   * Called on Ctrl+V. Returns text to insert at the cursor, or null when the
+   * paste was handled out of band (e.g. a clipboard image was attached). Async
+   * — used by interactive mode to grab a clipboard image, else paste text.
+   */
+  onPaste?: () => Promise<string | null>;
 }
 
 export interface Textarea {
@@ -617,6 +623,26 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (!textareaDrawn) drawTextarea();
+
+    // Ctrl+V: hand off to the paste handler (grab a clipboard image, or return
+    // text to insert here). Runs async; we redraw when it resolves.
+    if (key.ctrl && key.name === 'v' && options.onPaste) {
+      void options
+        .onPaste()
+        .then((text) => {
+          if (text) {
+            // The buffer is a single logical line; flatten newlines so the
+            // wrapped-caret math stays correct.
+            const clean = text.replace(/\r?\n/g, ' ');
+            buffer = buffer.slice(0, cursorPos) + clean + buffer.slice(cursorPos);
+            cursorPos += clean.length;
+            selectedCompletionIdx = 0;
+          }
+          redraw();
+        })
+        .catch(() => {});
+      return;
+    }
 
     if (key.shift && key.name === 'tab' && options.onShiftTab) {
       options.onShiftTab();

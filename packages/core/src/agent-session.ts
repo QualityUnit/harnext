@@ -9,6 +9,8 @@ import type {
 } from '@earendil-works/pi-agent-core';
 import type { Model } from '@earendil-works/pi-ai';
 
+import { resolveImages, type ImageInput } from './images.js';
+
 import type { BackgroundShellManager } from './background-shells.js';
 import type { CommandExecutor } from './command-executor.js';
 import type { McpServerManager } from './mcp-server-manager.js';
@@ -84,8 +86,16 @@ export class AgentSession {
     return this.agent.subscribe(listener);
   }
 
-  async prompt(text: string): Promise<void> {
-    await this.agent.prompt(text);
+  async prompt(text: string, images?: ImageInput[]): Promise<void> {
+    // Resolve URLs / data-URIs / file paths down to base64, then hand them to
+    // pi-agent-core's prompt(input, images) overload — it attaches the image
+    // blocks to the user message and the provider transforms emit them per-API.
+    const resolved = images && images.length > 0 ? await resolveImages(images) : undefined;
+    if (resolved && resolved.length > 0) {
+      await this.agent.prompt(text, resolved);
+    } else {
+      await this.agent.prompt(text);
+    }
     await this.agent.waitForIdle();
   }
 

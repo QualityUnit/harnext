@@ -24,6 +24,7 @@ import type {
   BackgroundShell,
   BackgroundShellManager,
   EnsureResult,
+  ImageContent,
   PermissionMode,
 } from '@harnext/core';
 import chalk from 'chalk';
@@ -32,6 +33,13 @@ import { runSetGoalConfigCommand } from '../../cli/goal-config-prompt.js';
 import { runConnectCommand, runDisconnectCommand } from '../../cli/connect-prompt.js';
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
+import {
+  clipboardInstallHint,
+  formatImageSize,
+  hasClipboardTool,
+  readClipboardImage,
+  readClipboardText,
+} from '../../cli/clipboard.js';
 import { runGoalCommand } from './goal-command.js';
 import { runMcpPanel } from './mcp-panel.js';
 import { expandAtMentions } from '../../cli/at-mentions.js';
@@ -704,6 +712,10 @@ export async function runInteractiveMode(
   let currentText = '';
   let markdown: MarkdownStreamer | null = null;
   let agentBusy = false;
+  // Images pasted with Ctrl+V, attached to the next submitted prompt (base64).
+  let pendingImages: ImageContent[] = [];
+  // Show the "install a clipboard tool" hint only once per session.
+  let clipboardHintShown = false;
 
   // ── Permission mode (cycled with shift+tab) ───────────────────────
   // Three coding-agent modes, mirroring Claude Code:
@@ -862,6 +874,7 @@ export async function runInteractiveMode(
         mode: perm.mode,
         backgroundJobs: runningJobs,
         backgroundJobsFocused: footerFocused,
+        attachedImages: pendingImages.length,
       });
     },
     onShiftTab: () => {
@@ -883,6 +896,44 @@ export async function runInteractiveMode(
     onFooterActivate: () => {
       textarea.pause();
       void runBashesPanel(session).finally(() => textarea.resume());
+    },
+    // Ctrl+V: attach a clipboard image to the next prompt (base64); if there's
+    // no image, fall back to pasting clipboard text into the input.
+    onPaste: async () => {
+      const result = await readClipboardImage();
+      if (result.kind === 'image') {
+        pendingImages.push({
+          type: 'image',
+          data: result.image.data,
+          mimeType: result.image.mimeType,
+        });
+        textarea.writeAbove(
+          '\n  ' +
+            chalk.cyan('🖼 attached ') +
+            chalk.dim(`${result.image.mimeType} · ${formatImageSize(result.image.bytes)}`) +
+            chalk.dim(' — sends with your next message') +
+            '\n',
+        );
+        return null; // handled; redraw shows the footer indicator
+      }
+      if (result.kind === 'too-large') {
+        textarea.writeAbove(
+          '\n  ' +
+            chalk.yellow('🖼 image too large ') +
+            chalk.dim(`(${formatImageSize(result.bytes)}; max 15 MB)`) +
+            '\n',
+        );
+        return null;
+      }
+      // No image in the clipboard — paste text instead.
+      const text = await readClipboardText();
+      if (text) return text;
+      // Nothing pasteable: if no clipboard tool is installed, hint once.
+      if (!clipboardHintShown && !(await hasClipboardTool())) {
+        clipboardHintShown = true;
+        textarea.writeAbove('\n  ' + chalk.dim(`(${clipboardInstallHint()})`) + '\n');
+      }
+      return null;
     },
     completions,
     getPathCompletions: createPathCompleter(cwd),
@@ -1170,9 +1221,14 @@ export async function runInteractiveMode(
     // model reliably stays read-only and routes through exit_plan — the base
     // system prompt documents the modes, but only the live reminder tells it
     // which one is active right now.
-    const runPrompt = async (text: string, echo?: string): Promise<void> => {
+    const runPrompt = async (
+      text: string,
+      echo?: string,
+      images?: ImageContent[],
+    ): Promise<void> => {
       // Leading blank separates the echo from the previous block.
-      textarea.writeAbove('\n' + render.userMessage(echo ?? text) + '\n');
+      const imgNote = images && images.length > 0 ? chalk.dim(` 🖼 ${images.length}`) : '';
+      textarea.writeAbove('\n' + render.userMessage(echo ?? text) + imgNote + '\n');
 
       agentBusy = true;
       startSpinner();
@@ -1184,7 +1240,7 @@ export async function runInteractiveMode(
               `call the exit_plan tool with it and wait for the user to approve.` +
               `</system-reminder>\n\n${text}`
             : text;
-        await session.prompt(payload);
+        await session.prompt(payload, images);
       } catch (error) {
         // Most provider failures surface as a stopReason "error" message
         // (handled above); this catches the rarer case where prompt() itself
@@ -1230,6 +1286,7 @@ export async function runInteractiveMode(
         }
         session.agent.reset();
         pendingTools.clear();
+        pendingImages = [];
         currentText = '';
         markdown = null;
         asstPendingNewlines = '';
@@ -1256,7 +1313,8 @@ export async function runInteractiveMode(
         : runWithPause(() => match.cmd.action(cmdCtx, match.args));
 
     textarea.on('submit', async (input: string) => {
-      if (!input) return;
+      // Allow an image-only submit (empty text) when an image is attached.
+      if (!input && pendingImages.length === 0) return;
 
       if (input === '/' && !agentBusy) {
         let skillToInvoke: Skill | undefined;
@@ -1357,7 +1415,14 @@ export async function runInteractiveMode(
       }
 
       // Expand @-mentions into the agent payload; keep the raw text as the echo.
-      await runPrompt(expandAtMentions(input, cwd), input);
+      // Attach (and clear) any Ctrl+V-pasted images.
+      const images = pendingImages;
+      pendingImages = [];
+      await runPrompt(
+        expandAtMentions(input, cwd),
+        input || chalk.dim('🖼 (image)'),
+        images.length > 0 ? images : undefined,
+      );
     });
   });
 
