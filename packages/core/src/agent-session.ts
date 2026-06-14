@@ -10,6 +10,7 @@ import type {
 import type { Model } from '@earendil-works/pi-ai';
 
 import type { BackgroundShellManager } from './background-shells.js';
+import type { CommandExecutor } from './command-executor.js';
 import type { McpServerManager } from './mcp-server-manager.js';
 import type { Skill } from './skills.js';
 
@@ -26,6 +27,11 @@ export interface AgentSessionConfig {
   mcpManager?: McpServerManager;
   /** Owns shells started with `run_in_background`; SIGTERM'd on dispose. */
   backgroundShells?: BackgroundShellManager;
+  /**
+   * Custom command executor, if one was injected. Its optional `dispose()` is
+   * awaited on session teardown so a sandbox executor can stop its container.
+   */
+  executor?: CommandExecutor;
   /** Stop the agent after this many assistant turns (Claude SDK `max_turns`). */
   maxTurns?: number;
   /** Stable session id surfaced in stream-json envelopes. Generated if omitted. */
@@ -116,6 +122,10 @@ export class AgentSession {
     return this.config.backgroundShells;
   }
 
+  get executor(): CommandExecutor | undefined {
+    return this.config.executor;
+  }
+
   /** Number of assistant turns completed across this session's runs. */
   get turnCount(): number {
     return this.turnCounter;
@@ -127,7 +137,11 @@ export class AgentSession {
   }
 
   async dispose(): Promise<void> {
+    // Stop background shells first (they may be running inside the executor's
+    // environment), then let a custom executor tear down (e.g. stop/remove its
+    // container), then disconnect MCP servers.
     this.config.backgroundShells?.disposeAll();
+    await this.config.executor?.dispose?.();
     await this.config.mcpManager?.disconnectAll();
   }
 }

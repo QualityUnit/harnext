@@ -1,8 +1,11 @@
-import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type, type Static } from '@sinclair/typebox';
 import type { BackgroundShellManager } from '../background-shells.js';
+import {
+  hostCommandExecutor,
+  type ChildProcessLike,
+  type CommandExecutor,
+} from '../command-executor.js';
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateTail } from './truncate.js';
 
 const bashSchema = Type.Object({
@@ -29,15 +32,29 @@ export interface BashToolDetails {
   backgroundId?: string;
 }
 
-function getShellConfig(): { shell: string; args: string[] } {
-  const shell = process.env.SHELL || '/bin/bash';
-  return { shell, args: ['-c'] };
+export interface BashToolOptions {
+  /** Where commands run. Defaults to the host shell executor. */
+  executor?: CommandExecutor;
+  /**
+   * Manager for `run_in_background` shells. Omit to disable backgrounding — the
+   * tool then refuses background requests with an explanation rather than
+   * silently running them in the (blocking) foreground.
+   */
+  backgroundShells?: BackgroundShellManager;
+  /**
+   * Directory the executor runs commands in, when it differs from the file-tool
+   * `cwd` — e.g. a container bind-mount target. Defaults to `cwd`.
+   */
+  execCwd?: string;
 }
 
 export function createBashTool(
   cwd: string,
-  backgroundShells?: BackgroundShellManager,
+  options: BashToolOptions = {},
 ): AgentTool<typeof bashSchema, BashToolDetails> {
+  const executor = options.executor ?? hostCommandExecutor;
+  const backgroundShells = options.backgroundShells;
+  const execCwd = options.execCwd ?? cwd;
   return {
     name: 'bash',
     label: 'bash',
@@ -47,10 +64,26 @@ export function createBashTool(
       const { command, timeout, run_in_background } = params;
 
       // Background path: hand the command to the session-scoped manager and
-      // return immediately. When background is disabled (no manager) we fall
-      // through and run it in the foreground.
-      if (run_in_background && backgroundShells) {
-        const shell = backgroundShells.start(command, { cwd });
+      // return immediately. When backgrounding is unavailable, say so rather
+      // than silently degrading to a blocking foreground run — that is the worst
+      // outcome for the long-running commands background mode exists for.
+      if (run_in_background) {
+        if (!backgroundShells) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  'Background execution is not available in this session (it may be ' +
+                  'disabled via HARNEXT_DISABLE_BACKGROUND_TASKS=1). The command was NOT ' +
+                  'run. Re-issue it without run_in_background to run it in the foreground ' +
+                  '(use a timeout for long-running processes).',
+              },
+            ],
+            details: { exitCode: null },
+          };
+        }
+        const shell = backgroundShells.start(command);
         return {
           content: [
             {
@@ -70,16 +103,16 @@ export function createBashTool(
         onUpdate({ content: [], details: { exitCode: null } });
       }
       return new Promise((resolve, reject) => {
-        if (!existsSync(cwd)) {
-          reject(new Error(`Working directory does not exist: ${cwd}`));
+        // The executor owns cwd validation, env construction, the shell
+        // invocation, and killing on abort. A synchronous failure here (e.g.
+        // the host executor's missing-cwd guard) rejects the call.
+        let child: ChildProcessLike;
+        try {
+          child = executor.spawn(command, { cwd: execCwd, signal });
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
           return;
         }
-        const { shell, args } = getShellConfig();
-        const child = spawn(shell, [...args, command], {
-          cwd,
-          env: { ...process.env },
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
 
         let timedOut = false;
         let timeoutHandle: NodeJS.Timeout | undefined;
@@ -107,18 +140,8 @@ export function createBashTool(
         child.stdout?.on('data', handleData);
         child.stderr?.on('data', handleData);
 
-        const onAbort = () => child.kill('SIGTERM');
-        if (signal) {
-          if (signal.aborted) {
-            onAbort();
-          } else {
-            signal.addEventListener('abort', onAbort, { once: true });
-          }
-        }
-
         child.on('close', (code) => {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (signal) signal.removeEventListener('abort', onAbort);
 
           const fullOutput = Buffer.concat(chunks).toString('utf-8');
           const truncation = truncateTail(fullOutput);
@@ -151,7 +174,6 @@ export function createBashTool(
 
         child.on('error', (err) => {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (signal) signal.removeEventListener('abort', onAbort);
           reject(err);
         });
       });
