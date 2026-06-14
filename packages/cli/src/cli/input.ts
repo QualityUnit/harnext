@@ -46,6 +46,13 @@ export interface TextareaOptions {
    * — used by interactive mode to grab a clipboard image, else paste text.
    */
   onPaste?: () => Promise<string | null>;
+  /**
+   * Called on Esc when the input is empty. Returns the raw text of the most
+   * recently queued steering message — which it also dequeues — to pull back
+   * into the input for editing, or null when nothing is queued. When it returns
+   * text, Esc loads that text for editing instead of interrupting the run.
+   */
+  onSteerDequeue?: () => string | null;
 }
 
 export interface Textarea {
@@ -617,6 +624,18 @@ export function createTextarea(options: TextareaOptions): Textarea {
         panelDismissed = true;
         redraw();
         return;
+      }
+      // With the input empty, Esc peels the most recently queued steering
+      // message back into the buffer for editing rather than interrupting the
+      // run. A non-empty buffer (a draft in progress) is never clobbered — Esc
+      // interrupts as usual there.
+      if (buffer.length === 0 && options.onSteerDequeue) {
+        const recalled = options.onSteerDequeue();
+        if (recalled != null) {
+          loadHistoryEntry(recalled);
+          resetHistoryBrowse();
+          return;
+        }
       }
       emitter.emit('interrupt');
       return;

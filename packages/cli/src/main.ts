@@ -32,6 +32,7 @@ import {
   runPrintMode,
   runRunnerMode,
   runStatusMode,
+  runStreamingPrintMode,
   runUpgradeMode,
 } from './modes/index.js';
 
@@ -182,22 +183,25 @@ export async function main(argv: string[]): Promise<void> {
   const recorder = attachSessionRecorder(session, { cwd: args.cwd, provider, model });
 
   if (args.mode === 'print') {
-    const initialMessage =
-      args.inputFormat === 'stream-json'
-        ? await readStreamJsonPrompt()
-        : args.messages.join(' ');
+    // `--input-format stream-json` keeps stdin open and streams NDJSON user
+    // messages in: the first starts the run, later ones steer it mid-flight.
+    // The plain path reads the single prompt from argv.
+    const streamingInput = args.inputFormat === 'stream-json';
+    const initialMessage = streamingInput ? '' : args.messages.join(' ');
     // Stream this conversation to the context engine (no-op unless connected).
     const uploader = attachConversationUploader(session, {
       cwd: args.cwd,
       permissionMode: args.permissionMode,
       title: initialMessage,
     });
-    const exitCode = await runPrintMode(session, {
-      initialMessage,
+    const printOptions = {
       outputFormat: args.outputFormat ?? 'text',
       cwd: args.cwd,
       permissionMode: args.permissionMode,
-    });
+    } as const;
+    const exitCode = streamingInput
+      ? await runStreamingPrintMode(session, printOptions)
+      : await runPrintMode(session, { initialMessage, ...printOptions });
     await uploader.finalize();
     recorder.flush();
     process.exit(exitCode);
@@ -225,49 +229,6 @@ export async function main(argv: string[]): Promise<void> {
       await session.dispose();
     }
   }
-}
-
-/**
- * Read a stream-json prompt from stdin (Claude SDK `--input-format stream-json`).
- * Each line is a JSON envelope; we extract the text of every user message and
- * concatenate it into a single prompt. Non-user lines are ignored.
- */
-async function readStreamJsonPrompt(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  const texts: string[] = [];
-  for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const obj = JSON.parse(trimmed) as {
-        type?: string;
-        message?: { role?: string; content?: unknown };
-      };
-      if (obj.type !== 'user' && obj.message?.role !== 'user') continue;
-      const content = obj.message?.content;
-      if (typeof content === 'string') {
-        texts.push(content);
-      } else if (Array.isArray(content)) {
-        for (const block of content) {
-          if (
-            block &&
-            typeof block === 'object' &&
-            (block as { type?: string }).type === 'text' &&
-            typeof (block as { text?: string }).text === 'string'
-          ) {
-            texts.push((block as { text: string }).text);
-          }
-        }
-      }
-    } catch {
-      // Ignore malformed lines.
-    }
-  }
-  return texts.join('\n');
 }
 
 /**

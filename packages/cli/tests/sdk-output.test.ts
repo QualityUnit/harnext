@@ -7,6 +7,7 @@ import {
   buildResultEnvelope,
   buildToolResultEnvelope,
   extractText,
+  extractUserTextFromStreamJsonLine,
   mapAssistantContent,
   mapUsage,
 } from '../src/modes/sdk-output.js';
@@ -41,6 +42,38 @@ describe('extractText', () => {
       ]),
     ).toBe('ab');
     expect(extractText('plain')).toBe('plain');
+  });
+});
+
+describe('extractUserTextFromStreamJsonLine', () => {
+  it('reads a Claude user envelope with string content', () => {
+    const line = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } });
+    expect(extractUserTextFromStreamJsonLine(line)).toBe('hello');
+  });
+
+  it('reads a bare {role:"user"} message and joins text blocks', () => {
+    const line = JSON.stringify({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'a' },
+        { type: 'image', source: {} },
+        { type: 'text', text: 'b' },
+      ],
+    });
+    expect(extractUserTextFromStreamJsonLine(line)).toBe('a\nb');
+  });
+
+  it('returns null for blank, malformed, non-user, or empty-content lines', () => {
+    expect(extractUserTextFromStreamJsonLine('   ')).toBeNull();
+    expect(extractUserTextFromStreamJsonLine('not json')).toBeNull();
+    expect(
+      extractUserTextFromStreamJsonLine(JSON.stringify({ type: 'assistant', message: {} })),
+    ).toBeNull();
+    expect(
+      extractUserTextFromStreamJsonLine(
+        JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'image' }] } }),
+      ),
+    ).toBeNull();
   });
 });
 

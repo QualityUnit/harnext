@@ -143,6 +143,44 @@ export function userMessage(text: string): string {
     .join('\n');
 }
 
+// ── Queued steering messages (gray, pending injection) ───────────────
+//
+// Shown stacked just above the prompt while the agent is mid-run: messages
+// the user submitted that are queued to be injected at the next turn boundary
+// but are not yet part of the agent's context. Dimmed so they read as
+// "pending"; the last line carries an "esc to edit" hint. Each turns into a
+// normal ❯ user message (via userMessage) once the agent actually consumes it.
+export function queuedSteers(texts: string[]): string {
+  if (texts.length === 0) return '';
+  const w = termWidth();
+  const hint = ' · esc to edit';
+  // 4 cols of fixed prefix ("  ⋯ ") + 1 reserved for truncateOneLine's ellipsis.
+  return texts
+    .map((t, i) => {
+      const isLast = i === texts.length - 1;
+      const budget = Math.max(8, w - 5 - (isLast ? hint.length : 0));
+      const body = c.faint('⋯ ') + c.dim(truncateOneLine(t, budget));
+      return '  ' + body + (isLast ? c.faint(hint) : '');
+    })
+    .join('\n');
+}
+
+// Note written when a run ends with steering messages still queued — aborted,
+// errored, or max-turns before the agent reached the next drain point. Surfaces
+// the text (faint) so it isn't silently lost and the user can resend it.
+export function undeliveredSteers(texts: string[]): string {
+  const w = termWidth();
+  const n = texts.length;
+  const lines = [
+    '  ' +
+      c.faint(`⋯ ${n} queued message${n === 1 ? '' : 's'} not delivered — resend if still needed:`),
+  ];
+  for (const t of texts) {
+    lines.push('  ' + c.faint('· ') + c.dim(truncateOneLine(t, Math.max(8, w - 4))));
+  }
+  return lines.join('\n');
+}
+
 // ── Tool framing: rail + reverse-video badge ─────────────────────────
 //
 // Header (printed at tool start):   [badge] arg
