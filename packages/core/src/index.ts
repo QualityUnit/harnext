@@ -284,8 +284,17 @@ export {
   BackgroundShellManager,
   type BackgroundShell,
   type BackgroundShellListener,
+  type BackgroundShellManagerOptions,
   type ReadOutputResult,
 } from './background-shells.js';
+
+export {
+  HostCommandExecutor,
+  hostCommandExecutor,
+  type ChildProcessLike,
+  type CommandExecutor,
+  type ExecutorSpawnOptions,
+} from './command-executor.js';
 
 export {
   AgentSession,
@@ -525,6 +534,7 @@ export {
   codingTools,
   allTools,
   createCodingTools,
+  type CreateCodingToolsOptions,
   createAllTools,
   createBashTool,
   createBashOutputTool,
@@ -538,6 +548,7 @@ export {
   type ToolName,
   type BashToolDetails,
   type BashToolInput,
+  type BashToolOptions,
   type BashOutputToolDetails,
   type BashOutputToolInput,
   type KillShellToolDetails,
