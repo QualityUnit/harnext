@@ -33,6 +33,35 @@ export function mapUsage(usage: any): SdkUsage {
   };
 }
 
+/**
+ * Parse one line of stream-json *input* (Claude SDK `--input-format stream-json`)
+ * into its user text, or null when the line is blank, malformed, or not a user
+ * message. Accepts both the Claude envelope (`{"type":"user","message":{...}}`)
+ * and a bare `{"role":"user","content":...}`. Content may be a string or an
+ * array of text blocks (joined with newlines); other block types are ignored.
+ */
+export function extractUserTextFromStreamJsonLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let obj: { type?: string; role?: string; message?: { role?: string; content?: unknown }; content?: unknown };
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const isUser = obj.type === 'user' || obj.role === 'user' || obj.message?.role === 'user';
+  if (!isUser) return null;
+  const content = obj.message?.content ?? obj.content;
+  if (typeof content === 'string') return content.length > 0 ? content : null;
+  if (Array.isArray(content)) {
+    const texts = content
+      .filter((b) => b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string);
+    return texts.length > 0 ? texts.join('\n') : null;
+  }
+  return null;
+}
+
 /** Concatenate the text of a content array (text blocks only). */
 export function extractText(content: any): string {
   if (typeof content === 'string') return content;

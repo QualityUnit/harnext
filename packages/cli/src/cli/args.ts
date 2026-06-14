@@ -561,6 +561,8 @@ Options:
   --add-dir <dir>              Extra accessible directory (repeatable; reserved)
   --output-format <fmt>        text (default) | json | stream-json
   --input-format <fmt>         text (default) | stream-json
+                               (stream-json keeps stdin open: the first message
+                                starts the run, later ones steer the live run)
   --sandbox <json>             Sandbox config (accepted for parity; currently a no-op)
   --cwd <directory>            Working directory [default: .]
   -h, --help                   Show this help
