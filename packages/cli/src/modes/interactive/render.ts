@@ -892,6 +892,10 @@ export interface StatusBarOptions {
   outputTokens?: number;
   cost?: number;
   mode?: Mode;
+  /** Number of background shells currently running; shows a ⚙ chip next to git. */
+  backgroundJobs?: number;
+  /** When true, the background-jobs chip is focused (↓ pressed) and highlighted. */
+  backgroundJobsFocused?: boolean;
 }
 
 const CTX_BAR_CELLS = 6;
@@ -927,6 +931,22 @@ export function inputFooter(opts: StatusBarOptions): string {
     ? ' ' + c.amber(`⎇ ${branch}`) + (isGitClean() ? c.green(' ✓') : c.amber(' ✱'))
     : '';
   const gitW = branch ? 3 + branch.length + 2 : 0;
+
+  // Background-jobs chip, right after the git segment. Pressing ↓ on an empty
+  // prompt focuses it (highlighted pill + ⏎ hint); ⏎ opens the viewer.
+  const jobsN = opts.backgroundJobs ?? 0;
+  let jobsRendered = '';
+  let jobsW = 0;
+  if (jobsN > 0) {
+    const label = `⚙ ${jobsN} Background Job${jobsN === 1 ? '' : 's'}`;
+    if (opts.backgroundJobsFocused) {
+      jobsRendered = ' ' + chalk.bgAnsi256(X.accent).ansi256(X.bg).bold(` ${label} ⏎ `);
+      jobsW = 1 + label.length + 4; // ' ' + ' label ⏎ '
+    } else {
+      jobsRendered = ' ' + c.accent(label);
+      jobsW = 1 + label.length; // ' ' + label
+    }
+  }
 
   // Right: tokens · cost · provider/model · ctx meter.
   const segs: { rendered: string; width: number }[] = [];
@@ -964,24 +984,25 @@ export function inputFooter(opts: StatusBarOptions): string {
     return { rendered, width };
   };
 
-  // Fixed chrome: pill + space + git + min 1-space gap before the right side.
-  // Drop right-side segments from the left inward until the bar fits.
+  // Fixed chrome: pill + space + git + jobs + min 1-space gap before the right
+  // side. Drop right-side segments from the left inward until the bar fits.
   let right = joinSegs();
-  while (pillW + 1 + gitW + 1 + right.width > w && segs.length > 1) {
+  while (pillW + 1 + gitW + jobsW + 1 + right.width > w && segs.length > 1) {
     segs.shift();
     right = joinSegs();
   }
 
   // cwd gets whatever is left, truncated from the front.
-  const leftBudget = Math.max(0, w - pillW - 1 - gitW - right.width - 1);
+  const leftBudget = Math.max(0, w - pillW - 1 - gitW - jobsW - right.width - 1);
   let cwdStr = shortCwd;
   if (cwdStr.length > leftBudget) {
     cwdStr = leftBudget <= 1 ? cwdStr.slice(0, leftBudget) : '…' + cwdStr.slice(-(leftBudget - 1));
   }
-  const leftW = pillW + 1 + cwdStr.length + gitW;
+  const leftW = pillW + 1 + cwdStr.length + gitW + jobsW;
   const gap = Math.max(1, w - leftW - right.width);
 
-  const infoLine = pill + ' ' + c.dim(cwdStr) + gitRendered + ' '.repeat(gap) + right.rendered;
+  const infoLine =
+    pill + ' ' + c.dim(cwdStr) + gitRendered + jobsRendered + ' '.repeat(gap) + right.rendered;
   return separator() + '\n' + infoLine;
 }
 

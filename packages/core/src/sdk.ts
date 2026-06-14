@@ -4,6 +4,7 @@ import { getModel, streamSimple } from '@earendil-works/pi-ai';
 import type { KnownProvider, Message, Model } from '@earendil-works/pi-ai';
 
 import { AgentSession } from './agent-session.js';
+import { BackgroundShellManager } from './background-shells.js';
 import { getProviderConfig } from './auth.js';
 import { createCompaction } from './compaction.js';
 import type { CompactionOptions } from './compaction.js';
@@ -127,8 +128,17 @@ export async function createAgentSession(
     model = registryModel;
   }
 
+  // Background-shell manager: one per session, shared by the bash / bash_output
+  // / kill_shell tools and torn down in session.dispose(). Disabled via env, or
+  // when the caller supplies custom tools (those own their own setup).
+  const backgroundEnabled = process.env.HARNEXT_DISABLE_BACKGROUND_TASKS !== '1';
+  const backgroundShells =
+    !options.tools && backgroundEnabled ? new BackgroundShellManager(cwd) : undefined;
+
   // Build tools
-  const tools: Tool[] = options.tools ? [...options.tools] : createCodingTools(cwd);
+  const tools: Tool[] = options.tools
+    ? [...options.tools]
+    : createCodingTools(cwd, backgroundShells);
   const diagnostics: CreateAgentSessionResult['diagnostics'] = [];
 
   // MCP: merge user + project configs, load metadata cache, register proxy + direct tools.
@@ -325,6 +335,7 @@ export async function createAgentSession(
     thinkingLevel,
     skills,
     mcpManager,
+    backgroundShells,
     maxTurns: options.maxTurns,
     sessionId: options.sessionId,
   });

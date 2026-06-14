@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
+import { emitKeypressEvents } from 'node:readline';
 
 import type { AgentEvent } from '@earendil-works/pi-agent-core';
 import {
   classifyInteractive,
   compactNow,
   ensureBundledSkills,
+  formatStatus,
   getContextTokens,
   getProjectMemoryDir,
   listAgentRunLogs,
@@ -13,10 +15,17 @@ import {
   normalizeToolName,
   reconstructMessagesFromRunLog,
   resolveGoalModels,
+  runtimeSeconds,
   setDefault,
   toolTargetPath,
 } from '@harnext/core';
-import type { AgentRunLogSummary, EnsureResult, PermissionMode } from '@harnext/core';
+import type {
+  AgentRunLogSummary,
+  BackgroundShell,
+  BackgroundShellManager,
+  EnsureResult,
+  PermissionMode,
+} from '@harnext/core';
 import chalk from 'chalk';
 
 import { runSetGoalConfigCommand } from '../../cli/goal-config-prompt.js';
@@ -371,6 +380,14 @@ const SLASH_COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: '/bashes',
+    description: 'List, view, or kill background shells',
+    action: async (ctx) => {
+      await runBashesPanel(ctx.session);
+      return true;
+    },
+  },
+  {
     name: '/help',
     description: 'Show available commands',
     action: async () => {
@@ -401,6 +418,142 @@ function formatRunHint(r: AgentRunLogSummary): string {
   const status = r.exit === 0 ? 'ok' : r.error ? `err: ${r.error}` : `exit ${r.exit}`;
   const secs = Math.round(r.durationMs / 100) / 10;
   return `${r.ts} · ${secs}s · ${status}`;
+}
+
+/**
+ * Live, auto-refreshing viewer for one background job's output. Polls the
+ * manager on a timer and redraws in place — but only when the frame actually
+ * changes, so it doesn't flicker. Output lines are stripped of ANSI and
+ * width-clamped so the in-place redraw never miscounts wrapped rows.
+ * Keys: esc/b/q (or ⏎) to go back, k to kill a running job. Returns 'exit' on
+ * ctrl+c so the caller closes the whole panel.
+ */
+async function runJobView(mgr: BackgroundShellManager, id: string): Promise<'back' | 'exit'> {
+  const stdin = process.stdin;
+  const wasRaw = stdin.isRaw ?? false;
+  if (stdin.isTTY) stdin.setRawMode(true);
+  emitKeypressEvents(stdin);
+  stdin.resume();
+
+  let linesRendered = 0;
+  let lastFrame = '';
+
+  const buildFrame = (): string => {
+    const peek = mgr.peek(id);
+    if (!peek) return chalk.dim(`  ${id} is no longer available.`);
+    const s = peek.shell;
+    const live = s.status === 'running';
+    const rows = Math.max(8, process.stdout.rows || 24); // || so 0/undefined → fallback
+    const cols = Math.max(20, process.stdout.columns || 80);
+    const dot = live ? chalk.green('●') : chalk.dim('○');
+    const header =
+      '  ' +
+      dot +
+      ' ' +
+      chalk.bold(s.id) +
+      chalk.dim(`  ${formatStatus(s)} · ${runtimeSeconds(s)}s · ${s.command}`);
+    const hint = chalk.dim(live ? '  live · k kill · ←/esc back' : '  ←/esc back');
+    const outLines = (peek.output ?? '').split('\n');
+    while (outLines.length > 0 && outLines[outLines.length - 1] === '') outLines.pop();
+    // Reserve rows for header + separator + blank + hint and a small margin.
+    const maxOut = Math.max(3, rows - 6);
+    const shown =
+      outLines.length > 0
+        ? outLines.slice(-maxOut).map((l) => {
+            const clean = render.stripAnsi(l);
+            return clean.length > cols ? clean.slice(0, cols - 1) + '…' : clean;
+          })
+        : [chalk.dim('  (no output yet)')];
+    return [header, render.separator(), ...shown, '', hint].join('\n');
+  };
+
+  const clearRendered = (): void => {
+    if (linesRendered > 0) {
+      process.stdout.write(`\x1B[${linesRendered}F\x1B[J`);
+      linesRendered = 0;
+    }
+  };
+  const draw = (): void => {
+    const frame = buildFrame();
+    if (frame === lastFrame && linesRendered > 0) return; // unchanged → no redraw
+    clearRendered();
+    process.stdout.write(frame + '\n');
+    linesRendered = frame.split('\n').length;
+    lastFrame = frame;
+  };
+
+  draw();
+  const timer = setInterval(draw, 400);
+  if (typeof timer.unref === 'function') timer.unref();
+
+  return await new Promise<'back' | 'exit'>((resolve) => {
+    const cleanup = (r: 'back' | 'exit'): void => {
+      clearInterval(timer);
+      stdin.removeListener('keypress', onKey);
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+      clearRendered();
+      resolve(r);
+    };
+    const onKey = (_str: string | undefined, key: { name?: string; ctrl?: boolean }): void => {
+      if (!key) return;
+      if (key.ctrl && key.name === 'c') return cleanup('exit');
+      if (['escape', 'left', 'b', 'q', 'return'].includes(key.name ?? '')) return cleanup('back');
+      if (key.name === 'k') {
+        const cur = mgr.get(id);
+        if (cur && cur.status === 'running') {
+          mgr.kill(id);
+          draw();
+        }
+      }
+    };
+    stdin.on('keypress', onKey);
+  });
+}
+
+/**
+ * Interactive background-jobs panel (opened by `/bashes` or ↓ on an empty
+ * prompt): pick a job → its output is shown in a live, auto-refreshing view.
+ * The list shows id, status, runtime, and the command.
+ */
+async function runBashesPanel(session: AgentSession): Promise<void> {
+  const mgr = session.backgroundShells;
+  if (!mgr) {
+    console.log(chalk.dim('  Background jobs are disabled.'));
+    console.log();
+    return;
+  }
+
+  for (;;) {
+    const shells = mgr.list();
+    if (shells.length === 0) {
+      console.log(chalk.dim('  No background jobs.'));
+      console.log();
+      return;
+    }
+
+    const items: SelectItem<string>[] = shells.map((s) => ({
+      label: `${s.id}  ${formatStatus(s)} · ${runtimeSeconds(s)}s`,
+      value: s.id,
+      hint: s.command,
+    }));
+    items.push({ label: 'Close', value: '__close__' });
+    const picked = await select(items, {
+      title: 'Background jobs — pick one to view its output',
+      // Only worth a search bar once the list is long enough to scan-fatigue.
+      searchable: shells.length > 5,
+    });
+    if (!picked || picked === '__close__') {
+      console.log();
+      return;
+    }
+
+    const result = await runJobView(mgr, picked);
+    if (result === 'exit') {
+      console.log();
+      return;
+    }
+    // 'back' → loop to the list again.
+  }
 }
 
 type SelectedEntry = { kind: 'command'; command: SlashCommand } | { kind: 'skill'; skill: Skill };
@@ -684,11 +837,13 @@ export async function runInteractiveMode(
       const body = spinnerPrefix ? `${spinnerPrefix}\n${sep}` : sep;
       return `\n${body}`;
     },
-    getBottomBorder: () => {
+    getBottomBorder: ({ footerFocused }) => {
       const ctxTokens = getContextTokens(session.messages);
       const ctxWindow = session.agent.state.model.contextWindow;
       const ctxPercent = ctxWindow ? (ctxTokens / ctxWindow) * 100 : undefined;
       const { input, output, cost } = sumSessionUsage(session.messages);
+      const runningJobs =
+        session.backgroundShells?.list().filter((s) => s.status === 'running').length ?? 0;
       return render.inputFooter({
         provider: activeProvider,
         model: activeModel,
@@ -698,6 +853,8 @@ export async function runInteractiveMode(
         outputTokens: output,
         cost,
         mode: perm.mode,
+        backgroundJobs: runningJobs,
+        backgroundJobsFocused: footerFocused,
       });
     },
     onShiftTab: () => {
@@ -707,8 +864,34 @@ export async function runInteractiveMode(
       // input. The footer pill updates on the redraw that follows this handler.
       textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
     },
+    // ↓ on an empty prompt focuses the background-jobs chip — but only when idle
+    // (a live run owns the screen via the spinner/streaming) and only if there
+    // is at least one shell to show.
+    footerCanFocus: () => {
+      if (agentBusy) return false;
+      return (session.backgroundShells?.list().length ?? 0) > 0;
+    },
+    // ⏎ while the chip is focused opens the viewer. Pause the textarea so the
+    // viewer's select widget owns stdin, then resume when the user closes it.
+    onFooterActivate: () => {
+      textarea.pause();
+      void runBashesPanel(session).finally(() => textarea.resume());
+    },
     completions,
     getPathCompletions: createPathCompleter(cwd),
+  });
+
+  // Surface background-shell completions above the prompt as they happen, so the
+  // user sees a dev server crash or a build finishing without polling /bashes.
+  session.backgroundShells?.on('exit', (shell: BackgroundShell) => {
+    // Skip while a modal viewer (the /bashes panel or job viewer) owns the
+    // screen — it shows the change itself; writing here would corrupt it.
+    if (!textarea.isActive()) return;
+    const icon = shell.status === 'completed' ? chalk.green('✓') : chalk.yellow('●');
+    const cmd = shell.command.length > 60 ? shell.command.slice(0, 57) + '…' : shell.command;
+    textarea.writeAbove(
+      '\n  ' + icon + ' ' + chalk.dim(`${shell.id} ${formatStatus(shell)} — ${cmd}`) + '\n',
+    );
   });
 
   session.subscribe(async (event: AgentEvent) => {

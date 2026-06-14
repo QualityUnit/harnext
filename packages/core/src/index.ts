@@ -281,6 +281,13 @@ export {
 } from './skills.js';
 
 export {
+  BackgroundShellManager,
+  type BackgroundShell,
+  type BackgroundShellListener,
+  type ReadOutputResult,
+} from './background-shells.js';
+
+export {
   AgentSession,
   type AgentSessionConfig,
   type AgentSessionEventListener,
@@ -520,6 +527,10 @@ export {
   createCodingTools,
   createAllTools,
   createBashTool,
+  createBashOutputTool,
+  createKillShellTool,
+  formatStatus,
+  runtimeSeconds,
   createReadTool,
   createEditTool,
   createWriteTool,
@@ -527,6 +538,10 @@ export {
   type ToolName,
   type BashToolDetails,
   type BashToolInput,
+  type BashOutputToolDetails,
+  type BashOutputToolInput,
+  type KillShellToolDetails,
+  type KillShellToolInput,
   bashTool,
   type EditToolDetails,
   type EditToolInput,

@@ -5,6 +5,18 @@ export {
   createBashTool,
 } from './bash.js';
 export {
+  type BashOutputToolDetails,
+  type BashOutputToolInput,
+  createBashOutputTool,
+  formatStatus,
+  runtimeSeconds,
+} from './bash-output.js';
+export {
+  type KillShellToolDetails,
+  type KillShellToolInput,
+  createKillShellTool,
+} from './kill-shell.js';
+export {
   type EditToolDetails,
   type EditToolInput,
   editTool,
@@ -55,7 +67,10 @@ export {
 } from './truncate.js';
 
 import type { AgentTool } from '@earendil-works/pi-agent-core';
+import type { BackgroundShellManager } from '../background-shells.js';
 import { bashTool, createBashTool } from './bash.js';
+import { createBashOutputTool } from './bash-output.js';
+import { createKillShellTool } from './kill-shell.js';
 import { editTool, createEditTool } from './edit.js';
 import { exitPlanTool, createExitPlanTool } from './exit-plan.js';
 import { memoryTool, createMemoryTool } from './memory.js';
@@ -88,16 +103,22 @@ export const allTools = {
 
 export type ToolName = keyof typeof allTools;
 
-export function createCodingTools(cwd: string): Tool[] {
-  return [
+export function createCodingTools(cwd: string, backgroundShells?: BackgroundShellManager): Tool[] {
+  const tools: Tool[] = [
     createReadTool(cwd),
-    createBashTool(cwd),
+    createBashTool(cwd, backgroundShells),
     createEditTool(cwd),
     createWriteTool(cwd),
     createTodoTool(),
     createExitPlanTool(),
     createMemoryTool(cwd),
   ];
+  // The background-shell companions only exist when a manager is wired in
+  // (i.e. background execution is enabled for this session).
+  if (backgroundShells) {
+    tools.push(createBashOutputTool(backgroundShells), createKillShellTool(backgroundShells));
+  }
+  return tools;
 }
 
 export function createAllTools(cwd: string): Record<ToolName, Tool> {
