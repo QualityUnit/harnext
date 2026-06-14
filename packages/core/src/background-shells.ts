@@ -1,7 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { join } from 'node:path';
 
+import {
+  hostCommandExecutor,
+  type ChildProcessLike,
+  type CommandExecutor,
+} from './command-executor.js';
 import { getProjectStateDir } from './config.js';
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateTail } from './tools/truncate.js';
 
@@ -37,9 +41,17 @@ export type BackgroundShellListener = (shell: BackgroundShell) => void;
 /** Max output retained in memory per shell. The full stream is teed to the log file. */
 const MAX_BUFFER_BYTES = 1024 * 1024; // 1 MiB
 
+/** Placeholder handle for a shell whose spawn failed synchronously. */
+const NULL_CHILD: ChildProcessLike = {
+  stdout: null,
+  stderr: null,
+  kill: () => false,
+  on: () => undefined,
+};
+
 interface ShellRecord {
   view: BackgroundShell;
-  child: ChildProcess;
+  child: ChildProcessLike;
   /** Retained tail of output (older bytes are dropped past MAX_BUFFER_BYTES). */
   buffer: Buffer;
   /** Total bytes ever produced (buffer.length + bytes dropped from the front). */
@@ -53,9 +65,17 @@ interface ShellRecord {
   killTimer?: NodeJS.Timeout;
 }
 
-function getShellConfig(): { shell: string; args: string[] } {
-  const shell = process.env.SHELL || '/bin/bash';
-  return { shell, args: ['-c'] };
+export interface BackgroundShellManagerOptions {
+  /** Where commands run. Defaults to the host shell executor. */
+  executor?: CommandExecutor;
+  /**
+   * Directory the executor runs commands in, when it differs from `cwd` — e.g.
+   * a container bind-mount target. The `cwd` argument still locates the on-disk
+   * log directory (a host path); `execCwd` is the command's working directory.
+   */
+  execCwd?: string;
+  /** Grace period before a SIGTERM'd shell is force-killed with SIGKILL. */
+  killGraceMs?: number;
 }
 
 /**
@@ -64,23 +84,31 @@ function getShellConfig(): { shell: string; args: string[] } {
  * `bash_output`, and `kill_shell` tools — mirroring how `McpServerManager`
  * is wired. Output is buffered in memory (capped) and teed to a per-shell log
  * file so it survives between reads. Every shell is SIGTERM'd on `disposeAll`.
+ * Command execution is routed through an injectable {@link CommandExecutor}, so
+ * background shells can be sandboxed the same way foreground `bash` is.
  */
 export class BackgroundShellManager {
   private readonly shells = new Map<string, ShellRecord>();
   private readonly exitListeners = new Set<BackgroundShellListener>();
   private counter = 0;
+  private readonly executor: CommandExecutor;
+  private readonly execCwd: string;
+  private readonly killGraceMs: number;
 
   constructor(
+    /** Host path used to locate the on-disk log directory. */
     private readonly cwd: string,
-    /** Grace period before a SIGTERM'd shell is force-killed with SIGKILL. */
-    private readonly killGraceMs = 5000,
-  ) {}
+    options: BackgroundShellManagerOptions = {},
+  ) {
+    this.executor = options.executor ?? hostCommandExecutor;
+    this.execCwd = options.execCwd ?? cwd;
+    this.killGraceMs = options.killGraceMs ?? 5000;
+  }
 
   /** Start a command in the background and return its shell view immediately. */
   start(command: string, opts?: { cwd?: string; env?: NodeJS.ProcessEnv }): BackgroundShell {
     const id = `bash_${++this.counter}`;
-    const cwd = opts?.cwd ?? this.cwd;
-    const env = opts?.env ?? process.env;
+    const cwd = opts?.cwd ?? this.execCwd;
 
     const logPath = join(getProjectStateDir(this.cwd), 'bg-shells', `${id}.log`);
     let logStream: WriteStream | undefined;
@@ -94,26 +122,18 @@ export class BackgroundShellManager {
       logStream = undefined;
     }
 
-    const { shell, args } = getShellConfig();
-    const child = spawn(shell, [...args, command], {
-      cwd,
-      env: { ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
     const view: BackgroundShell = {
       id,
       command,
       status: 'running',
       exitCode: null,
       startedAt: Date.now(),
-      pid: child.pid,
       logPath,
     };
 
     const record: ShellRecord = {
       view,
-      child,
+      child: NULL_CHILD,
       buffer: Buffer.alloc(0),
       totalBytes: 0,
       readCursor: 0,
@@ -122,6 +142,22 @@ export class BackgroundShellManager {
       killRequested: false,
     };
     this.shells.set(id, record);
+
+    // Executor.spawn can fail synchronously (e.g. the host executor's
+    // missing-cwd guard). Record it as a failed shell so callers still see it
+    // via get()/readOutput() instead of the whole tool call throwing.
+    let child: ChildProcessLike;
+    try {
+      child = this.executor.spawn(command, { cwd, env: opts?.env });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.append(record, Buffer.from(`[spawn error] ${message}\n`));
+      this.finalize(record, null, true);
+      return { ...record.view };
+    }
+
+    record.child = child;
+    view.pid = child.pid;
 
     const onData = (data: Buffer) => this.append(record, data);
     child.stdout?.on('data', onData);

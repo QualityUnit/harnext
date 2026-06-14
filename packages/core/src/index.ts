@@ -284,6 +284,7 @@ export {
   BackgroundShellManager,
   type BackgroundShell,
   type BackgroundShellListener,
+  type BackgroundShellManagerOptions,
   type ReadOutputResult,
 } from './background-shells.js';
 
@@ -296,17 +297,46 @@ export {
 } from './images.js';
 
 export {
+  HostCommandExecutor,
+  hostCommandExecutor,
+  type ChildProcessLike,
+  type CommandExecutor,
+  type ExecutorSpawnOptions,
+} from './command-executor.js';
+
+export {
   AgentSession,
   type AgentSessionConfig,
   type AgentSessionEventListener,
   type StopReason,
 } from './agent-session.js';
 
+// Re-exported so SDK callers can type the conversation history they pass to
+// `createAgentSession({ initialMessages })` without depending on pi-agent-core.
+export type { AgentMessage } from '@earendil-works/pi-agent-core';
+
 export {
   createAgentSession,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
 } from './sdk.js';
+
+export {
+  SESSION_FILE_VERSION,
+  DEFAULT_MAX_SESSIONS_PER_CWD,
+  getCwdSessionsDir,
+  getSessionFilePath,
+  loadSession,
+  listSessions,
+  deleteSession,
+  pruneSessions,
+  createSessionWriter,
+  type StoredSession,
+  type StoredSessionMeta,
+  type SessionSummary,
+  type SessionWriter,
+  type SessionWriterOptions,
+} from './session-store.js';
 
 export {
   loadCloudTokens,
@@ -533,6 +563,7 @@ export {
   codingTools,
   allTools,
   createCodingTools,
+  type CreateCodingToolsOptions,
   createAllTools,
   createBashTool,
   createBashOutputTool,
@@ -546,6 +577,7 @@ export {
   type ToolName,
   type BashToolDetails,
   type BashToolInput,
+  type BashToolOptions,
   type BashOutputToolDetails,
   type BashOutputToolInput,
   type KillShellToolDetails,

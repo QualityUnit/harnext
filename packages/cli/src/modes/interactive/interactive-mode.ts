@@ -53,6 +53,7 @@ import type { AgentSession, Skill } from '@harnext/core';
 import { createMarkdownStreamer } from './markdown-stream.js';
 import type { MarkdownStreamer } from './markdown-stream.js';
 import * as render from './render.js';
+import { renderTranscript } from './transcript.js';
 
 export interface InteractiveModeOptions {
   provider: string;
@@ -777,6 +778,12 @@ export async function runInteractiveMode(
   process.stdout.write(
     render.header({ provider: activeProvider, model: activeModel, cwd }),
   );
+
+  // Resumed session: replay the prior transcript so the user can see the
+  // conversation they're continuing, not a blank screen.
+  if (session.messages.length > 0) {
+    process.stdout.write(renderTranscript(session.messages));
+  }
 
   const completions = [
     ...SLASH_COMMANDS.map((cmd) => ({

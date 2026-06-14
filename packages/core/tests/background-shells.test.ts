@@ -164,7 +164,7 @@ describe('background-shell tools', () => {
   });
 
   it('bash run_in_background returns a shell id without blocking', async () => {
-    const bash = createBashTool(cwd, mgr);
+    const bash = createBashTool(cwd, { backgroundShells: mgr });
     const result = await bash.execute('1', {
       command: 'printf "hi\\n"',
       run_in_background: true,
@@ -177,14 +177,24 @@ describe('background-shell tools', () => {
     expect(out?.newOutput).toContain('hi');
   });
 
-  it('bash without a manager runs in the foreground (run_in_background ignored)', async () => {
-    const bash = createBashTool(cwd); // no manager → background disabled
+  it('bash without a manager refuses to background instead of silently blocking', async () => {
+    const bash = createBashTool(cwd); // no manager → background unavailable
     const result = await bash.execute('1', {
-      command: 'echo foreground',
+      command: 'echo SHOULD_NOT_RUN',
       run_in_background: true,
     });
+    // It must NOT silently degrade to a foreground run — the command is skipped
+    // (its output never appears) and the model is told background is unavailable.
     expect(result.details.backgroundId).toBeUndefined();
-    expect(textOf(result)).toContain('foreground');
+    expect(textOf(result)).toContain('Background execution is not available');
+    expect(textOf(result)).not.toContain('SHOULD_NOT_RUN');
+  });
+
+  it('bash without run_in_background still runs in the foreground', async () => {
+    const bash = createBashTool(cwd);
+    const result = await bash.execute('1', { command: 'echo hello-fg' });
+    expect(result.details.backgroundId).toBeUndefined();
+    expect(textOf(result)).toContain('hello-fg');
   });
 
   it('bash_output reports status, output, and handles unknown ids', async () => {

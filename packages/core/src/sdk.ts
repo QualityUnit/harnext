@@ -5,6 +5,7 @@ import type { KnownProvider, Message, Model } from '@earendil-works/pi-ai';
 
 import { AgentSession } from './agent-session.js';
 import { BackgroundShellManager } from './background-shells.js';
+import type { CommandExecutor } from './command-executor.js';
 import { getProviderConfig } from './auth.js';
 import { createCompaction } from './compaction.js';
 import type { CompactionOptions } from './compaction.js';
@@ -28,6 +29,7 @@ import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
 import { seedBuiltinSkills } from './seed.js';
+import { loadSession } from './session-store.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { loadProjectContext, type SettingSource } from './project-context.js';
@@ -47,8 +49,52 @@ export interface CreateAgentSessionOptions {
   systemPrompt?: string;
   /** Thinking/reasoning level */
   thinkingLevel?: ThinkingLevel;
-  /** Custom tools (overrides default coding tools) */
+  /**
+   * Replace the default coding tools with an explicit list. Note this is the
+   * *base* set, not the final one: MCP proxy/direct tools (unless
+   * `mcpDisabled`/`closedToolSet`) and the `skill` tool (unless
+   * `disableSkillTool`/`closedToolSet`) are still layered on top. To swap one
+   * tool while keeping the rest (including the background-shell trio) prefer
+   * `toolOverrides` or `buildTools`; for an exact, auditable set use
+   * `closedToolSet: true`.
+   */
   tools?: Tool[];
+  /**
+   * Transform the default coding tools (executor-backed `bash` + background
+   * trio + read/edit/write/todo/memory) into the base set. Receives the
+   * defaults and returns the list to use — the "change one thing, keep the
+   * rest" composition lever. Applied instead of `tools` when both are given.
+   */
+  buildTools?: (defaultTools: Tool[]) => Tool[];
+  /**
+   * Swap individual tools by name on top of the resolved base set. Each key is
+   * a tool name; the value replaces a same-named tool, or is appended if none
+   * exists. Lets a caller inject e.g. a sandbox-backed `bash` without losing
+   * the background-shell trio.
+   */
+  toolOverrides?: Record<string, Tool>;
+  /**
+   * Override how shell commands are executed (foreground `bash` and background
+   * shells both route through it). Default: the host `child_process` executor,
+   * which reproduces prior behavior exactly. A sandbox caller passes e.g. a
+   * Docker executor; `read`/`edit`/`write` keep running on the host.
+   */
+  executor?: CommandExecutor;
+  /**
+   * Working directory for command *execution* when it differs from `cwd` (the
+   * file-tool directory) — e.g. a container bind-mount target like `/work`. The
+   * file tools use `cwd`; the executor uses `execCwd`. Defaults to `cwd`.
+   */
+  execCwd?: string;
+  /**
+   * Yield exactly the resolved tool set: no MCP proxy/direct tools and no
+   * `skill` tool are layered on. Useful for sandboxed/headless callers that need
+   * a known, auditable tool list (MCP servers would otherwise spawn on the host,
+   * outside any sandbox). Implies `mcpDisabled` and `disableSkillTool`.
+   */
+  closedToolSet?: boolean;
+  /** Skip injecting the `skill` tool even when model-invocable skills exist. */
+  disableSkillTool?: boolean;
   /** Compaction options (set to false to disable) */
   compaction?: CompactionOptions | false;
   /** Pre-loaded skills (SDK escape hatch; skips project-dir discovery when provided) */
@@ -79,6 +125,25 @@ export interface CreateAgentSessionOptions {
   appendSystemPrompt?: string;
   /** Stable session id surfaced in stream-json envelopes. */
   sessionId?: string;
+  /**
+   * Resume a previously-stored session: load its transcript, seed the agent's
+   * history, and continue under the same id. Looks the id up in the local
+   * per-cwd session store (`~/.harnext/agent/sessions/<cwd-hash>/<id>.jsonl`).
+   * If no stored session is found, falls back to a fresh session.
+   */
+  resumeSessionId?: string;
+  /**
+   * Seed the conversation history directly, giving the caller full control
+   * instead of loading from the local store. The array is the prior turns —
+   * `user`, `assistant`, and `toolResult` messages, in order (these are the
+   * roles the model sees; other roles are ignored on the next call). The
+   * *system message* is not part of this array: set it via `systemPrompt`
+   * (full override) or `appendSystemPrompt`.
+   *
+   * Takes precedence over `resumeSessionId` when both are given. Pair it with
+   * `sessionId` to control the id the continued session is persisted under.
+   */
+  initialMessages?: AgentMessage[];
 }
 
 export interface CreateAgentSessionResult {
@@ -88,6 +153,13 @@ export interface CreateAgentSessionResult {
    * `quiet: true` this is the only way to observe them.
    */
   diagnostics: Array<{ source: 'seed' | 'skill'; type: string; message: string; path: string }>;
+  /**
+   * The resolved session id (the resumed id when resuming, otherwise the id the
+   * session was created with). Persist this to resume the conversation later.
+   */
+  sessionId: string;
+  /** True when prior history was seeded (via `initialMessages` or a matched `resumeSessionId`). */
+  resumed: boolean;
 }
 
 function convertToLlm(messages: AgentMessage[]): Message[] {
@@ -103,6 +175,17 @@ export async function createAgentSession(
   const modelId = options.modelId ?? '';
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
+
+  // Resume: seed prior history before building the Agent. Caller-supplied
+  // `initialMessages` win (full client control); otherwise load the stored
+  // transcript by id. A miss (unknown id) degrades gracefully to a fresh
+  // session. `convertToLlm` keeps user/assistant/toolResult, so either source
+  // is usable as-is on the next call.
+  const stored = options.resumeSessionId ? loadSession(options.resumeSessionId, cwd) : undefined;
+  const seededMessages = options.initialMessages ?? stored?.messages;
+  const resumed = !!seededMessages && seededMessages.length > 0;
+  const resolvedSessionId =
+    options.resumeSessionId ?? stored?.sessionId ?? options.sessionId;
 
   // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
   // catalogs aren't in pi-ai's static registry); every other provider goes
@@ -129,21 +212,41 @@ export async function createAgentSession(
   }
 
   // Background-shell manager: one per session, shared by the bash / bash_output
-  // / kill_shell tools and torn down in session.dispose(). Disabled via env, or
-  // when the caller supplies custom tools (those own their own setup).
+  // / kill_shell tools and torn down in session.dispose(). Background execution
+  // is orthogonal to *which* tools the caller supplies, so creation is gated
+  // only on the env switch — customizing the tool list no longer strips it.
+  // Both foreground bash and background shells route through `executor`.
   const backgroundEnabled = process.env.HARNEXT_DISABLE_BACKGROUND_TASKS !== '1';
-  const backgroundShells =
-    !options.tools && backgroundEnabled ? new BackgroundShellManager(cwd) : undefined;
+  const executor = options.executor;
+  const execCwd = options.execCwd;
+  const backgroundShells = backgroundEnabled
+    ? new BackgroundShellManager(cwd, { executor, execCwd })
+    : undefined;
 
-  // Build tools
-  const tools: Tool[] = options.tools
-    ? [...options.tools]
-    : createCodingTools(cwd, backgroundShells);
+  // Build tools. The defaults wire the executor + background trio; callers
+  // compose on top via buildTools (transform), tools (full replace), and/or
+  // toolOverrides (swap by name).
+  const defaultTools = createCodingTools(cwd, { backgroundShells, executor, execCwd });
+  let tools: Tool[];
+  if (options.buildTools) {
+    tools = [...options.buildTools(defaultTools)];
+  } else if (options.tools) {
+    tools = [...options.tools];
+  } else {
+    tools = defaultTools;
+  }
+  if (options.toolOverrides) {
+    tools = applyToolOverrides(tools, options.toolOverrides);
+  }
   const diagnostics: CreateAgentSessionResult['diagnostics'] = [];
+
+  // A closed tool set yields exactly the resolved tools — no MCP servers (which
+  // would spawn on the host, outside any sandbox) and no skill tool.
+  const closedToolSet = options.closedToolSet === true;
 
   // MCP: merge user + project configs, load metadata cache, register proxy + direct tools.
   let mcpManager: McpServerManager | undefined;
-  if (!options.mcpDisabled) {
+  if (!options.mcpDisabled && !closedToolSet) {
     const initialMerged =
       options.mcpConfigOverride ?? loadMergedConfig(cwd).merged;
     // Late-binding config getter — re-reads merged config on every call so that
@@ -249,9 +352,11 @@ export async function createAgentSession(
 
   // Register the `skill` tool whenever any model-invocable skill is available.
   // This gives the model an explicit affordance for "invoke a skill" — without
-  // it, models tend to hallucinate the skill name as a tool call.
+  // it, models tend to hallucinate the skill name as a tool call. Skipped for a
+  // closed tool set or when explicitly disabled.
+  const skillToolDisabled = closedToolSet || options.disableSkillTool === true;
   const visibleSkills = skills.filter((s) => !s.disableModelInvocation);
-  if (visibleSkills.length > 0 && !tools.some((t) => t.name === 'skill')) {
+  if (!skillToolDisabled && visibleSkills.length > 0 && !tools.some((t) => t.name === 'skill')) {
     tools.push(createSkillTool(() => skills));
   }
 
@@ -320,6 +425,11 @@ export async function createAgentSession(
     toolExecution: 'parallel',
   });
 
+  // Seed prior history when resuming (from initialMessages or the store).
+  if (seededMessages && seededMessages.length > 0) {
+    agent.state.messages = seededMessages;
+  }
+
   // Wire compaction after the Agent exists so the transform can mutate
   // `agent.state.messages` directly when it triggers — pi-agent-core's
   // transformContext is otherwise transient (its return is used only for
@@ -336,11 +446,25 @@ export async function createAgentSession(
     skills,
     mcpManager,
     backgroundShells,
+    executor,
     maxTurns: options.maxTurns,
-    sessionId: options.sessionId,
+    sessionId: resolvedSessionId,
   });
 
-  return { session, diagnostics };
+  return { session, diagnostics, sessionId: session.sessionId, resumed };
+}
+
+/**
+ * Swap tools by name: an override replaces a same-named tool in place, or is
+ * appended when none exists. Order of the original list is preserved.
+ */
+function applyToolOverrides(tools: Tool[], overrides: Record<string, Tool>): Tool[] {
+  const result = tools.map((t) => overrides[t.name] ?? t);
+  const present = new Set(result.map((t) => t.name));
+  for (const [name, tool] of Object.entries(overrides)) {
+    if (!present.has(name)) result.push(tool);
+  }
+  return result;
 }
 
 function diagnosticsPush(

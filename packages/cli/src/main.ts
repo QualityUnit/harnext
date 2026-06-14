@@ -12,6 +12,8 @@ import { parseArgs } from './cli/args.js';
 import { runConnectCommand, runDisconnectCommand } from './cli/connect-prompt.js';
 import { runConnectGithubCommand } from './cli/github-prompt.js';
 import { ensureAuth } from './cli/onboarding.js';
+import { offerSummarizeOnResume, resolveResumeTarget, runResumePicker } from './cli/resume.js';
+import { attachSessionRecorder } from './cli/session-recorder.js';
 import { attachConversationUploader } from './cloud/uploader.js';
 import {
   appendHeartbeatTick,
@@ -20,6 +22,7 @@ import {
   loadHeartbeatConfig,
   loadPreferences,
   type PermissionMode,
+  type SessionSummary,
   type SettingSource,
 } from '@harnext/core';
 import {
@@ -107,11 +110,47 @@ export async function main(argv: string[]): Promise<void> {
     process.exit(0);
   }
 
-  // Resolve provider/model: CLI flags > saved preferences > provider's built-in default > fallback.
+  // ── Resume resolution ───────────────────────────────────────────────
+  // `--resume <id>` resolves directly; bare `--resume` opens the per-cwd
+  // picker (TTY interactive only). A miss/cancel falls through to a fresh
+  // session so the flag is never a dead end.
+  let resumeTarget: SessionSummary | undefined;
+  if (args.resumeSessionId) {
+    resumeTarget = resolveResumeTarget(args.cwd, args.resumeSessionId);
+    if (!resumeTarget) {
+      console.error(
+        chalk.red(`Error: no saved session "${args.resumeSessionId}" for this directory.`),
+      );
+      process.exit(1);
+    }
+  } else if (args.resume) {
+    if (args.mode === 'print') {
+      console.error(
+        chalk.red('Error: --resume needs a session id in print mode (harnext -p --resume <id>).'),
+      );
+      process.exit(1);
+    }
+    if (!process.stdin.isTTY) {
+      console.error(chalk.red('Error: --resume needs an interactive terminal to show the picker.'));
+      process.exit(1);
+    }
+    resumeTarget = await runResumePicker(args.cwd);
+    if (!resumeTarget) console.log(chalk.dim('Starting a new session.'));
+  }
+
+  // Resolve provider/model: CLI flags > resumed session > saved preferences >
+  // provider's built-in default > fallback. The resumed session's provider/model
+  // are only preferred when the user gave neither --provider nor --model.
   const prefs = loadPreferences();
-  const resolvedProvider = args.provider ?? prefs.defaultProvider ?? FALLBACK_PROVIDER;
+  const preferStored = !!resumeTarget && !args.provider && !args.model;
+  const resolvedProvider =
+    args.provider ??
+    (preferStored ? resumeTarget!.provider : undefined) ??
+    prefs.defaultProvider ??
+    FALLBACK_PROVIDER;
   const resolvedModel =
     args.model ??
+    (preferStored ? resumeTarget!.model : undefined) ??
     prefs.defaultModels?.[resolvedProvider] ??
     getProviderById(resolvedProvider)?.defaultModel ??
     FALLBACK_MODEL;
@@ -124,7 +163,7 @@ export async function main(argv: string[]): Promise<void> {
   // permission_mode hook into the agent — the flag only seeds the starting UI
   // mode. Headless print mode keeps the baked policy hook.
   const permissionMode = args.permissionMode as PermissionMode | undefined;
-  const { session } = await createAgentSession({
+  const { session, resumed } = await createAgentSession({
     provider,
     modelId: model,
     cwd: args.cwd,
@@ -136,7 +175,11 @@ export async function main(argv: string[]): Promise<void> {
     permissionMode: args.mode === 'print' ? permissionMode : undefined,
     maxTurns: args.maxTurns,
     settingSources: args.settingSources as SettingSource[] | undefined,
+    resumeSessionId: resumeTarget?.sessionId,
   });
+
+  // Persist this conversation locally so `harnext --resume` can continue it.
+  const recorder = attachSessionRecorder(session, { cwd: args.cwd, provider, model });
 
   if (args.mode === 'print') {
     const initialMessage =
@@ -156,12 +199,20 @@ export async function main(argv: string[]): Promise<void> {
       permissionMode: args.permissionMode,
     });
     await uploader.finalize();
+    recorder.flush();
     process.exit(exitCode);
   } else {
     const uploader = attachConversationUploader(session, {
       cwd: args.cwd,
       permissionMode,
     });
+    if (resumed) {
+      console.log(
+        chalk.dim(`Resumed session ${session.sessionId.slice(0, 8)} — ${session.messages.length} messages.`),
+      );
+      // Near the context limit? Offer to compact before the user types.
+      await offerSummarizeOnResume(session, args.cwd);
+    }
     try {
       await runInteractiveMode(session, {
         provider,
@@ -169,6 +220,7 @@ export async function main(argv: string[]): Promise<void> {
         initialMode: permissionMode,
       });
     } finally {
+      recorder.flush();
       await uploader.finalize();
       await session.dispose();
     }

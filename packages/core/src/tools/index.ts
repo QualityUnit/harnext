@@ -1,6 +1,7 @@
 export {
   type BashToolDetails,
   type BashToolInput,
+  type BashToolOptions,
   bashTool,
   createBashTool,
 } from './bash.js';
@@ -68,6 +69,7 @@ export {
 
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { BackgroundShellManager } from '../background-shells.js';
+import type { CommandExecutor } from '../command-executor.js';
 import { bashTool, createBashTool } from './bash.js';
 import { createBashOutputTool } from './bash-output.js';
 import { createKillShellTool } from './kill-shell.js';
@@ -103,10 +105,20 @@ export const allTools = {
 
 export type ToolName = keyof typeof allTools;
 
-export function createCodingTools(cwd: string, backgroundShells?: BackgroundShellManager): Tool[] {
+export interface CreateCodingToolsOptions {
+  /** Manager for `run_in_background` shells; also enables the bash_output / kill_shell tools. */
+  backgroundShells?: BackgroundShellManager;
+  /** Where the `bash` tool runs commands. Defaults to the host shell executor. */
+  executor?: CommandExecutor;
+  /** Command working directory when it differs from the file-tool `cwd`. */
+  execCwd?: string;
+}
+
+export function createCodingTools(cwd: string, options: CreateCodingToolsOptions = {}): Tool[] {
+  const { backgroundShells, executor, execCwd } = options;
   const tools: Tool[] = [
     createReadTool(cwd),
-    createBashTool(cwd, backgroundShells),
+    createBashTool(cwd, { backgroundShells, executor, execCwd }),
     createEditTool(cwd),
     createWriteTool(cwd),
     createTodoTool(),
