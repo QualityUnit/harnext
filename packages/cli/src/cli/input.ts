@@ -177,6 +177,18 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // leaves focus. The footer renderer highlights the chip while this is set.
   let footerFocused = false;
 
+  // Submitted-input recall history, oldest-first (a shell-like line history).
+  // `historyIdx` points at the entry currently shown; `history.length` means
+  // "editing the live draft" (nothing recalled). `historyDraft` stashes the
+  // in-progress buffer while older entries are browsed so ↓ past the newest
+  // entry restores it. ↑ walks toward older entries, ↓ toward newer.
+  const history: string[] = [];
+  let historyIdx = 0;
+  let historyDraft = '';
+  // Cap so a marathon session can't grow the recall list without bound; the
+  // oldest entry is dropped once the list is full.
+  const MAX_HISTORY = 1000;
+
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
 
@@ -248,6 +260,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       buffer = item.text;
       cursorPos = buffer.length;
       selectedCompletionIdx = 0;
+      resetHistoryBrowse();
       redraw();
       return;
     }
@@ -256,6 +269,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
     buffer = buffer.slice(0, active.replaceStart) + insert + buffer.slice(active.replaceEnd);
     cursorPos = active.replaceStart + insert.length;
     selectedCompletionIdx = 0;
+    resetHistoryBrowse();
     redraw();
   }
 
@@ -496,6 +510,54 @@ export function createTextarea(options: TextareaOptions): Textarea {
     drawTextarea();
   }
 
+  // Record a just-submitted value into the recall history. Empties and an
+  // immediate repeat of the previous entry are skipped (a shell's ignoredups),
+  // and the list is capped. Always resets the browse position back to the
+  // live-draft slot so the next ↑ starts from the most recent entry.
+  function recordHistory(value: string) {
+    if (value && history[history.length - 1] !== value) {
+      history.push(value);
+      if (history.length > MAX_HISTORY) history.shift();
+    }
+    historyIdx = history.length;
+    historyDraft = '';
+  }
+
+  // Any manual edit drops out of history-browsing: the edited buffer becomes
+  // the live draft again, so the next ↑ recalls starting from the newest entry.
+  function resetHistoryBrowse() {
+    historyIdx = history.length;
+  }
+
+  // Replace the buffer with a recalled entry, park the caret at its end, and
+  // fully redraw — buffer length and soft-wrap can change arbitrarily, so an
+  // in-place line rewrite won't do.
+  function loadHistoryEntry(text: string) {
+    buffer = text;
+    cursorPos = buffer.length;
+    selectedCompletionIdx = 0;
+    panelDismissed = false;
+    redraw();
+  }
+
+  // Browse the recall history one step: dir -1 = older (↑), +1 = newer (↓).
+  // Returns true when it consumed the key (changed the buffer). At the oldest
+  // entry ↑ is a no-op; past the newest, ↓ restores the stashed live draft.
+  function browseHistory(dir: -1 | 1): boolean {
+    if (dir < 0) {
+      if (history.length === 0 || historyIdx === 0) return false;
+      // Leaving the live draft → stash it so ↓ can bring it back later.
+      if (historyIdx === history.length) historyDraft = buffer;
+      historyIdx--;
+      loadHistoryEntry(history[historyIdx]);
+      return true;
+    }
+    if (historyIdx >= history.length) return false;
+    historyIdx++;
+    loadHistoryEntry(historyIdx === history.length ? historyDraft : history[historyIdx]);
+    return true;
+  }
+
   const onKeypress = (
     str: string | undefined,
     key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean },
@@ -581,6 +643,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       cursorPos = 0;
       selectedCompletionIdx = 0;
       panelDismissed = false;
+      recordHistory(value);
       drawTextarea();
       emitter.emit('submit', value);
       return;
@@ -630,16 +693,21 @@ export function createTextarea(options: TextareaOptions): Textarea {
         redraw();
         return;
       }
-      // No completions panel: move the caret one terminal row up/down
-      // within a soft-wrapped input, clamping to the buffer edges.
+      // No completions panel: within a soft-wrapped input ↑/↓ first move the
+      // caret between the wrapped rows. Only when the caret is already on the
+      // edge row (top for ↑, bottom for ↓) does the key recall the submitted-
+      // input history — ↑ older, ↓ newer — mirroring a shell's line recall.
       const termW = termWidth();
       const caretOffset = promptVisibleLen + cursorPos;
       const lastRow = Math.floor((promptVisibleLen + buffer.length) / termW);
       const row = Math.floor(caretOffset / termW);
-      if (key.name === 'up' && row > 0) {
-        moveCaretTo(Math.max(0, caretOffset - termW - promptVisibleLen));
-      } else if (key.name === 'down' && row < lastRow) {
-        moveCaretTo(Math.min(buffer.length, caretOffset + termW - promptVisibleLen));
+      if (key.name === 'up') {
+        if (row > 0) moveCaretTo(Math.max(0, caretOffset - termW - promptVisibleLen));
+        else browseHistory(-1);
+      } else {
+        if (row < lastRow)
+          moveCaretTo(Math.min(buffer.length, caretOffset + termW - promptVisibleLen));
+        else browseHistory(1);
       }
       return;
     }
@@ -656,6 +724,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
         buffer = buffer.slice(0, cursorPos - 1) + buffer.slice(cursorPos);
         cursorPos--;
         selectedCompletionIdx = 0;
+        resetHistoryBrowse();
         // A '/' (command recoloring) or '@' (path panel) anywhere can't be
         // expressed by an in-place '\b \b' / mid-row rewrite — full redraw.
         if (hadSlash || hadAt || wrapped) {
@@ -676,6 +745,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       buffer = buffer.slice(0, cursorPos) + str + buffer.slice(cursorPos);
       cursorPos++;
       selectedCompletionIdx = 0;
+      resetHistoryBrowse();
       // A fresh `@` re-arms a panel the user previously dismissed with Esc.
       if (str === '@') panelDismissed = false;
       // Wrapped after the insert (>= because at an exact row fill the input
