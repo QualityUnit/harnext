@@ -87,6 +87,18 @@ export interface CreateAgentSessionOptions {
    * If no stored session is found, falls back to a fresh session.
    */
   resumeSessionId?: string;
+  /**
+   * Seed the conversation history directly, giving the caller full control
+   * instead of loading from the local store. The array is the prior turns —
+   * `user`, `assistant`, and `toolResult` messages, in order (these are the
+   * roles the model sees; other roles are ignored on the next call). The
+   * *system message* is not part of this array: set it via `systemPrompt`
+   * (full override) or `appendSystemPrompt`.
+   *
+   * Takes precedence over `resumeSessionId` when both are given. Pair it with
+   * `sessionId` to control the id the continued session is persisted under.
+   */
+  initialMessages?: AgentMessage[];
 }
 
 export interface CreateAgentSessionResult {
@@ -101,7 +113,7 @@ export interface CreateAgentSessionResult {
    * session was created with). Persist this to resume the conversation later.
    */
   sessionId: string;
-  /** True when `resumeSessionId` matched a stored transcript and seeded history. */
+  /** True when prior history was seeded (via `initialMessages` or a matched `resumeSessionId`). */
   resumed: boolean;
 }
 
@@ -119,12 +131,16 @@ export async function createAgentSession(
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
 
-  // Resume: load the stored transcript before building the Agent so we can seed
-  // its history. A miss (unknown id) degrades gracefully to a fresh session.
-  const resumed = options.resumeSessionId
-    ? loadSession(options.resumeSessionId, cwd)
-    : undefined;
-  const resolvedSessionId = resumed?.sessionId ?? options.resumeSessionId ?? options.sessionId;
+  // Resume: seed prior history before building the Agent. Caller-supplied
+  // `initialMessages` win (full client control); otherwise load the stored
+  // transcript by id. A miss (unknown id) degrades gracefully to a fresh
+  // session. `convertToLlm` keeps user/assistant/toolResult, so either source
+  // is usable as-is on the next call.
+  const stored = options.resumeSessionId ? loadSession(options.resumeSessionId, cwd) : undefined;
+  const seededMessages = options.initialMessages ?? stored?.messages;
+  const resumed = !!seededMessages && seededMessages.length > 0;
+  const resolvedSessionId =
+    options.resumeSessionId ?? stored?.sessionId ?? options.sessionId;
 
   // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
   // catalogs aren't in pi-ai's static registry); every other provider goes
@@ -342,10 +358,9 @@ export async function createAgentSession(
     toolExecution: 'parallel',
   });
 
-  // Seed prior history when resuming. `convertToLlm` keeps user/assistant/
-  // toolResult roles, so the stored messages are usable as-is on the next call.
-  if (resumed) {
-    agent.state.messages = resumed.messages;
+  // Seed prior history when resuming (from initialMessages or the store).
+  if (seededMessages && seededMessages.length > 0) {
+    agent.state.messages = seededMessages;
   }
 
   // Wire compaction after the Agent exists so the transform can mutate
@@ -368,7 +383,7 @@ export async function createAgentSession(
     sessionId: resolvedSessionId,
   });
 
-  return { session, diagnostics, sessionId: session.sessionId, resumed: !!resumed };
+  return { session, diagnostics, sessionId: session.sessionId, resumed };
 }
 
 function diagnosticsPush(

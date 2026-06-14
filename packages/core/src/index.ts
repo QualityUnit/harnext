@@ -294,6 +294,10 @@ export {
   type StopReason,
 } from './agent-session.js';
 
+// Re-exported so SDK callers can type the conversation history they pass to
+// `createAgentSession({ initialMessages })` without depending on pi-agent-core.
+export type { AgentMessage } from '@earendil-works/pi-agent-core';
+
 export {
   createAgentSession,
   type CreateAgentSessionOptions,
