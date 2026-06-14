@@ -74,6 +74,22 @@ export interface Args {
   connectEndpoint?: string;
   /** `harnext connect --disable` — turn cloud sync off (keep the stored login). */
   connectDisable?: boolean;
+  /** `harnext --resume` / `-r` — resume a prior session (picker when no id given). */
+  resume?: boolean;
+  /** Specific session id to resume (`harnext --resume <id>`). */
+  resumeSessionId?: string;
+}
+
+/**
+ * Heuristic for the optional value after `--resume`: a UUID-shaped token is the
+ * session id; anything else (a flag, a chat message) is left for normal parsing,
+ * so `harnext --resume` opens the picker.
+ */
+function looksLikeSessionId(token: string | undefined): token is string {
+  return (
+    token !== undefined &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)
+  );
 }
 
 /**
@@ -187,6 +203,11 @@ export function parseArgs(argv: string[]): Args {
         break;
       case '--cwd':
         args.cwd = argv[++i] ?? args.cwd;
+        break;
+      case '-r':
+      case '--resume':
+        args.resume = true;
+        if (looksLikeSessionId(argv[i + 1])) args.resumeSessionId = argv[++i];
         break;
       case '-h':
       case '--help':
@@ -517,11 +538,14 @@ harnext - AI coding agent
 
 Usage:
   harnext [options] [message...]
+  harnext --resume [sessionId]
   harnext setup [--cwd <directory>]
   harnext mcp <verb> [...]
 
 Options:
   -p, --print                  Run in non-interactive (single-shot) mode
+  -r, --resume [sessionId]     Resume a prior session in this directory
+                               (omit the id to pick from a list)
   --heartbeat <name>           Run the named heartbeat prompt once (for cron)
   --provider <provider>        LLM provider (anthropic, openai, google) [default: anthropic]
   -m, --model <model>          Model ID [default: claude-sonnet-4-6]

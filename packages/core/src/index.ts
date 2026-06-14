@@ -301,6 +301,23 @@ export {
 } from './sdk.js';
 
 export {
+  SESSION_FILE_VERSION,
+  DEFAULT_MAX_SESSIONS_PER_CWD,
+  getCwdSessionsDir,
+  getSessionFilePath,
+  loadSession,
+  listSessions,
+  deleteSession,
+  pruneSessions,
+  createSessionWriter,
+  type StoredSession,
+  type StoredSessionMeta,
+  type SessionSummary,
+  type SessionWriter,
+  type SessionWriterOptions,
+} from './session-store.js';
+
+export {
   loadCloudTokens,
   saveCloudTokens,
   clearCloudTokens,

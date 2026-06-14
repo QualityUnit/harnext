@@ -28,6 +28,7 @@ import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
 import { seedBuiltinSkills } from './seed.js';
+import { loadSession } from './session-store.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { loadProjectContext, type SettingSource } from './project-context.js';
@@ -79,6 +80,13 @@ export interface CreateAgentSessionOptions {
   appendSystemPrompt?: string;
   /** Stable session id surfaced in stream-json envelopes. */
   sessionId?: string;
+  /**
+   * Resume a previously-stored session: load its transcript, seed the agent's
+   * history, and continue under the same id. Looks the id up in the local
+   * per-cwd session store (`~/.harnext/agent/sessions/<cwd-hash>/<id>.jsonl`).
+   * If no stored session is found, falls back to a fresh session.
+   */
+  resumeSessionId?: string;
 }
 
 export interface CreateAgentSessionResult {
@@ -88,6 +96,13 @@ export interface CreateAgentSessionResult {
    * `quiet: true` this is the only way to observe them.
    */
   diagnostics: Array<{ source: 'seed' | 'skill'; type: string; message: string; path: string }>;
+  /**
+   * The resolved session id (the resumed id when resuming, otherwise the id the
+   * session was created with). Persist this to resume the conversation later.
+   */
+  sessionId: string;
+  /** True when `resumeSessionId` matched a stored transcript and seeded history. */
+  resumed: boolean;
 }
 
 function convertToLlm(messages: AgentMessage[]): Message[] {
@@ -103,6 +118,13 @@ export async function createAgentSession(
   const modelId = options.modelId ?? '';
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
+
+  // Resume: load the stored transcript before building the Agent so we can seed
+  // its history. A miss (unknown id) degrades gracefully to a fresh session.
+  const resumed = options.resumeSessionId
+    ? loadSession(options.resumeSessionId, cwd)
+    : undefined;
+  const resolvedSessionId = resumed?.sessionId ?? options.resumeSessionId ?? options.sessionId;
 
   // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
   // catalogs aren't in pi-ai's static registry); every other provider goes
@@ -320,6 +342,12 @@ export async function createAgentSession(
     toolExecution: 'parallel',
   });
 
+  // Seed prior history when resuming. `convertToLlm` keeps user/assistant/
+  // toolResult roles, so the stored messages are usable as-is on the next call.
+  if (resumed) {
+    agent.state.messages = resumed.messages;
+  }
+
   // Wire compaction after the Agent exists so the transform can mutate
   // `agent.state.messages` directly when it triggers — pi-agent-core's
   // transformContext is otherwise transient (its return is used only for
@@ -337,10 +365,10 @@ export async function createAgentSession(
     mcpManager,
     backgroundShells,
     maxTurns: options.maxTurns,
-    sessionId: options.sessionId,
+    sessionId: resolvedSessionId,
   });
 
-  return { session, diagnostics };
+  return { session, diagnostics, sessionId: session.sessionId, resumed: !!resumed };
 }
 
 function diagnosticsPush(
