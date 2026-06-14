@@ -166,6 +166,56 @@ describe('tool classification helpers', () => {
   });
 });
 
+describe('background-shell tools (bash_output / kill_shell)', () => {
+  const cwd = '/home/user/project';
+
+  it('normalizes the canonical Claude names both directions', () => {
+    expect(normalizeToolName('BashOutput')).toBe('bash_output');
+    expect(normalizeToolName('KillShell')).toBe('kill_shell');
+    expect(canonicalToolName('bash_output')).toBe('BashOutput');
+    expect(canonicalToolName('kill_shell')).toBe('KillShell');
+    expect(toolMatchesRule('bash_output', 'BashOutput')).toBe(true);
+    expect(toolMatchesRule('KillShell', 'kill_shell')).toBe(true);
+  });
+
+  it('classifies both as read-only (never mutating)', () => {
+    expect(isReadOnlyTool('bash_output')).toBe(true);
+    expect(isReadOnlyTool('BashOutput')).toBe(true);
+    expect(isReadOnlyTool('kill_shell')).toBe(true);
+    expect(isReadOnlyTool('KillShell')).toBe(true);
+    expect(isMutatingTool('bash_output')).toBe(false);
+    expect(isMutatingTool('kill_shell')).toBe(false);
+  });
+
+  it('auto-allows them under plan and acceptEdits; background bash still asks', () => {
+    expect(classifyInteractive('bash_output', { bash_id: 'bash_1' }, { mode: 'plan', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(classifyInteractive('kill_shell', { shell_id: 'bash_1' }, { mode: 'plan', cwd })).toEqual({
+      action: 'allow',
+    });
+    expect(
+      classifyInteractive('bash_output', { bash_id: 'bash_1' }, { mode: 'acceptEdits', cwd }),
+    ).toEqual({ action: 'allow' });
+    // A background bash command is still a command — it must hit the approval prompt.
+    expect(
+      classifyInteractive(
+        'bash',
+        { command: 'npm run dev', run_in_background: true },
+        { mode: 'acceptEdits', cwd },
+      ),
+    ).toEqual({ action: 'ask', kind: 'bash' });
+    // …and stays blocked in plan mode.
+    expect(
+      classifyInteractive(
+        'bash',
+        { command: 'npm run dev', run_in_background: true },
+        { mode: 'plan', cwd },
+      ).action,
+    ).toBe('deny');
+  });
+});
+
 describe('classifyInteractive (TTY permission modes)', () => {
   const cwd = '/home/user/project';
 

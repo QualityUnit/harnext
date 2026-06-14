@@ -9,6 +9,7 @@ import type {
 } from '@earendil-works/pi-agent-core';
 import type { Model } from '@earendil-works/pi-ai';
 
+import type { BackgroundShellManager } from './background-shells.js';
 import type { McpServerManager } from './mcp-server-manager.js';
 import type { Skill } from './skills.js';
 
@@ -23,6 +24,8 @@ export interface AgentSessionConfig {
   thinkingLevel: ThinkingLevel;
   skills: Skill[];
   mcpManager?: McpServerManager;
+  /** Owns shells started with `run_in_background`; SIGTERM'd on dispose. */
+  backgroundShells?: BackgroundShellManager;
   /** Stop the agent after this many assistant turns (Claude SDK `max_turns`). */
   maxTurns?: number;
   /** Stable session id surfaced in stream-json envelopes. Generated if omitted. */
@@ -109,6 +112,10 @@ export class AgentSession {
     return this.config.mcpManager;
   }
 
+  get backgroundShells(): BackgroundShellManager | undefined {
+    return this.config.backgroundShells;
+  }
+
   /** Number of assistant turns completed across this session's runs. */
   get turnCount(): number {
     return this.turnCounter;
@@ -120,6 +127,7 @@ export class AgentSession {
   }
 
   async dispose(): Promise<void> {
+    this.config.backgroundShells?.disposeAll();
     await this.config.mcpManager?.disconnectAll();
   }
 }

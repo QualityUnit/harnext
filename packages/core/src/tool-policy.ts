@@ -42,6 +42,8 @@ export function isPermissionMode(value: string): value is PermissionMode {
  */
 export const NATIVE_TO_CANONICAL: Record<string, string> = {
   bash: 'Bash',
+  bash_output: 'BashOutput',
+  kill_shell: 'KillShell',
   read: 'Read',
   write: 'Write',
   edit: 'Edit',
@@ -50,11 +52,13 @@ export const NATIVE_TO_CANONICAL: Record<string, string> = {
 };
 
 /**
- * Native tools that don't mutate the workspace — allowed under `plan` mode.
- * `exit_plan` is the affordance the model uses to present its plan and request
- * approval, so it must run even while planning is read-only.
+ * Native tools that don't mutate the workspace — allowed under `plan` mode and
+ * never prompted in `acceptEdits`. `exit_plan` is the affordance the model uses
+ * to present its plan and request approval, so it must run even while planning
+ * is read-only. `bash_output`/`kill_shell` only inspect or stop background
+ * shells (no file changes), so they're safe here too.
  */
-const READ_ONLY_NATIVE = new Set(['read', 'todo', 'exit_plan']);
+const READ_ONLY_NATIVE = new Set(['read', 'todo', 'exit_plan', 'bash_output', 'kill_shell']);
 
 /** Native tools that mutate the workspace — blocked under `plan` mode. */
 const MUTATING_NATIVE = new Set(['bash', 'write', 'edit']);
@@ -106,6 +110,8 @@ export function isPathInsideCwd(target: string, cwd: string): boolean {
 const CANONICAL_LOWER_TO_NATIVE: Record<string, string> = {
   todowrite: 'todo',
   exitplanmode: 'exit_plan',
+  bashoutput: 'bash_output',
+  killshell: 'kill_shell',
 };
 
 export function normalizeToolName(name: string): string {

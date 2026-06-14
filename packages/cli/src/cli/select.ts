@@ -11,6 +11,12 @@ export interface SelectItem<T> {
 export interface SelectOptions {
   title: string;
   pageSize?: number;
+  /**
+   * Show the type-to-search bar and enable filtering. Default true. Set false
+   * for short, fixed action menus (e.g. Refresh / Kill / Back) where search is
+   * just noise.
+   */
+  searchable?: boolean;
 }
 
 /**
@@ -51,7 +57,7 @@ export async function select<T>(
 ): Promise<T | undefined> {
   if (items.length === 0) return undefined;
 
-  const { title, pageSize = 15 } = options;
+  const { title, pageSize = 15, searchable = true } = options;
   let cursor = 0;
   let filter = '';
   let filtered = items;
@@ -100,12 +106,14 @@ export async function select<T>(
     const lines: string[] = [];
     lines.push(chalk.bold(`  ${title}`));
 
-    // Always show the search bar with a blinking cursor so the user knows
-    // they can start typing immediately — no need to "focus" anything.
-    if (filter) {
-      lines.push(chalk.dim('  search: ') + chalk.cyan(filter) + '█');
-    } else {
-      lines.push(chalk.dim('  search: ') + '█  ' + chalk.dim.italic('type to search…'));
+    // Search bar with a blinking cursor so the user knows they can start typing
+    // immediately. Suppressed for non-searchable menus (short action lists).
+    if (searchable) {
+      if (filter) {
+        lines.push(chalk.dim('  search: ') + chalk.cyan(filter) + '█');
+      } else {
+        lines.push(chalk.dim('  search: ') + '█  ' + chalk.dim.italic('type to search…'));
+      }
     }
 
     lines.push('');
@@ -122,12 +130,28 @@ export async function select<T>(
         lines.push(chalk.dim('  ↑ more'));
       }
 
+      // Clamp each row to the terminal width so a long label/hint (e.g. a
+      // verbose background-job command) never wraps — a wrapped row would make
+      // the in-place redraw (clearRendered) miscount and corrupt the box. The
+      // secondary hint is truncated first, then the label if it alone overflows.
+      const termW = Math.max(20, process.stdout.columns || 80); // || so 0/undefined → 80
+      const avail = Math.max(8, termW - 4); // 4 = 2 leading spaces + 2 chevron
       for (let i = start; i < end; i++) {
         const item = filtered[i];
         const isCurrent = i === cursor;
         const prefix = isCurrent ? chalk.cyan('❯ ') : '  ';
-        const label = isCurrent ? chalk.cyan.bold(item.label) : item.label;
-        const hint = item.hint ? ' ' + chalk.dim(item.hint) : '';
+        let labelText = item.label;
+        let hintText = item.hint ?? '';
+        if (labelText.length > avail) {
+          labelText = labelText.slice(0, avail - 1) + '…';
+          hintText = '';
+        } else if (hintText) {
+          const hintBudget = avail - labelText.length - 1; // 1 = separating space
+          if (hintBudget < 2) hintText = '';
+          else if (hintText.length > hintBudget) hintText = hintText.slice(0, hintBudget - 1) + '…';
+        }
+        const label = isCurrent ? chalk.cyan.bold(labelText) : labelText;
+        const hint = hintText ? ' ' + chalk.dim(hintText) : '';
         lines.push(`  ${prefix}${label}${hint}`);
       }
 
@@ -138,7 +162,11 @@ export async function select<T>(
 
     lines.push('');
     lines.push(
-      chalk.dim('  ↑↓ navigate  ⏎ select  esc cancel  type to search'),
+      chalk.dim(
+        searchable
+          ? '  ↑↓ navigate  ⏎ select  esc cancel  type to search'
+          : '  ↑↓ navigate  ⏎ select  esc cancel',
+      ),
     );
 
     for (const line of lines) {
@@ -184,6 +212,8 @@ export async function select<T>(
         render();
         return;
       }
+
+      if (!searchable) return; // no filtering on fixed action menus
 
       if (key.name === 'backspace') {
         if (filter.length > 0) {

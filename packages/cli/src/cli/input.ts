@@ -13,7 +13,12 @@ export interface CompletionItem {
 export interface TextareaOptions {
   prompt: string;
   getTopBorder?: () => string;
-  getBottomBorder?: () => string;
+  /**
+   * Render the bottom border / status bar. `footerFocused` is true while the
+   * user has moved focus onto a footer affordance (the background-jobs chip)
+   * with ↓, so the renderer can highlight it.
+   */
+  getBottomBorder?: (ctx: { footerFocused: boolean }) => string;
   completions?: CompletionItem[];
   /**
    * Resolver for `@`-mention path completions. Given the text typed after an
@@ -24,6 +29,17 @@ export interface TextareaOptions {
   getPathCompletions?: (query: string) => CompletionItem[];
   /** Called on shift+tab. Used by interactive mode to cycle modes. */
   onShiftTab?: () => void;
+  /**
+   * Whether ↓ on an empty prompt should move focus onto the footer's
+   * background-jobs chip. Interactive mode returns true only when idle and at
+   * least one background shell exists.
+   */
+  footerCanFocus?: () => boolean;
+  /**
+   * Called when the user presses ⏎ while the footer chip is focused. Interactive
+   * mode opens the background-jobs viewer here.
+   */
+  onFooterActivate?: () => void;
 }
 
 export interface Textarea {
@@ -36,6 +52,8 @@ export interface Textarea {
   pause(): void;
   resume(): void;
   close(): void;
+  /** True while the textarea owns the screen (not paused for a modal UI). */
+  isActive(): boolean;
   /**
    * Modal one-shot key capture for hotkey prompts (e.g. the y/a/n approval
    * box). While pending, every keypress except ctrl+c/ctrl+d is consumed;
@@ -154,6 +172,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // Pending modal key capture (captureKey). While set, onKeypress routes
   // every key here instead of the editing logic.
   let keyCapture: { keys: Set<string>; resolve: (key: string) => void } | null = null;
+  // True while the user has moved focus onto the footer's background-jobs chip
+  // (via ↓ on an empty prompt). Enter then opens the viewer; any edit/Esc/Up
+  // leaves focus. The footer renderer highlights the chip while this is set.
+  let footerFocused = false;
 
   const promptStr = options.prompt;
   const promptVisibleLen = stripAnsi(promptStr).length;
@@ -366,7 +388,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
     // border/erase row accounting stays consistent.
     if (endOffset > 0 && endOffset % termW === 0) process.stdout.write(' \b');
     if (options.getBottomBorder) {
-      const bot = options.getBottomBorder();
+      const bot = options.getBottomBorder({ footerFocused });
       process.stdout.write('\n');
       process.stdout.write(bot);
       lastBottomLines = screenRows(bot, termW);
@@ -498,6 +520,24 @@ export function createTextarea(options: TextareaOptions): Textarea {
       return;
     }
 
+    // Footer-focus mode: ↓ moved focus onto the background-jobs chip. While
+    // focused, ⏎ opens its viewer; ↑/Esc (or any edit key) leaves focus. This
+    // must run before the global Esc handler so Esc just unfocuses here.
+    if (footerFocused) {
+      if (key.name === 'return') {
+        footerFocused = false;
+        redraw();
+        options.onFooterActivate?.();
+        return;
+      }
+      if (key.name === 'down') return; // already focused — stay put
+      footerFocused = false;
+      redraw();
+      // ↑ and Esc only leave focus; any other key falls through to normal
+      // editing on the now-unfocused (still empty) input.
+      if (key.name === 'up' || key.name === 'escape') return;
+    }
+
     // Esc with an open `@`-mention panel dismisses the panel (keeping the typed
     // text) rather than interrupting. Otherwise Esc interrupts an in-flight run
     // — the handler (interactive mode) decides whether anything is running.
@@ -580,6 +620,13 @@ export function createTextarea(options: TextareaOptions): Textarea {
           key.name === 'up'
             ? (selectedCompletionIdx - 1 + len) % len
             : (selectedCompletionIdx + 1) % len;
+        redraw();
+        return;
+      }
+      // ↓ on an empty prompt moves focus onto the footer's background-jobs chip
+      // (highlighted); ⏎ then opens its viewer.
+      if (key.name === 'down' && buffer.length === 0 && options.footerCanFocus?.()) {
+        footerFocused = true;
         redraw();
         return;
       }
@@ -699,6 +746,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
     resume,
     close,
     captureKey,
+    isActive: () => active,
   }) as unknown as Textarea;
 
   return api;
