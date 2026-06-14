@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { emitKeypressEvents } from 'node:readline';
 
-import type { AgentEvent } from '@earendil-works/pi-agent-core';
+import type { AgentEvent, AgentMessage } from '@earendil-works/pi-agent-core';
 import {
   classifyInteractive,
   compactNow,
@@ -716,6 +716,12 @@ export async function runInteractiveMode(
   let pendingImages: ImageContent[] = [];
   // Show the "install a clipboard tool" hint only once per session.
   let clipboardHintShown = false;
+  // Steering messages submitted mid-run that the agent has not yet consumed.
+  // Each is shown as a gray "queued" line above the prompt; the live `message`
+  // reference is what we passed to agent.steer(), used to match the
+  // message_start the loop emits when it injects the message — at which point
+  // the entry is committed to the scrollback as a normal user message.
+  let pendingSteers: { message: AgentMessage; rawText: string }[] = [];
 
   // ── Permission mode (cycled with shift+tab) ───────────────────────
   // Three coding-agent modes, mirroring Claude Code:
@@ -853,8 +859,12 @@ export async function runInteractiveMode(
     prompt: render.prompt(),
     getTopBorder: () => {
       const sep = render.separator();
-      const body = spinnerPrefix ? `${spinnerPrefix}\n${sep}` : sep;
-      return `\n${body}`;
+      const steers = render.queuedSteers(pendingSteers.map((s) => s.rawText));
+      const parts: string[] = [];
+      if (spinnerPrefix) parts.push(spinnerPrefix);
+      parts.push(sep);
+      if (steers) parts.push(steers);
+      return `\n${parts.join('\n')}`;
     },
     getBottomBorder: ({ footerFocused }) => {
       const ctxTokens = getContextTokens(session.messages);
@@ -935,6 +945,21 @@ export async function runInteractiveMode(
       }
       return null;
     },
+    // Esc on an empty prompt pulls the most recently queued steering message
+    // back into the input for editing. We dequeue it from our UI list and
+    // re-sync the runtime queue: clear it, then re-queue the survivors in order
+    // (their message references are preserved, so future commits still match).
+    onSteerDequeue: () => {
+      const popped = pendingSteers.pop();
+      if (!popped) return null;
+      try {
+        session.agent.clearSteeringQueue();
+        for (const s of pendingSteers) session.agent.steer(s.message);
+      } catch {
+        // Re-queue failed; the UI list stays authoritative for display.
+      }
+      return popped.rawText;
+    },
     completions,
     getPathCompletions: createPathCompleter(cwd),
   });
@@ -954,7 +979,17 @@ export async function runInteractiveMode(
 
   session.subscribe(async (event: AgentEvent) => {
     switch (event.type) {
-      case 'message_start':
+      case 'message_start': {
+        // A queued steering message just got injected into the agent's context
+        // — the loop emits message_start with the exact object we handed to
+        // steer(). Move it out of the gray "queued" stack and into the
+        // scrollback as a real user message (writeAbove redraws, so the stack
+        // shrinks too).
+        const sIdx = pendingSteers.findIndex((s) => s.message === event.message);
+        if (sIdx !== -1) {
+          const [committed] = pendingSteers.splice(sIdx, 1);
+          textarea.writeAbove('\n' + render.userMessage(committed.rawText) + '\n');
+        }
         if (event.message.role === 'assistant') {
           currentText = '';
           markdown = createMarkdownStreamer();
@@ -965,6 +1000,7 @@ export async function runInteractiveMode(
           asstNeedsLead = true;
         }
         break;
+      }
 
       case 'message_update': {
         if (event.message.role !== 'assistant') break;
@@ -1249,6 +1285,20 @@ export async function runInteractiveMode(
         textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
       } finally {
         agentBusy = false;
+        // Steering messages still queued when the run ends (aborted, errored,
+        // or max-turns before the next drain point) were never delivered.
+        // Surface them so the text isn't lost, then clear both the UI stack and
+        // the runtime queue so they don't linger or leak into the next run.
+        if (pendingSteers.length > 0) {
+          const undelivered = pendingSteers.map((s) => s.rawText);
+          pendingSteers = [];
+          try {
+            session.agent.clearSteeringQueue();
+          } catch {
+            // no active queue — nothing to clear
+          }
+          textarea.writeAbove('\n' + render.undeliveredSteers(undelivered) + '\n');
+        }
         stopSpinner();
       }
     };
@@ -1287,6 +1337,8 @@ export async function runInteractiveMode(
         session.agent.reset();
         pendingTools.clear();
         pendingImages = [];
+        // reset() clears the runtime steering queue; drop the matching UI stack.
+        pendingSteers = [];
         currentText = '';
         markdown = null;
         asstPendingNewlines = '';
@@ -1394,23 +1446,30 @@ export async function runInteractiveMode(
         return;
       }
 
-      // Mid-run submit → queue as steering rather than starting a new prompt.
+      // Mid-run submit → queue as a steering message for the live turn rather
+      // than starting a new prompt. It shows as a gray "queued" line above the
+      // input (it is not yet part of the agent's context) until the agent
+      // consumes it at the next turn boundary, at which point message_start
+      // commits it to the scrollback as a normal user message. Esc on an empty
+      // input peels the most recent queued message back for editing.
       if (agentBusy) {
-        // Echo the raw text; send the @-mention-expanded payload to the agent.
-        textarea.writeAbove('\n' + render.userMessage(input) + '\n');
+        const message: AgentMessage = {
+          role: 'user',
+          content: expandAtMentions(input, cwd),
+          timestamp: Date.now(),
+        };
         try {
-          session.agent.steer({
-            role: 'user',
-            content: expandAtMentions(input, cwd),
-            timestamp: Date.now(),
-          });
+          session.agent.steer(message);
         } catch (err) {
           textarea.writeAbove(
             chalk.red('  Steering failed: ') +
               (err instanceof Error ? err.message : String(err)) +
               '\n\n',
           );
+          return;
         }
+        pendingSteers.push({ message, rawText: input });
+        textarea.redraw();
         return;
       }
 
