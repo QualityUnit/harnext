@@ -29,6 +29,7 @@ import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
 import { seedBuiltinSkills } from './seed.js';
+import { loadSession } from './session-store.js';
 import { loadSkills, type Skill } from './skills.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { loadProjectContext, type SettingSource } from './project-context.js';
@@ -124,6 +125,25 @@ export interface CreateAgentSessionOptions {
   appendSystemPrompt?: string;
   /** Stable session id surfaced in stream-json envelopes. */
   sessionId?: string;
+  /**
+   * Resume a previously-stored session: load its transcript, seed the agent's
+   * history, and continue under the same id. Looks the id up in the local
+   * per-cwd session store (`~/.harnext/agent/sessions/<cwd-hash>/<id>.jsonl`).
+   * If no stored session is found, falls back to a fresh session.
+   */
+  resumeSessionId?: string;
+  /**
+   * Seed the conversation history directly, giving the caller full control
+   * instead of loading from the local store. The array is the prior turns —
+   * `user`, `assistant`, and `toolResult` messages, in order (these are the
+   * roles the model sees; other roles are ignored on the next call). The
+   * *system message* is not part of this array: set it via `systemPrompt`
+   * (full override) or `appendSystemPrompt`.
+   *
+   * Takes precedence over `resumeSessionId` when both are given. Pair it with
+   * `sessionId` to control the id the continued session is persisted under.
+   */
+  initialMessages?: AgentMessage[];
 }
 
 export interface CreateAgentSessionResult {
@@ -133,6 +153,13 @@ export interface CreateAgentSessionResult {
    * `quiet: true` this is the only way to observe them.
    */
   diagnostics: Array<{ source: 'seed' | 'skill'; type: string; message: string; path: string }>;
+  /**
+   * The resolved session id (the resumed id when resuming, otherwise the id the
+   * session was created with). Persist this to resume the conversation later.
+   */
+  sessionId: string;
+  /** True when prior history was seeded (via `initialMessages` or a matched `resumeSessionId`). */
+  resumed: boolean;
 }
 
 function convertToLlm(messages: AgentMessage[]): Message[] {
@@ -148,6 +175,17 @@ export async function createAgentSession(
   const modelId = options.modelId ?? '';
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
+
+  // Resume: seed prior history before building the Agent. Caller-supplied
+  // `initialMessages` win (full client control); otherwise load the stored
+  // transcript by id. A miss (unknown id) degrades gracefully to a fresh
+  // session. `convertToLlm` keeps user/assistant/toolResult, so either source
+  // is usable as-is on the next call.
+  const stored = options.resumeSessionId ? loadSession(options.resumeSessionId, cwd) : undefined;
+  const seededMessages = options.initialMessages ?? stored?.messages;
+  const resumed = !!seededMessages && seededMessages.length > 0;
+  const resolvedSessionId =
+    options.resumeSessionId ?? stored?.sessionId ?? options.sessionId;
 
   // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
   // catalogs aren't in pi-ai's static registry); every other provider goes
@@ -387,6 +425,11 @@ export async function createAgentSession(
     toolExecution: 'parallel',
   });
 
+  // Seed prior history when resuming (from initialMessages or the store).
+  if (seededMessages && seededMessages.length > 0) {
+    agent.state.messages = seededMessages;
+  }
+
   // Wire compaction after the Agent exists so the transform can mutate
   // `agent.state.messages` directly when it triggers — pi-agent-core's
   // transformContext is otherwise transient (its return is used only for
@@ -405,10 +448,10 @@ export async function createAgentSession(
     backgroundShells,
     executor,
     maxTurns: options.maxTurns,
-    sessionId: options.sessionId,
+    sessionId: resolvedSessionId,
   });
 
-  return { session, diagnostics };
+  return { session, diagnostics, sessionId: session.sessionId, resumed };
 }
 
 /**
