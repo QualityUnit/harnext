@@ -1,6 +1,8 @@
 import { EventEmitter } from 'node:events';
 import { emitKeypressEvents } from 'node:readline';
 
+import { createPasteStore, shouldStorePaste } from './paste-store.js';
+
 const ESC = '\x1B[';
 const HIDE_CURSOR = `${ESC}?25l`;
 const SHOW_CURSOR = `${ESC}?25h`;
@@ -150,6 +152,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw ?? false;
   const hasTTY = !!stdin.isTTY;
+
+  // Large/multi-line pastes are kept here and represented in the buffer by a
+  // compact placeholder token, expanded back to raw text at submit (#53).
+  const pasteStore = createPasteStore();
 
   let buffer = '';
   // Caret index into `buffer` (0..buffer.length). Insertion and deletion
@@ -650,11 +656,15 @@ export function createTextarea(options: TextareaOptions): Textarea {
         .onPaste()
         .then((text) => {
           if (text) {
-            // The buffer is a single logical line; flatten newlines so the
-            // wrapped-caret math stays correct.
-            const clean = text.replace(/\r?\n/g, ' ');
-            buffer = buffer.slice(0, cursorPos) + clean + buffer.slice(cursorPos);
-            cursorPos += clean.length;
+            // A large / multi-line paste is stored behind a compact placeholder
+            // token so the single-line buffer (and its wrapped-caret math) stays
+            // intact; it's expanded back to the raw text at submit. Small,
+            // single-line pastes inline as before (newlines flattened).
+            const insert = shouldStorePaste(text)
+              ? pasteStore.register(text)
+              : text.replace(/\r?\n/g, ' ');
+            buffer = buffer.slice(0, cursorPos) + insert + buffer.slice(cursorPos);
+            cursorPos += insert.length;
             selectedCompletionIdx = 0;
           }
           redraw();
@@ -680,7 +690,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
       // A slash panel: submit the selected command verbatim (so partial input
       // like "/co" submits as "/compact"). Otherwise submit the buffer as-is.
       const chosen = active ? active.matches[selectedCompletionIdx] : undefined;
-      const value = chosen ? chosen.text : buffer.trim();
+      // Expand any paste placeholders back to their original raw text (#53)
+      // before recording history / emitting. Completion text never contains a
+      // placeholder, so only the buffer path needs expansion.
+      const value = chosen ? chosen.text : pasteStore.expand(buffer.trim());
       // Full erase/redraw: a single-row clear would leave stale wrapped
       // input rows and any open completions panel on screen.
       if (textareaDrawn) eraseTextarea();
@@ -688,6 +701,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       cursorPos = 0;
       selectedCompletionIdx = 0;
       panelDismissed = false;
+      pasteStore.clear();
       recordHistory(value);
       drawTextarea();
       emitter.emit('submit', value);
@@ -758,6 +772,17 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (key.name === 'backspace') {
+      // A paste placeholder is an atomic token: backspacing at its right edge
+      // removes the whole token (and frees its stored text), not one char (#53).
+      const token = pasteStore.tokenEndingAt(buffer, cursorPos);
+      if (token) {
+        buffer = buffer.slice(0, token.start) + buffer.slice(token.end);
+        cursorPos = token.start;
+        selectedCompletionIdx = 0;
+        resetHistoryBrowse();
+        redraw();
+        return;
+      }
       if (cursorPos > 0) {
         const hadSlash = buffer.includes('/');
         // An '@' anywhere means the path panel may need to open/close/refresh.
