@@ -198,7 +198,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
     // Finish the run and exit cleanly.
     releaseTurn(2);
     await flush(8);
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
 
     // The injected steer landed in the real transcript as a user message.
@@ -244,7 +244,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
     await waitForTurn(2);
     releaseTurn(2);
     await flush(8);
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
   });
 
@@ -276,7 +276,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
       if (turnsStarted >= i) releaseTurn(i);
       await flush(4);
     }
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
 
     const userTexts = session.messages
@@ -305,7 +305,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
 
     releaseTurn(1);
     await flush(8);
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
   });
 
@@ -327,7 +327,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
     await waitForTurn(2);
     releaseTurn(2);
     await flush(8);
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
 
     const userTexts = session.messages
@@ -383,7 +383,7 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
     expect(ended).toContain('late steer');
     expect(session.agent.hasQueuedMessages()).toBe(false); // runtime queue cleared
 
-    press(stdin, 'c', { ctrl: true });
+    press(stdin, 'd', { ctrl: true }); // Ctrl+D exits immediately (Ctrl+C now interrupts first, #71)
     await done;
   });
 });
