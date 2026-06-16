@@ -40,8 +40,15 @@ export interface Args {
   settingSources?: string[];
   /** Extra accessible directories (Claude SDK `add_dirs`). Accepted; not yet enforced. */
   addDirs?: string[];
-  /** Fallback model (Claude SDK `fallback_model`). Accepted; not yet enforced. */
+  /**
+   * Availability fallback model (Claude SDK `fallback_model`). On a retryable
+   * pre-stream error (429 / 5xx / network) the current turn is retried against
+   * this model. Defaults to the primary provider; use `--fallback-provider` to
+   * fall back across providers.
+   */
   fallbackModel?: string;
+  /** Provider for `--fallback-model` (defaults to the primary `--provider`). */
+  fallbackProvider?: string;
   /** Output format for print mode: text (default), json, or stream-json. */
   outputFormat?: OutputFormat;
   /** Input format for print mode: text (default) or stream-json (NDJSON on stdin). */
@@ -191,6 +198,9 @@ export function parseArgs(argv: string[]): Args {
         break;
       case '--fallback-model':
         args.fallbackModel = argv[++i];
+        break;
+      case '--fallback-provider':
+        args.fallbackProvider = argv[++i];
         break;
       case '--output-format':
         args.outputFormat = argv[++i] as OutputFormat;
@@ -549,7 +559,8 @@ Options:
   --heartbeat <name>           Run the named heartbeat prompt once (for cron)
   --provider <provider>        LLM provider (anthropic, openai, google) [default: anthropic]
   -m, --model <model>          Model ID [default: claude-sonnet-4-6]
-  --fallback-model <model>     Model to fall back to (accepted; reserved)
+  --fallback-model <model>     Model to retry the turn against on a 429/5xx/network error
+  --fallback-provider <name>   Provider for --fallback-model (default: --provider)
   --thinking <level>           Thinking level (off, low, medium, high) [default: off]
   --system-prompt <text>       Override system prompt
   --append-system-prompt <t>   Append text to the system prompt

@@ -42,4 +42,20 @@ describe('undeliveredSteers', () => {
     expect(plain).toContain('1 queued message not delivered');
     expect(plain).not.toContain('messages not delivered');
   });
+
+  // ── #54 QA coverage ───────────────────────────────────────────────
+
+  it('renders nothing when there are no undelivered steers', () => {
+    expect(undeliveredSteers([])).toBe('');
+  });
+
+  it('folds a very long single queued message to one row within the width', () => {
+    const width = process.stdout.columns || 80;
+    const huge = 'x'.repeat(width * 5);
+    const plain = stripAnsi(queuedSteers([huge]));
+    const lines = plain.split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].length).toBeLessThanOrEqual(width);
+    expect(lines[0]).not.toContain('\n');
+  });
 });

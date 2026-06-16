@@ -2,11 +2,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { getAgentDir } from './config.js';
+import { isPermissionMode, type PermissionMode } from './tool-policy.js';
 
 export interface Preferences {
   defaultProvider?: string;
   /** Per-provider chosen model id, keyed by provider id. */
   defaultModels?: Record<string, string>;
+  /**
+   * Last permission mode the user selected interactively (cycled with
+   * Shift+Tab). Restored as the starting mode of the next interactive session
+   * unless overridden by `--permission-mode`.
+   */
+  defaultMode?: PermissionMode;
 }
 
 function getPreferencesPath(): string {
@@ -46,6 +53,19 @@ export function setDefaultModel(provider: string, model: string): void {
 
 export function getDefaultModel(provider: string): string | undefined {
   return loadPreferences().defaultModels?.[provider];
+}
+
+/** Persist the interactive permission mode chosen via Shift+Tab. */
+export function setDefaultMode(mode: PermissionMode): void {
+  const prefs = loadPreferences();
+  prefs.defaultMode = mode;
+  savePreferences(prefs);
+}
+
+/** The saved interactive permission mode, if any (and still valid). */
+export function getDefaultMode(): PermissionMode | undefined {
+  const mode = loadPreferences().defaultMode;
+  return mode && isPermissionMode(mode) ? mode : undefined;
 }
 
 /** Save both defaultProvider and its model in one call. */

@@ -324,6 +324,13 @@ export {
 export { sumSessionUsage, type SessionUsageTotals } from './usage.js';
 
 export {
+  isRetryableStreamError,
+  streamWithFallback,
+  type FallbackAttempt,
+  type SimpleStreamFn,
+} from './model-fallback.js';
+
+export {
   SESSION_FILE_VERSION,
   DEFAULT_MAX_SESSIONS_PER_CWD,
   getCwdSessionsDir,
@@ -492,6 +499,8 @@ export {
   setDefaultModel,
   getDefaultModel,
   setDefault,
+  setDefaultMode,
+  getDefaultMode,
   type Preferences,
 } from './preferences.js';
 
