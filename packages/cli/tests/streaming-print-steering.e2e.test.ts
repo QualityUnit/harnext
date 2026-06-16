@@ -205,4 +205,77 @@ describe('headless streaming steering (e2e)', () => {
     expect(userTexts.some((t) => t.includes('second question'))).toBe(true);
     expect(exitCode).toBe(0);
   });
+
+  // ── #54 QA coverage ───────────────────────────────────────────────
+
+  it('injects multiple mid-run messages into the live run in FIFO order', async () => {
+    const input = new PassThrough();
+    const done = runStreamingPrintMode(
+      session,
+      { outputFormat: 'stream-json', cwd: process.cwd(), permissionMode: 'bypassPermissions' },
+      input,
+    );
+
+    input.write(userLine('start the task'));
+    await waitForTurn(1);
+
+    // Two messages arrive mid-generation, in order.
+    input.write(userLine('steer one'));
+    await flush();
+    input.write(userLine('steer two'));
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(true);
+
+    // Drain across subsequent turns.
+    releaseTurn(1);
+    await waitForTurn(2);
+    releaseTurn(2);
+    await flush(6);
+    for (let n = 3; n <= 4 && turnsStarted >= n - 1; n++) {
+      if (turnsStarted >= n) releaseTurn(n);
+      await flush(4);
+    }
+    input.end();
+    const exitCode = await done;
+
+    const userTexts = session.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    const i1 = userTexts.findIndex((t) => t.includes('steer one'));
+    const i2 = userTexts.findIndex((t) => t.includes('steer two'));
+    expect(i1).toBeGreaterThanOrEqual(0);
+    expect(i2).toBeGreaterThanOrEqual(0);
+    expect(i1).toBeLessThan(i2); // FIFO
+    expect(exitCode).toBe(0);
+  });
+
+  it('preserves a multi-line steering message verbatim in the transcript', async () => {
+    const input = new PassThrough();
+    const done = runStreamingPrintMode(
+      session,
+      { outputFormat: 'stream-json', cwd: process.cwd(), permissionMode: 'bypassPermissions' },
+      input,
+    );
+
+    input.write(userLine('start the task'));
+    await waitForTurn(1);
+
+    const multiline = 'do this:\n- step one\n- step two\n\nthen stop';
+    input.write(userLine(multiline));
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(true);
+
+    releaseTurn(1);
+    await waitForTurn(2);
+    releaseTurn(2);
+    input.end();
+    const exitCode = await done;
+
+    const userTexts = session.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : ''));
+    // Newlines are preserved end-to-end (stream-json carries the raw string).
+    expect(userTexts.some((t) => t === multiline)).toBe(true);
+    expect(exitCode).toBe(0);
+  });
 });

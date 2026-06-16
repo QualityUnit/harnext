@@ -169,6 +169,10 @@ export function queuedSteers(texts: string[]): string {
 // errored, or max-turns before the agent reached the next drain point. Surfaces
 // the text (faint) so it isn't silently lost and the user can resend it.
 export function undeliveredSteers(texts: string[]): string {
+  // Defensive: an empty list renders nothing (mirrors queuedSteers). The caller
+  // only invokes this with a non-empty queue, but a "0 queued messages" header
+  // would be nonsense if that ever changed.
+  if (texts.length === 0) return '';
   const w = termWidth();
   const n = texts.length;
   const lines = [
