@@ -17,6 +17,7 @@ import {
   resolveGoalModels,
   runtimeSeconds,
   setDefault,
+  sumSessionUsage,
   toolTargetPath,
 } from '@harnext/core';
 import type {
@@ -665,28 +666,6 @@ function randomMessage(): string {
   return LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
 }
 
-// Sum input/output tokens and cost across all assistant turns in the
-// session. Each turn's `input` is cumulative context sent to the model —
-// summing across turns reflects total tokens consumed, not unique tokens.
-function sumSessionUsage(
-  messages: ReadonlyArray<{
-    role: string;
-    usage?: { input?: number; output?: number; cost?: { total?: number } };
-  }>,
-): { input: number; output: number; cost: number } {
-  let input = 0;
-  let output = 0;
-  let cost = 0;
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
-    const u = msg.usage;
-    if (!u) continue;
-    input += u.input ?? 0;
-    output += u.output ?? 0;
-    cost += u.cost?.total ?? 0;
-  }
-  return { input, output, cost };
-}
 
 /**
  * Interactive REPL mode with a sticky textarea pinned to the bottom of the
