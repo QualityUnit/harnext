@@ -48,7 +48,17 @@ export function attachSessionRecorder(
     return NOOP;
   }
 
-  const save = (): void => writer.record(session.messages);
+  const save = (): void => {
+    // Keep the persisted meta in sync with the live model — a mid-session
+    // `/model` switch must survive into `--resume` (#57). `session.model`
+    // reflects the current `agent.state.model`.
+    const live = session.model;
+    writer.updateMeta({
+      provider: (live as { provider?: string }).provider ?? meta.provider,
+      model: live.id ?? meta.model,
+    });
+    writer.record(session.messages);
+  };
 
   session.subscribe((event: AgentEvent) => {
     if (event.type === 'turn_end') save();

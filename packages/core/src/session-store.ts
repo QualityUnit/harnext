@@ -344,6 +344,14 @@ export interface SessionWriter {
   readonly filePath: string;
   /** Persist the current transcript, appending the new tail (or rewriting on compaction). */
   record(messages: AgentMessage[]): void;
+  /**
+   * Update the provider/model stored in the `session-meta` line. A mid-session
+   * `/model` switch must be reflected on disk so `--resume` restores the model
+   * actually in use, not the creation-time default (#57). The change is flushed
+   * to the meta line on the next `record()` (the file is rewritten so the
+   * single meta line stays accurate).
+   */
+  updateMeta(meta: { provider?: string; model?: string }): void;
 }
 
 /**
@@ -368,13 +376,16 @@ export function createSessionWriter(options: SessionWriterOptions): SessionWrite
   // Resolved lazily on the first write (when messages are available), then held
   // stable so compaction can't overwrite the original prompt label.
   let firstUserLabel = existingMeta?.firstUserMessage;
+  // Mutable so a mid-session `/model` switch can be persisted (#57).
+  let metaProvider = options.provider;
+  let metaModel = options.model;
 
   function buildMeta(): StoredSessionMeta {
     return metaLine({
       sessionId: options.sessionId,
       cwd: normCwd(options.cwd),
-      provider: options.provider,
-      model: options.model,
+      provider: metaProvider,
+      model: metaModel,
       createdAt,
       firstUserMessage: firstUserLabel,
     });
@@ -383,6 +394,9 @@ export function createSessionWriter(options: SessionWriterOptions): SessionWrite
   let initialized = false;
   let writtenCount = 0;
   let firstTimestamp: number | undefined;
+  // Set when provider/model changed after the meta line was last written, so
+  // the next record() rewrites the file with the corrected meta.
+  let metaDirty = false;
 
   function rewrite(messages: AgentMessage[]): void {
     if (firstUserLabel === undefined) {
@@ -397,6 +411,7 @@ export function createSessionWriter(options: SessionWriterOptions): SessionWrite
     renameSync(tmp, filePath);
     writtenCount = messages.length;
     firstTimestamp = messages[0]?.timestamp;
+    metaDirty = false;
   }
 
   function append(messages: AgentMessage[]): void {
@@ -408,6 +423,16 @@ export function createSessionWriter(options: SessionWriterOptions): SessionWrite
 
   return {
     filePath,
+    updateMeta(meta: { provider?: string; model?: string }): void {
+      if (meta.provider !== undefined && meta.provider !== metaProvider) {
+        metaProvider = meta.provider;
+        metaDirty = true;
+      }
+      if (meta.model !== undefined && meta.model !== metaModel) {
+        metaModel = meta.model;
+        metaDirty = true;
+      }
+    },
     record(messages: AgentMessage[]): void {
       if (messages.length === 0) return;
       try {
@@ -418,10 +443,11 @@ export function createSessionWriter(options: SessionWriterOptions): SessionWrite
           pruneSessions(options.cwd, options.maxSessionsPerCwd);
           return;
         }
-        // Compaction (or clear) replaced the array: the head changed or it
-        // shrank. Rewrite so the on-disk prefix stays valid.
+        // Rewrite the whole file when the on-disk prefix would otherwise be
+        // stale: compaction/clear replaced the array (head changed or it
+        // shrank), or the meta line's provider/model changed (#57).
         const headChanged = firstTimestamp !== messages[0]?.timestamp;
-        if (messages.length < writtenCount || headChanged) {
+        if (messages.length < writtenCount || headChanged || metaDirty) {
           rewrite(messages);
           return;
         }

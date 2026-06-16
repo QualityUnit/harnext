@@ -107,8 +107,16 @@ export class AgentSession {
     return this.agent.state.messages;
   }
 
+  /**
+   * The model currently in use. A mid-session `/model` switch replaces
+   * `agent.state.model`, so we read that live value (falling back to the
+   * model the session was created with). Returning the stale creation-time
+   * model here is what caused a resumed session to revert to the provider
+   * default (#57).
+   */
   get model(): Model<string> {
-    return this.config.model;
+    const live = (this.agent.state as { model?: Model<string> }).model;
+    return live ?? this.config.model;
   }
 
   get systemPrompt(): string {
