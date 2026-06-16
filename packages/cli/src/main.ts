@@ -182,6 +182,9 @@ export async function main(argv: string[]): Promise<void> {
     maxTurns: args.maxTurns,
     settingSources: args.settingSources as SettingSource[] | undefined,
     resumeSessionId: resumeTarget?.sessionId,
+    fallback: args.fallbackModel
+      ? { provider: args.fallbackProvider, modelId: args.fallbackModel }
+      : undefined,
   });
 
   // Persist this conversation locally so `harnext --resume` can continue it.
