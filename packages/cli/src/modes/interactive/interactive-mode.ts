@@ -17,6 +17,7 @@ import {
   resolveGoalModels,
   runtimeSeconds,
   setDefault,
+  setDefaultMode,
   toolTargetPath,
 } from '@harnext/core';
 import type {
@@ -67,7 +68,7 @@ export interface InteractiveModeOptions {
 }
 
 /** Narrow any PermissionMode to one of the three interactive UI modes. */
-function toUiMode(mode: PermissionMode | undefined): render.Mode {
+export function toUiMode(mode: PermissionMode | undefined): render.Mode {
   return mode === 'plan' || mode === 'bypassPermissions' ? mode : 'acceptEdits';
 }
 
@@ -890,6 +891,13 @@ export async function runInteractiveMode(
     onShiftTab: () => {
       const idx = MODES.indexOf(perm.mode);
       perm.mode = MODES[(idx + 1) % MODES.length];
+      // Persist the choice so the next session starts in the same mode (unless
+      // --permission-mode overrides). Best-effort; a write failure is ignored.
+      try {
+        setDefaultMode(perm.mode);
+      } catch {
+        // ignore — persistence is non-critical
+      }
       // Surface the new mode + a one-line reminder of what it gates, above the
       // input. The footer pill updates on the redraw that follows this handler.
       textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
