@@ -321,6 +321,8 @@ export {
   type CreateAgentSessionResult,
 } from './sdk.js';
 
+export { sumSessionUsage, type SessionUsageTotals } from './usage.js';
+
 export {
   isRetryableStreamError,
   streamWithFallback,
