@@ -490,6 +490,8 @@ export {
   setDefaultModel,
   getDefaultModel,
   setDefault,
+  setDefaultMode,
+  getDefaultMode,
   type Preferences,
 } from './preferences.js';
 
