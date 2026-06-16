@@ -12,6 +12,8 @@ const SHOW_CURSOR = `${ESC}?25h`;
 // paste). Node's readline surfaces the markers as `paste-start`/`paste-end`.
 const ENABLE_BRACKETED_PASTE = `${ESC}?2004h`;
 const DISABLE_BRACKETED_PASTE = `${ESC}?2004l`;
+// How long after a first Ctrl+C a second press still means "exit" (#71).
+const CTRL_C_EXIT_WINDOW_MS = 2000;
 
 export interface CompletionItem {
   text: string;
@@ -166,6 +168,12 @@ export function createTextarea(options: TextareaOptions): Textarea {
   // the literal characters here instead of handling them as keystrokes (#60).
   let pasteCapturing = false;
   let pasteCapture = '';
+
+  // Ctrl+C is two-stage (#71): the first press interrupts (and arms this flag
+  // for a short window); a second press inside the window exits. The timer
+  // disarms it so an old single press never combines with a much later one.
+  let ctrlCArmed = false;
+  let ctrlCTimer: ReturnType<typeof setTimeout> | undefined;
 
   let buffer = '';
   // Caret index into `buffer` (0..buffer.length). Insertion and deletion
@@ -614,7 +622,8 @@ export function createTextarea(options: TextareaOptions): Textarea {
   ) => {
     if (!active || !key) return;
 
-    if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
+    // Ctrl+D: EOF — exit immediately (unchanged).
+    if (key.ctrl && key.name === 'd') {
       emitter.emit('exit');
       return;
     }
@@ -639,6 +648,40 @@ export function createTextarea(options: TextareaOptions): Textarea {
       }
       // `str` carries the literal character (including '\n' for a newline).
       if (typeof str === 'string') pasteCapture += str;
+      return;
+    }
+
+    // Ctrl+C: interrupt first, exit on a second press within the window (#71).
+    // The first press fires `interrupt` (interactive mode aborts an in-flight
+    // run; a no-op when idle) so the run stops without leaving the
+    // conversation, and arms a short window; a second Ctrl+C inside it exits.
+    // This also avoids quitting on a single accidental press.
+    //
+    // Exception: while a modal key-capture is pending (e.g. the y/a/n
+    // permission prompt, which owns the keyboard and manages its own
+    // lifecycle), keep the original immediate exit.
+    if (key.ctrl && key.name === 'c' && keyCapture) {
+      emitter.emit('exit');
+      return;
+    }
+    if (key.ctrl && key.name === 'c') {
+      if (ctrlCArmed) {
+        if (ctrlCTimer) clearTimeout(ctrlCTimer);
+        ctrlCArmed = false;
+        emitter.emit('exit');
+        return;
+      }
+      ctrlCArmed = true;
+      emitter.emit('interrupt');
+      const DIM = `${ESC}38;5;245m`;
+      const RESET = `${ESC}39m`;
+      writeAbove(`\n  ${DIM}(press Ctrl+C again to exit)${RESET}\n`);
+      if (ctrlCTimer) clearTimeout(ctrlCTimer);
+      ctrlCTimer = setTimeout(() => {
+        ctrlCArmed = false;
+      }, CTRL_C_EXIT_WINDOW_MS);
+      // Don't let the disarm timer keep the process alive on its own.
+      if (typeof ctrlCTimer.unref === 'function') ctrlCTimer.unref();
       return;
     }
 
@@ -907,6 +950,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
   function close() {
     if (closed) return;
     closed = true;
+    if (ctrlCTimer) clearTimeout(ctrlCTimer);
     if (active) {
       active = false;
       if (textareaDrawn) eraseTextarea();

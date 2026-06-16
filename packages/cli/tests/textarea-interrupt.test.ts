@@ -67,7 +67,8 @@ describe('textarea Esc interrupt wiring', () => {
     textarea.close();
   });
 
-  it('still emits "exit" on ctrl+c (interrupt is separate)', () => {
+  it('emits "interrupt" (not "exit") on a single ctrl+c; exit needs a second (#71)', () => {
+    // Ctrl+C is now two-stage — full coverage in textarea-ctrl-c.test.ts.
     const textarea = createTextarea({ prompt: '> ' });
     const onInterrupt = vi.fn();
     const onExit = vi.fn();
@@ -75,9 +76,11 @@ describe('textarea Esc interrupt wiring', () => {
     textarea.on('exit', onExit);
 
     emitKey(stdin, 'c', { ctrl: true });
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(onExit).not.toHaveBeenCalled();
 
+    emitKey(stdin, 'c', { ctrl: true });
     expect(onExit).toHaveBeenCalledTimes(1);
-    expect(onInterrupt).not.toHaveBeenCalled();
     textarea.close();
   });
 
