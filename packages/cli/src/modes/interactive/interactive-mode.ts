@@ -12,6 +12,7 @@ import {
   getProjectMemoryDir,
   listAgentRunLogs,
   loadMemoryIndex,
+  loadSession,
   normalizeToolName,
   reconstructMessagesFromRunLog,
   resolveGoalModels,
@@ -48,6 +49,7 @@ import { createPathCompleter } from '../../cli/file-search.js';
 import { createTextarea } from '../../cli/input.js';
 import type { Textarea } from '../../cli/input.js';
 import { pickModel } from '../../cli/model-picker.js';
+import { runResumePicker } from '../../cli/resume.js';
 import { select } from '../../cli/select.js';
 import type { SelectItem } from '../../cli/select.js';
 import type { AgentSession, Skill } from '@harnext/core';
@@ -95,7 +97,7 @@ interface CommandContext {
   writeAbove: (text: string) => void;
 }
 
-const SLASH_COMMANDS: SlashCommand[] = [
+export const SLASH_COMMANDS: SlashCommand[] = [
   {
     name: '/model',
     description: 'Switch provider and model',
@@ -179,6 +181,47 @@ const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Clear conversation and start a new session',
     action: async (ctx) => {
       ctx.clearSession();
+      return true;
+    },
+  },
+  {
+    name: '/resume',
+    description: 'Resume a previous session from this directory',
+    action: async (ctx) => {
+      // Same per-cwd picker as `harnext --resume`, usable mid-session.
+      const target = await runResumePicker(process.cwd());
+      if (!target) {
+        // Picker cancelled or no saved sessions (it prints its own note).
+        console.log();
+        return true;
+      }
+      const stored = loadSession(target.sessionId, process.cwd());
+      if (!stored || stored.messages.length === 0) {
+        console.log(chalk.yellow('  That session has no messages to resume.'));
+        console.log();
+        return true;
+      }
+      // Swap the live conversation in place: abort any run, reset the agent,
+      // then seed the stored transcript (mirrors the /runs replay path). The
+      // session recorder rewrites the current transcript on the next turn.
+      try {
+        ctx.session.agent.abort();
+      } catch {
+        // no active run — nothing to abort
+      }
+      ctx.session.agent.reset();
+      ctx.session.agent.state.messages = stored.messages;
+      // Repaint: clear the screen, then print the resumed turns. (The command
+      // runs with the textarea torn down, so write straight to stdout — the
+      // textarea + header are redrawn when the command returns.)
+      process.stdout.write('\x1B[2J\x1B[H');
+      process.stdout.write(renderTranscript(stored.messages));
+      console.log(
+        chalk.green('  Resumed session ') +
+          chalk.bold(target.sessionId.slice(0, 8)) +
+          chalk.dim(` — ${stored.messages.length} messages.`),
+      );
+      console.log();
       return true;
     },
   },
@@ -599,7 +642,7 @@ interface SlashCommandMatch {
  * Commands flagged `acceptsArgs: true` also match `/foo <rest>` and
  * return the trimmed remainder as args.
  */
-function findSlashCommand(input: string): SlashCommandMatch | undefined {
+export function findSlashCommand(input: string): SlashCommandMatch | undefined {
   const exact = SLASH_COMMANDS.find((cmd) => cmd.name === input);
   if (exact) return { cmd: exact, args: '' };
   const argCmd = SLASH_COMMANDS.find(
