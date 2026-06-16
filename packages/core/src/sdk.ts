@@ -1,7 +1,13 @@
 import { Agent } from '@earendil-works/pi-agent-core';
 import type { AgentMessage, ThinkingLevel } from '@earendil-works/pi-agent-core';
-import { getModel, streamSimple } from '@earendil-works/pi-ai';
-import type { KnownProvider, Message, Model } from '@earendil-works/pi-ai';
+import { getEnvApiKey, getModel, streamSimple } from '@earendil-works/pi-ai';
+import type {
+  Context,
+  KnownProvider,
+  Message,
+  Model,
+  SimpleStreamOptions,
+} from '@earendil-works/pi-ai';
 
 import { AgentSession } from './agent-session.js';
 import { BackgroundShellManager } from './background-shells.js';
@@ -25,6 +31,10 @@ import {
 import { wrapMcpToolAsAgentTool } from './mcp-direct-tool.js';
 import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
+import {
+  streamWithFallback,
+  type FallbackAttempt,
+} from './model-fallback.js';
 import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
@@ -144,6 +154,15 @@ export interface CreateAgentSessionOptions {
    * `sessionId` to control the id the continued session is persisted under.
    */
   initialMessages?: AgentMessage[];
+  /**
+   * Request-time availability fallback (issue #51 / Claude SDK `fallback_model`).
+   * When the primary model's request fails *before the first chunk* with a
+   * retryable error (429 / 5xx / network), the same turn is transparently
+   * retried against this model. `provider` defaults to the primary provider, so
+   * a single id like `claude-opus-4-7` "just works". Non-retryable errors
+   * (auth/4xx) propagate unchanged.
+   */
+  fallback?: { provider?: string; modelId: string };
 }
 
 export interface CreateAgentSessionResult {
@@ -168,6 +187,63 @@ function convertToLlm(messages: AgentMessage[]): Message[] {
   ) as Message[];
 }
 
+/**
+ * Resolve a `(provider, modelId)` pair to a pi-ai `Model`. ollama and NVIDIA NIM
+ * use custom builders (their catalogs aren't in pi-ai's static registry);
+ * openrouter prefers the registry but hand-builds ids newer than the snapshot;
+ * every other provider must be in the registry. No network calls — an id is
+ * enough to route the request. Shared by the primary and fallback paths.
+ */
+function resolveModel(provider: string, modelId: string): Model<string> {
+  if (provider === 'ollama') {
+    const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
+    return buildOllamaModel(modelId, baseUrl) as Model<string>;
+  }
+  if (provider === 'nvidia') {
+    return buildNvidiaModel(modelId) as Model<string>;
+  }
+  if (provider === 'openrouter') {
+    const registryModel = getModel('openrouter', modelId as never) as Model<string> | undefined;
+    return registryModel ?? (buildOpenRouterModel(modelId) as Model<string>);
+  }
+  const registryModel = getModel(provider as KnownProvider, modelId as never) as Model<string>;
+  if (!registryModel) {
+    throw new Error(`Unknown model "${modelId}" for provider "${provider}".`);
+  }
+  return registryModel;
+}
+
+/**
+ * Apply per-provider auth/headers to a stream's options. Providers pi-ai
+ * doesn't recognize in its env-api-keys registry need an injected apiKey
+ * (ollama needs a non-empty placeholder; NVIDIA needs `NVIDIA_API_KEY`);
+ * openrouter gets the app-attribution headers.
+ *
+ * `primaryProvider` is the provider the Agent resolved `opts.apiKey` for. A
+ * fallback model on a *different* provider can't reuse that key, so we resolve
+ * its own env key instead.
+ */
+function withProviderAuth(
+  model: Model<string>,
+  opts: SimpleStreamOptions,
+  primaryProvider: string,
+): SimpleStreamOptions {
+  const next: SimpleStreamOptions = { ...opts };
+  if (model.provider !== primaryProvider) {
+    next.apiKey = getEnvApiKey(model.provider as KnownProvider) || undefined;
+  }
+  if (model.provider === 'ollama') {
+    next.apiKey = next.apiKey || 'ollama';
+  } else if (model.provider === 'nvidia') {
+    next.apiKey = next.apiKey || process.env.NVIDIA_API_KEY || '';
+  } else if (model.provider === 'openrouter') {
+    // Attribution headers list harnext on https://openrouter.ai/apps.
+    // Caller-supplied headers win, so an embedder can re-attribute.
+    next.headers = { ...openRouterAppHeaders(), ...opts.headers };
+  }
+  return next;
+}
+
 export async function createAgentSession(
   options: CreateAgentSessionOptions = {},
 ): Promise<CreateAgentSessionResult> {
@@ -187,29 +263,13 @@ export async function createAgentSession(
   const resolvedSessionId =
     options.resumeSessionId ?? stored?.sessionId ?? options.sessionId;
 
-  // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
-  // catalogs aren't in pi-ai's static registry); every other provider goes
-  // through the registry.
-  let model: Model<string>;
-  if (provider === 'ollama') {
-    const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
-    model = buildOllamaModel(modelId, baseUrl) as Model<string>;
-  } else if (provider === 'nvidia') {
-    model = buildNvidiaModel(modelId) as Model<string>;
-  } else if (provider === 'openrouter') {
-    // Known ids keep pi-ai's curated registry metadata; ids newer than the
-    // static snapshot (e.g. deepseek/deepseek-v4-pro) are built by hand so the
-    // live /v1/models catalog is always usable. No network call here — the id
-    // is enough to route the request.
-    const registryModel = getModel('openrouter', modelId as never) as Model<string> | undefined;
-    model = registryModel ?? (buildOpenRouterModel(modelId) as Model<string>);
-  } else {
-    const registryModel = getModel(provider as KnownProvider, modelId as never) as Model<string>;
-    if (!registryModel) {
-      throw new Error(`Unknown model "${modelId}" for provider "${provider}".`);
-    }
-    model = registryModel;
-  }
+  // Resolve the primary model and, if configured, the availability-fallback
+  // model (built once and captured in the streamFn closure below). The fallback
+  // provider defaults to the primary so a bare `--fallback-model <id>` works.
+  const model: Model<string> = resolveModel(provider, modelId);
+  const fallbackModel: Model<string> | undefined = options.fallback
+    ? resolveModel(options.fallback.provider ?? provider, options.fallback.modelId)
+    : undefined;
 
   // Background-shell manager: one per session, shared by the bash / bash_output
   // / kill_shell tools and torn down in session.dispose(). Background execution
@@ -405,22 +465,19 @@ export async function createAgentSession(
     beforeToolCall,
     convertToLlm,
     streamFn: async (m, ctx, opts) => {
-      // Inject the right apiKey for providers pi-ai doesn't recognize in
-      // its env-api-keys registry. Ollama needs a non-empty placeholder
-      // (the OpenAI-compatible client refuses empty keys); NVIDIA needs
-      // the real NVIDIA_API_KEY since `getEnvApiKey('nvidia')` returns
-      // undefined upstream.
-      let finalOpts = opts;
-      if (m.provider === 'ollama') {
-        finalOpts = { ...opts, apiKey: opts?.apiKey ?? 'ollama' };
-      } else if (m.provider === 'nvidia') {
-        finalOpts = { ...opts, apiKey: opts?.apiKey ?? process.env.NVIDIA_API_KEY ?? '' };
-      } else if (m.provider === 'openrouter') {
-        // Attribution headers list harnext on https://openrouter.ai/apps.
-        // Caller-supplied headers win, so an embedder can re-attribute.
-        finalOpts = { ...opts, headers: { ...openRouterAppHeaders(), ...opts?.headers } };
+      const baseOpts = (opts ?? {}) as SimpleStreamOptions;
+      // Primary first, then the fallback model (if any). Each attempt gets its
+      // own provider auth/headers. With no fallback this is a thin pass-through.
+      const attempts: FallbackAttempt[] = [
+        { model: m, opts: withProviderAuth(m, baseOpts, provider) },
+      ];
+      if (fallbackModel) {
+        attempts.push({
+          model: fallbackModel,
+          opts: withProviderAuth(fallbackModel, baseOpts, provider),
+        });
       }
-      return streamSimple(m, ctx, finalOpts);
+      return streamWithFallback(ctx as Context, attempts, streamSimple);
     },
     toolExecution: 'parallel',
   });

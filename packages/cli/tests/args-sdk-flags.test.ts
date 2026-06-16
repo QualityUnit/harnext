@@ -64,11 +64,32 @@ describe('parseArgs — SDK parity flags', () => {
     expect(parseArgs(['-p', '--max-turns', 'abc', 'x']).maxTurns).toBeUndefined();
   });
 
+  it('parses --fallback-model and --fallback-provider (issue #51)', () => {
+    const args = parseArgs([
+      '-p',
+      '--fallback-model',
+      'claude-opus-4-8',
+      '--fallback-provider',
+      'anthropic',
+      'go',
+    ]);
+    expect(args.fallbackModel).toBe('claude-opus-4-8');
+    expect(args.fallbackProvider).toBe('anthropic');
+  });
+
+  it('accepts --fallback-model without an explicit fallback provider', () => {
+    const args = parseArgs(['-p', '--fallback-model', 'openai/gpt-5', 'go']);
+    expect(args.fallbackModel).toBe('openai/gpt-5');
+    expect(args.fallbackProvider).toBeUndefined();
+  });
+
   it('leaves new fields undefined when not passed', () => {
     const args = parseArgs(['-p', 'hello']);
     expect(args.allowedTools).toBeUndefined();
     expect(args.permissionMode).toBeUndefined();
     expect(args.outputFormat).toBeUndefined();
+    expect(args.fallbackModel).toBeUndefined();
+    expect(args.fallbackProvider).toBeUndefined();
   });
 
   it('still parses existing model/system-prompt/cwd flags', () => {
