@@ -247,4 +247,143 @@ describe('steering (e2e through the real REPL + agent loop)', () => {
     press(stdin, 'c', { ctrl: true });
     await done;
   });
+
+  // ── #54 QA coverage ───────────────────────────────────────────────
+
+  it('queues multiple mid-run steers and commits them in FIFO order', async () => {
+    const done = runInteractiveMode(session, { provider: 'anthropic', model: MODEL_ID });
+
+    type(stdin, 'start the task');
+    press(stdin, 'return');
+    await waitForTurn(1);
+
+    // Two steers queued while busy, in order.
+    type(stdin, 'first steer');
+    press(stdin, 'return');
+    await flush();
+    type(stdin, 'second steer');
+    press(stdin, 'return');
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(true);
+
+    // Drain across the following turns and exit.
+    releaseTurn(1);
+    await waitForTurn(2);
+    releaseTurn(2);
+    await flush(8);
+    // A third turn may begin if the steers drained one-per-turn; release any.
+    for (let i = 3; i <= 4 && turnsStarted >= i - 1; i++) {
+      if (turnsStarted >= i) releaseTurn(i);
+      await flush(4);
+    }
+    press(stdin, 'c', { ctrl: true });
+    await done;
+
+    const userTexts = session.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    const iFirst = userTexts.findIndex((t) => t.includes('first steer'));
+    const iSecond = userTexts.findIndex((t) => t.includes('second steer'));
+    expect(iFirst).toBeGreaterThanOrEqual(0);
+    expect(iSecond).toBeGreaterThanOrEqual(0);
+    // FIFO: "first steer" precedes "second steer" in the transcript.
+    expect(iFirst).toBeLessThan(iSecond);
+  });
+
+  it('ignores a whitespace-only mid-run submit (does not queue a steer)', async () => {
+    const done = runInteractiveMode(session, { provider: 'anthropic', model: MODEL_ID });
+
+    type(stdin, 'start the task');
+    press(stdin, 'return');
+    await waitForTurn(1);
+
+    // Whitespace-only input trims to '' and is dropped before the steer path.
+    type(stdin, '    ');
+    press(stdin, 'return');
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(false);
+
+    releaseTurn(1);
+    await flush(8);
+    press(stdin, 'c', { ctrl: true });
+    await done;
+  });
+
+  it('queues a slash command typed mid-run as literal steer text (does not execute it)', async () => {
+    const done = runInteractiveMode(session, { provider: 'anthropic', model: MODEL_ID });
+
+    type(stdin, 'start the task');
+    press(stdin, 'return');
+    await waitForTurn(1);
+
+    // Slash handling is gated on !agentBusy, so mid-run "/clear" is queued as
+    // text rather than clearing the session.
+    type(stdin, '/clear');
+    press(stdin, 'return');
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(true);
+
+    releaseTurn(1);
+    await waitForTurn(2);
+    releaseTurn(2);
+    await flush(8);
+    press(stdin, 'c', { ctrl: true });
+    await done;
+
+    const userTexts = session.messages
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)));
+    // The session was NOT cleared (original prompt survives) and "/clear" landed
+    // as a literal user message.
+    expect(userTexts.some((t) => t.includes('start the task'))).toBe(true);
+    expect(userTexts.some((t) => t.includes('/clear'))).toBe(true);
+  });
+
+  it('shows the undelivered-steers note and clears the queue when a run errors with steers queued', async () => {
+    // Override the stream so turn 1 ends with an error event (no further turns
+    // drain the queued steer → runPrompt's finally surfaces it as undelivered).
+    let release!: () => void;
+    let started = 0;
+    const errStreamFn = () => {
+      const errored = makeAssistant('boom');
+      (errored as Record<string, unknown>).stopReason = 'error';
+      (errored as Record<string, unknown>).errorMessage = 'simulated provider error';
+      const gate = new Promise<void>((res) => {
+        release = res;
+      });
+      started++;
+      return {
+        async *[Symbol.asyncIterator]() {
+          await gate;
+          yield { type: 'error', reason: 'error', error: errored };
+        },
+        result: async () => errored,
+      };
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    session.agent.streamFn = errStreamFn as any;
+
+    const done = runInteractiveMode(session, { provider: 'anthropic', model: MODEL_ID });
+    type(stdin, 'start the task');
+    press(stdin, 'return');
+    for (let i = 0; i < 200 && started < 1; i++) await flush(1);
+
+    // Queue a steer while the (gated) run is busy.
+    type(stdin, 'late steer');
+    press(stdin, 'return');
+    await flush();
+    expect(session.agent.hasQueuedMessages()).toBe(true);
+
+    // Release → turn 1 errors → run ends with the steer still queued.
+    const beforeEnd = writes.length;
+    release();
+    await flush(10);
+    const ended = stripAnsi(writes.slice(beforeEnd).join(''));
+    expect(ended).toContain('not delivered'); // undeliveredSteers note
+    expect(ended).toContain('late steer');
+    expect(session.agent.hasQueuedMessages()).toBe(false); // runtime queue cleared
+
+    press(stdin, 'c', { ctrl: true });
+    await done;
+  });
 });
