@@ -12,6 +12,9 @@
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
 const DEFAULT_CLIENT_ID = 'harnext-cli';
 
+/** The official hosted context engine, used when the user doesn't name one. */
+export const DEFAULT_ENDPOINT = 'https://app.harnext.dev';
+
 export interface DeviceCodeResponse {
   device_code: string;
   user_code: string;
@@ -82,17 +85,56 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
  * to the well-known default when the field is absent or the probe fails.
  */
 export async function discoverClientId(endpoint: string): Promise<string> {
-  try {
-    const res = await fetch(`${trimEndpoint(endpoint)}/health`);
-    if (res.ok) {
+  return (await discoverEngine(endpoint)).clientId;
+}
+
+export interface EngineInfo {
+  /** Base URL where the device-flow + ingest routes live (may carry a path prefix). */
+  apiBase: string;
+  /** Public OAuth client id this engine expects. */
+  clientId: string;
+}
+
+/** True only for a `/health` body that proves we reached the ingest API (not the
+ * web app or a stray 404 page that happened to be JSON). */
+function isEngineHealth(body: unknown): body is { agent_oauth: { client_id?: string } } {
+  if (typeof body !== 'object' || body === null) return false;
+  const oauth = (body as { agent_oauth?: unknown }).agent_oauth;
+  return (
+    typeof oauth === 'object' &&
+    oauth !== null &&
+    (oauth as { device_flow?: unknown }).device_flow === true
+  );
+}
+
+/**
+ * Resolve the engine's API base + client id from a user-supplied origin.
+ *
+ * Deployments differ in where the ingest API sits: a local `make ingest` serves
+ * it at the root, while the hosted engine is path-routed behind one domain
+ * (`/` → web, `/api` → ingest). So we probe `/health` at the origin first, then
+ * under `/api`, and treat whichever actually answers as the engine — the user can
+ * paste their dashboard URL and we find the API for them. Falls back to the origin
+ * as given (with the default client id) when nothing answers, so the subsequent
+ * connect attempt surfaces a concrete error.
+ */
+export async function discoverEngine(endpoint: string): Promise<EngineInfo> {
+  const base = trimEndpoint(endpoint);
+  for (const suffix of ['', '/api']) {
+    const candidate = `${base}${suffix}`;
+    try {
+      const res = await fetch(`${candidate}/health`);
+      if (!res.ok) continue;
       const body = (await res.json()) as { agent_oauth?: { client_id?: string } };
-      const id = body.agent_oauth?.client_id;
-      if (typeof id === 'string' && id) return id;
+      if (isEngineHealth(body)) {
+        const id = body.agent_oauth?.client_id;
+        return { apiBase: candidate, clientId: typeof id === 'string' && id ? id : DEFAULT_CLIENT_ID };
+      }
+    } catch {
+      // not reachable / not JSON — try the next candidate
     }
-  } catch {
-    // fall through to the default
   }
-  return DEFAULT_CLIENT_ID;
+  return { apiBase: base, clientId: DEFAULT_CLIENT_ID };
 }
 
 export async function requestDeviceCode(
