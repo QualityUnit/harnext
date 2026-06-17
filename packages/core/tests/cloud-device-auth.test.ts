@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CloudAuthError,
   discoverClientId,
+  discoverEngine,
   pollForToken,
   refreshTokens,
   requestDeviceCode,
@@ -20,18 +21,78 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** A `/health` body the engine returns (carries the device-flow marker). */
+function engineHealth(clientId = 'harnext-cli'): unknown {
+  return { ok: true, agent_oauth: { device_flow: true, client_id: clientId } };
+}
+
 describe('discoverClientId', () => {
   it('reads agent_oauth.client_id from /health', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse(200, { agent_oauth: { client_id: 'custom-cli' } })),
-    );
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, engineHealth('custom-cli'))));
     expect(await discoverClientId('http://engine')).toBe('custom-cli');
   });
 
   it('falls back to the default when the probe fails', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(500, {})));
     expect(await discoverClientId('http://engine')).toBe('harnext-cli');
+  });
+});
+
+describe('discoverEngine', () => {
+  it('uses the root when the API is served there (local make ingest)', async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url === 'http://localhost:8000/health'
+        ? jsonResponse(200, engineHealth('harnext-cli'))
+        : jsonResponse(404, {}),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const info = await discoverEngine('http://localhost:8000');
+    expect(info).toEqual({ apiBase: 'http://localhost:8000', clientId: 'harnext-cli' });
+  });
+
+  it('falls through to /api for a path-routed hosted engine', async () => {
+    // The bare origin serves the web app: /health is a non-JSON 404. /api/health
+    // is the real engine.
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://app.harnext.dev/health') {
+        return new Response('<!doctype html>not found', { status: 404 });
+      }
+      if (url === 'https://app.harnext.dev/api/health') {
+        return jsonResponse(200, engineHealth('harnext-cli'));
+      }
+      return jsonResponse(404, {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const info = await discoverEngine('https://app.harnext.dev');
+    expect(info).toEqual({ apiBase: 'https://app.harnext.dev/api', clientId: 'harnext-cli' });
+  });
+
+  it('ignores a 200 that is not the engine health shape', async () => {
+    // The web app answers /health with 200 JSON that lacks agent_oauth — must not
+    // be mistaken for the API; the probe moves on to /api.
+    const fetchMock = vi.fn(async (url: string) =>
+      url === 'https://app.harnext.dev/api/health'
+        ? jsonResponse(200, engineHealth())
+        : jsonResponse(200, { ok: true }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const info = await discoverEngine('https://app.harnext.dev');
+    expect(info.apiBase).toBe('https://app.harnext.dev/api');
+  });
+
+  it('trims a trailing slash before probing', async () => {
+    const fetchMock = vi.fn(async (url: string) =>
+      url === 'http://localhost:8000/health' ? jsonResponse(200, engineHealth()) : jsonResponse(404, {}),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const info = await discoverEngine('http://localhost:8000/');
+    expect(info.apiBase).toBe('http://localhost:8000');
+  });
+
+  it('falls back to the origin + default client id when nothing answers', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(500, {})));
+    const info = await discoverEngine('http://unreachable');
+    expect(info).toEqual({ apiBase: 'http://unreachable', clientId: 'harnext-cli' });
   });
 });
 

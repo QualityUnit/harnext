@@ -422,8 +422,12 @@ Runs the OAuth device flow: prints a URL to approve in the engine's dashboard,
 waits for approval, then stores the tokens and turns on cloud sync. Every
 conversation is then streamed to the engine, turn by turn.
 
+The engine's API base is auto-detected (root for a local server, /api for the
+path-routed hosted engine), so just pass the URL you open in your browser.
+
 Options:
-  --endpoint, --url <url>  Context engine base URL (else uses the saved one or prompts)
+  --endpoint, --url <url>  Context engine URL (default: https://app.harnext.dev;
+                           else uses the saved one)
   --disable                Turn cloud sync off (keeps the stored login)
   --cwd <directory>        Working directory [default: .]
 `);
