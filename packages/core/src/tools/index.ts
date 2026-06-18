@@ -60,6 +60,13 @@ export {
   createExitPlanTool,
 } from './exit-plan.js';
 export {
+  type HeartbeatToolDetails,
+  type HeartbeatToolInput,
+  type CreateHeartbeatToolOptions,
+  heartbeatTool,
+  createHeartbeatTool,
+} from './heartbeat-tool.js';
+export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
@@ -75,6 +82,7 @@ import { createBashOutputTool } from './bash-output.js';
 import { createKillShellTool } from './kill-shell.js';
 import { editTool, createEditTool } from './edit.js';
 import { exitPlanTool, createExitPlanTool } from './exit-plan.js';
+import { heartbeatTool, createHeartbeatTool, type CreateHeartbeatToolOptions } from './heartbeat-tool.js';
 import { memoryTool, createMemoryTool } from './memory.js';
 import { readTool, createReadTool } from './read.js';
 import { todoTool, createTodoTool } from './todo.js';
@@ -91,6 +99,7 @@ export const codingTools: Tool[] = [
   todoTool,
   exitPlanTool,
   memoryTool,
+  heartbeatTool,
 ];
 
 export const allTools = {
@@ -101,6 +110,7 @@ export const allTools = {
   todo: todoTool,
   exit_plan: exitPlanTool,
   memory: memoryTool,
+  heartbeat: heartbeatTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -112,6 +122,8 @@ export interface CreateCodingToolsOptions {
   executor?: CommandExecutor;
   /** Command working directory when it differs from the file-tool `cwd`. */
   execCwd?: string;
+  /** Overrides for the `heartbeat` tool (cli/node paths, crontab I/O). Defaults derive from `process`. */
+  heartbeat?: CreateHeartbeatToolOptions;
 }
 
 export function createCodingTools(cwd: string, options: CreateCodingToolsOptions = {}): Tool[] {
@@ -124,6 +136,7 @@ export function createCodingTools(cwd: string, options: CreateCodingToolsOptions
     createTodoTool(),
     createExitPlanTool(),
     createMemoryTool(cwd),
+    createHeartbeatTool(cwd, options.heartbeat),
   ];
   // The background-shell companions only exist when a manager is wired in
   // (i.e. background execution is enabled for this session).
@@ -142,5 +155,6 @@ export function createAllTools(cwd: string): Record<ToolName, Tool> {
     todo: createTodoTool(),
     exit_plan: createExitPlanTool(),
     memory: createMemoryTool(cwd),
+    heartbeat: createHeartbeatTool(cwd),
   };
 }
