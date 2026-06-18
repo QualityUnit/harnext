@@ -921,6 +921,124 @@ export function modeSwitchLine(mode: Mode): string {
   return '  ' + style.bg(` ${style.label} `) + ' ' + c.faint(modeHint(mode));
 }
 
+// ── Loop (session-bound /loop) ───────────────────────────────────────
+//
+// A loop re-injects its prompt as a visible turn on a timer. These lines mark
+// the lifecycle in the scrollback so the user feels the agent "waking up".
+
+const LOOP_ICON = '⟳';
+
+function clip(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? oneLine.slice(0, max - 1) + '…' : oneLine;
+}
+
+function tickWord(n: number): string {
+  return `${n} tick${n === 1 ? '' : 's'}`;
+}
+
+export function loopStarted(opts: {
+  mode: 'fixed' | 'dynamic';
+  intervalLabel?: string;
+  prompt: string;
+}): string {
+  const cadence = opts.mode === 'fixed' ? `every ${opts.intervalLabel}` : 'self-paced';
+  return (
+    '\n  ' +
+    c.magenta(`${LOOP_ICON} loop started`) +
+    c.faint(` · ${cadence} · `) +
+    c.dim(clip(opts.prompt, 60)) +
+    '\n  ' +
+    c.faint('  esc while idle, or /loop stop, to end') +
+    '\n'
+  );
+}
+
+/** Echoed in place of the user caret when a tick is injected. */
+export function loopTickHeader(opts: { tickNumber: number; prompt: string }): string {
+  return (
+    c.magenta(`${LOOP_ICON} loop tick #${opts.tickNumber}`) +
+    c.faint(' · ') +
+    c.dim(clip(opts.prompt, 60))
+  );
+}
+
+export function loopScheduled(opts: { delayLabel: string; reason?: string }): string {
+  return (
+    '  ' +
+    c.magenta(`${LOOP_ICON} next wake in ${opts.delayLabel}`) +
+    (opts.reason ? c.faint(` — ${clip(opts.reason, 70)}`) : '') +
+    '\n'
+  );
+}
+
+export function loopFinished(opts: {
+  iterations: number;
+  reason?: string;
+  implicit?: boolean;
+}): string {
+  const base =
+    c.magenta(`${LOOP_ICON} loop ended`) + c.faint(` · ${tickWord(opts.iterations)}`);
+  if (opts.reason) return '  ' + base + c.faint(` — ${clip(opts.reason, 70)}`) + '\n';
+  if (opts.implicit) return '  ' + base + c.faint(' — no next wake scheduled') + '\n';
+  return '  ' + base + '\n';
+}
+
+export function loopStopped(opts: { iterations: number }): string {
+  return (
+    '  ' + c.magenta(`${LOOP_ICON} loop stopped`) + c.faint(` · ${tickWord(opts.iterations)}`) + '\n'
+  );
+}
+
+export function loopStatus(opts: {
+  mode: 'fixed' | 'dynamic';
+  prompt: string;
+  iterations: number;
+  nextInLabel?: string;
+  running: boolean;
+}): string {
+  const cadence = opts.mode === 'fixed' ? 'fixed' : 'self-paced';
+  const when = opts.running
+    ? c.amber('running now')
+    : opts.nextInLabel
+      ? c.dim(`next in ${opts.nextInLabel}`)
+      : c.dim('idle');
+  return (
+    '\n  ' +
+    c.magenta(`${LOOP_ICON} loop`) +
+    c.faint(` · ${cadence} · ${tickWord(opts.iterations)} so far · `) +
+    when +
+    '\n  ' +
+    c.faint('  ') +
+    c.dim(clip(opts.prompt, 70)) +
+    '\n'
+  );
+}
+
+export function loopHelp(): string {
+  return (
+    '\n  ' +
+    c.bright('/loop') +
+    c.faint(' — run a prompt on a timer inside this session\n') +
+    '  ' +
+    c.dim('/loop 5m <prompt>') +
+    c.faint('   fixed: re-run every 5m (s/m/h/d)\n') +
+    '  ' +
+    c.dim('/loop <prompt>') +
+    c.faint('      self-paced: the agent schedules its own next wake\n') +
+    '  ' +
+    c.dim('/loop status') +
+    c.faint('        show the active loop\n') +
+    '  ' +
+    c.dim('/loop stop') +
+    c.faint('          stop it (or press esc while idle)\n')
+  );
+}
+
+export function loopError(message: string): string {
+  return '  ' + c.amber(message) + '\n';
+}
+
 // ── Status bar ───────────────────────────────────────────────────────
 //
 //  NORMAL  ~/path ⎇ main ✓        ↑5.9K ↓2.3K  $0.041  provider/model  ctx ▓▓░░░░ 31%
@@ -940,6 +1058,8 @@ export interface StatusBarOptions {
   backgroundJobsFocused?: boolean;
   /** Number of Ctrl+V-pasted images queued for the next prompt; shows a 🖼 chip. */
   attachedImages?: number;
+  /** Active session loop; shows a ⟳ chip with the next-wake countdown. */
+  loop?: { label: string };
 }
 
 const CTX_BAR_CELLS = 6;
@@ -998,6 +1118,11 @@ export function inputFooter(opts: StatusBarOptions): string {
   const imgRendered = imgN > 0 ? ' ' + c.magenta(imgLabel) : '';
   const imgW = imgN > 0 ? 1 + imgLabel.length + 1 : 0; // ' ' + label (+1: 🖼 is wide)
 
+  // Loop chip (⟳ next-wake), right after the images chip while a loop is active.
+  const loopLabel = opts.loop ? `${LOOP_ICON} ${opts.loop.label}` : '';
+  const loopRendered = opts.loop ? ' ' + c.magenta(loopLabel) : '';
+  const loopW = opts.loop ? 1 + loopLabel.length : 0;
+
   // Right: tokens · cost · provider/model · ctx meter.
   const segs: { rendered: string; width: number }[] = [];
   if (opts.inputTokens != null && opts.outputTokens != null) {
@@ -1036,7 +1161,7 @@ export function inputFooter(opts: StatusBarOptions): string {
 
   // Fixed chrome: pill + space + git + jobs + images + min 1-space gap before
   // the right side. Drop right-side segments from the left inward until it fits.
-  const chromeW = pillW + 1 + gitW + jobsW + imgW;
+  const chromeW = pillW + 1 + gitW + jobsW + imgW + loopW;
   let right = joinSegs();
   while (chromeW + 1 + right.width > w && segs.length > 1) {
     segs.shift();
@@ -1049,7 +1174,7 @@ export function inputFooter(opts: StatusBarOptions): string {
   if (cwdStr.length > leftBudget) {
     cwdStr = leftBudget <= 1 ? cwdStr.slice(0, leftBudget) : '…' + cwdStr.slice(-(leftBudget - 1));
   }
-  const leftW = pillW + 1 + cwdStr.length + gitW + jobsW + imgW;
+  const leftW = pillW + 1 + cwdStr.length + gitW + jobsW + imgW + loopW;
   const gap = Math.max(1, w - leftW - right.width);
 
   const infoLine =
@@ -1059,6 +1184,7 @@ export function inputFooter(opts: StatusBarOptions): string {
     gitRendered +
     jobsRendered +
     imgRendered +
+    loopRendered +
     ' '.repeat(gap) +
     right.rendered;
   return separator() + '\n' + infoLine;

@@ -37,6 +37,17 @@ import { runConnectCommand, runDisconnectCommand } from '../../cli/connect-promp
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
 import {
+  LoopController,
+  buildLoopTickPrompt,
+  createLoopManagementTool,
+  createLoopTools,
+  formatLoopDelay,
+  parseLoopArgs,
+  type LoopSpec,
+  type LoopState,
+  type LoopToolHost,
+} from '../../cli/loop.js';
+import {
   clipboardInstallHint,
   formatImageSize,
   hasClipboardTool,
@@ -96,6 +107,8 @@ interface CommandContext {
   ensureBundledSkills: () => EnsureResult;
   invokeSkill: (skill: Skill, args: string, echoLabel: string) => Promise<void>;
   writeAbove: (text: string) => void;
+  /** Handle a `/loop` invocation (start / stop / status / help). */
+  loop: (args: string) => void;
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -293,6 +306,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         cliPath: process.argv[1] ?? '',
         nodePath: process.execPath,
       });
+      return true;
+    },
+  },
+  {
+    name: '/loop',
+    description: 'Loop a prompt in this session (e.g. /loop 5m run tests, or /loop watch CI)',
+    pause: false,
+    acceptsArgs: true,
+    action: async (ctx, args) => {
+      ctx.loop(args);
       return true;
     },
   },
@@ -746,6 +769,45 @@ export async function runInteractiveMode(
   // the entry is committed to the scrollback as a normal user message.
   let pendingSteers: { message: AgentMessage; rawText: string }[] = [];
 
+  // ── Session loop (/loop) ────────────────────────────────────────────
+  // A loop re-injects its prompt as a visible turn on a timer, in this very
+  // session. The controller is pure state; the 1s ticker below (defined once
+  // the textarea + runPrompt exist) drives the actual ticks. Dynamic loops
+  // expose `schedule_wakeup`/`end_loop`, layered onto the live tool list only
+  // while such a loop runs so they never clutter the default set.
+  const loop = new LoopController();
+  const loopTools = createLoopTools(loop);
+  const addLoopTools = (): void => {
+    const present = new Set(session.agent.state.tools.map((t) => t.name));
+    const toAdd = loopTools.filter((t) => !present.has(t.name));
+    // Assign through the setter (the getter may hand back a copy) so the new
+    // tools actually land on the live agent.
+    if (toAdd.length > 0) session.agent.state.tools = [...session.agent.state.tools, ...toAdd];
+  };
+  const removeLoopTools = (): void => {
+    const names = new Set(loopTools.map((t) => t.name));
+    session.agent.state.tools = session.agent.state.tools.filter((t) => !names.has(t.name));
+  };
+  // Stop the loop and announce it (skips the announcement when no textarea is
+  // live, e.g. during teardown). Safe to call when no loop is active; returns
+  // the final state (for a tick count) or null.
+  const stopLoop = (announce = true): LoopState | null => {
+    if (!loop.active) return null;
+    const final = loop.stop();
+    removeLoopTools();
+    if (announce && textarea && textarea.isActive()) {
+      textarea.writeAbove('\n' + render.loopStopped({ iterations: final?.iterations ?? 0 }) + '\n');
+    }
+    return final;
+  };
+  // Footer chip label: the next-wake countdown, or "running" mid-tick.
+  const loopFooterLabel = (): string => {
+    const s = loop.snapshot;
+    if (!s) return '';
+    if (s.status === 'running') return 'running';
+    return `next ${formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))}`;
+  };
+
   // ── Permission mode (cycled with shift+tab) ───────────────────────
   // Three coding-agent modes, mirroring Claude Code:
   //   plan              — read-only; the agent drafts a plan via the exit_plan
@@ -908,6 +970,7 @@ export async function runInteractiveMode(
         backgroundJobs: runningJobs,
         backgroundJobsFocused: footerFocused,
         attachedImages: pendingImages.length,
+        loop: loop.active ? { label: loopFooterLabel() } : undefined,
       });
     },
     onShiftTab: () => {
@@ -981,7 +1044,12 @@ export async function runInteractiveMode(
     // (their message references are preserved, so future commits still match).
     onSteerDequeue: () => {
       const popped = pendingSteers.pop();
-      if (!popped) return null;
+      if (!popped) {
+        // Nothing queued: Esc on an empty prompt while a loop waits idle stops
+        // the loop (a live tick is interrupted via the normal 'interrupt' path).
+        if (loop.active && !agentBusy) stopLoop();
+        return null;
+      }
       try {
         session.agent.clearSteeringQueue();
         for (const s of pendingSteers) session.agent.steer(s.message);
@@ -1132,6 +1200,8 @@ export async function runInteractiveMode(
 
     textarea.on('exit', () => {
       stopSpinner();
+      clearInterval(loopTimer);
+      stopLoop(false);
       textarea.close();
       resolve();
     });
@@ -1291,10 +1361,14 @@ export async function runInteractiveMode(
       text: string,
       echo?: string,
       images?: ImageContent[],
+      // Pre-rendered echo block written verbatim instead of the `❯` user-message
+      // caret — used by loop ticks to show their own `⟳ loop tick #N` header.
+      echoOverride?: string,
     ): Promise<void> => {
       // Leading blank separates the echo from the previous block.
       const imgNote = images && images.length > 0 ? chalk.dim(` 🖼 ${images.length}`) : '';
-      textarea.writeAbove('\n' + render.userMessage(echo ?? text) + imgNote + '\n');
+      const echoBlock = echoOverride ?? render.userMessage(echo ?? text);
+      textarea.writeAbove('\n' + echoBlock + imgNote + '\n');
 
       agentBusy = true;
       startSpinner();
@@ -1333,6 +1407,154 @@ export async function runInteractiveMode(
       }
     };
 
+    // ── Loop ticker ─────────────────────────────────────────────────────
+    // Once a second, if a tick is due and the agent is idle, inject the loop's
+    // prompt as a visible turn. It runs between turns (never mid-response), then
+    // advances the schedule — fixed loops reschedule by their interval; dynamic
+    // loops follow the wake the model scheduled, or end if it scheduled none.
+    let loopTickInFlight = false;
+    const runLoopTick = async (): Promise<void> => {
+      loopTickInFlight = true;
+      try {
+        const tickNumber = loop.beginTick();
+        const snap = loop.snapshot;
+        if (!snap) return;
+        const header = render.loopTickHeader({ tickNumber, prompt: snap.prompt });
+        const payload = buildLoopTickPrompt({
+          mode: snap.mode,
+          prompt: snap.prompt,
+          tickNumber,
+        });
+        await runPrompt(payload, undefined, undefined, header);
+        const outcome = loop.endTick(Date.now());
+        if (outcome.kind === 'scheduled') {
+          textarea.writeAbove(
+            '\n' +
+              render.loopScheduled({
+                delayLabel: formatLoopDelay(outcome.delayMs),
+                reason: outcome.reason,
+              }) +
+              '\n',
+          );
+        } else if (outcome.kind === 'finished') {
+          removeLoopTools();
+          textarea.writeAbove(
+            '\n' +
+              render.loopFinished({
+                iterations: outcome.iterations,
+                reason: outcome.reason,
+                implicit: outcome.implicit,
+              }) +
+              '\n',
+          );
+        }
+      } finally {
+        loopTickInFlight = false;
+      }
+    };
+    const loopTimer = setInterval(() => {
+      if (loopTickInFlight || agentBusy) return;
+      // Don't fire while a modal viewer/approval owns the screen (textarea paused).
+      if (!textarea.isActive()) return;
+      if (loop.due(Date.now())) void runLoopTick();
+    }, 1000);
+    // Don't let the ticker keep the process alive on its own.
+    loopTimer.unref();
+
+    // Parse and dispatch a `/loop` invocation. Starting a loop only sets state;
+    // the ticker above runs the first tick on its next pass (within ~1s).
+    // Shared start/status logic, used by BOTH the `/loop` slash command and the
+    // always-on `loop` agent tool — so a loop the agent starts behaves exactly
+    // like one the user typed (same render lines, same dynamic-tool wiring).
+    const startLoop = (spec: LoopSpec): { ok: boolean; message: string } => {
+      if (loop.active) {
+        return { ok: false, message: 'A loop is already running — stop it first.' };
+      }
+      if (spec.mode === 'dynamic') addLoopTools();
+      loop.start(spec, Date.now());
+      textarea.writeAbove(
+        render.loopStarted({
+          mode: spec.mode,
+          intervalLabel: spec.intervalMs != null ? formatLoopDelay(spec.intervalMs) : undefined,
+          prompt: spec.prompt,
+        }) + '\n',
+      );
+      textarea.redraw();
+      const cadence =
+        spec.mode === 'fixed' ? `every ${formatLoopDelay(spec.intervalMs ?? 0)}` : 'self-paced';
+      return {
+        ok: true,
+        message: `Started a ${cadence} loop: ${spec.prompt}. The first iteration runs shortly after this turn.`,
+      };
+    };
+
+    const loopStatusText = (): string => {
+      const s = loop.snapshot;
+      if (!s) return 'No loop is running.';
+      const cadence =
+        s.mode === 'fixed' ? `fixed (every ${formatLoopDelay(s.intervalMs ?? 0)})` : 'self-paced';
+      const when =
+        s.status === 'running'
+          ? 'running now'
+          : `next in ${formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))}`;
+      return `Loop: ${cadence}, ${s.iterations} ticks so far, ${when}.\nPrompt: ${s.prompt}`;
+    };
+
+    // Register the always-on `loop` management tool, bridged to this session.
+    const loopHost: LoopToolHost = {
+      start: startLoop,
+      stop: () => {
+        if (!loop.active) return { ok: false, message: 'No loop is running.' };
+        const final = stopLoop(); // announces in-session
+        return { ok: true, message: `Stopped the loop after ${final?.iterations ?? 0} ticks.` };
+      },
+      status: loopStatusText,
+    };
+    session.agent.state.tools = [...session.agent.state.tools, createLoopManagementTool(loopHost)];
+
+    const loopCommand = (args: string): void => {
+      const parsed = parseLoopArgs(args);
+      switch (parsed.kind) {
+        case 'help':
+          textarea.writeAbove(render.loopHelp() + '\n');
+          return;
+        case 'error':
+          textarea.writeAbove('\n' + render.loopError(parsed.message) + '\n');
+          return;
+        case 'command': {
+          if (!loop.active) {
+            textarea.writeAbove('\n' + render.loopError('No loop is running.') + '\n');
+            return;
+          }
+          if (parsed.command === 'stop') {
+            stopLoop();
+            return;
+          }
+          const s = loop.snapshot;
+          if (s) {
+            textarea.writeAbove(
+              render.loopStatus({
+                mode: s.mode,
+                prompt: s.prompt,
+                iterations: s.iterations,
+                running: s.status === 'running',
+                nextInLabel:
+                  s.status === 'waiting'
+                    ? formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))
+                    : undefined,
+              }) + '\n',
+            );
+          }
+          return;
+        }
+        case 'spec': {
+          const r = startLoop(parsed.spec);
+          if (!r.ok) textarea.writeAbove('\n' + render.loopError(r.message) + '\n');
+          return;
+        }
+      }
+    };
+
     const invokeSkill = async (skill: Skill, args: string, echoLabel: string): Promise<void> => {
       let expanded: string;
       try {
@@ -1364,6 +1586,9 @@ export async function runInteractiveMode(
         } catch {
           // no active run — nothing to abort
         }
+        // A loop is session-scoped; clearing the session ends it. Quietly —
+        // the screen is wiped just below.
+        stopLoop(false);
         session.agent.reset();
         pendingTools.clear();
         pendingImages = [];
@@ -1384,6 +1609,7 @@ export async function runInteractiveMode(
       ensureBundledSkills,
       invokeSkill,
       writeAbove: (text) => textarea.writeAbove(text),
+      loop: (args: string) => loopCommand(args),
     };
 
     // Run a command action. Commands with pause:false stay live on the textarea
