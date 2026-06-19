@@ -16,6 +16,7 @@ import {
   normalizeToolName,
   reconstructMessagesFromRunLog,
   resolveGoalModels,
+  resolveModel,
   runtimeSeconds,
   setDefault,
   setDefaultMode,
@@ -27,6 +28,7 @@ import type {
   BackgroundShell,
   BackgroundShellManager,
   EnsureResult,
+  GoalPhaseModel,
   ImageContent,
   PermissionMode,
 } from '@harnext/core';
@@ -733,6 +735,24 @@ function randomMessage(): string {
   return LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
 }
 
+/**
+ * The strong (planner) / fast (executor) model pair backing the plan-mode model
+ * switch: plan with the big model, implement with the small one. Reuses /goal's
+ * planner→generator resolution — including any /set-goal-config overrides — so
+ * plan mode and /goal stay consistent. Returns null when the active provider has
+ * no distinct pairing (planner === generator, both falling back to the active
+ * model), making the switch a no-op for that provider.
+ */
+function planExecPair(
+  provider: string,
+  modelId: string,
+): { strong: GoalPhaseModel; fast: GoalPhaseModel } | null {
+  const resolved = resolveGoalModels(provider, modelId);
+  const strong = resolved.planner;
+  const fast = resolved.generator;
+  if (strong.provider === fast.provider && strong.modelId === fast.modelId) return null;
+  return { strong, fast };
+}
 
 /**
  * Interactive REPL mode with a sticky textarea pinned to the bottom of the
@@ -747,6 +767,12 @@ export async function runInteractiveMode(
   const cwd = process.cwd();
   let activeProvider = options.provider;
   let activeModel = options.model;
+  // The model the user explicitly selected (startup or /model). Plan-mode turns
+  // swap session.agent.state.model to a strong planner / fast executor, then
+  // restore this between turns. `planSwitchPair` holds the active turn's pair so
+  // the plan-approval handler can hand off to the fast model (see runPrompt).
+  let userModel = session.agent.state.model;
+  let planSwitchPair: { strong: GoalPhaseModel; fast: GoalPhaseModel } | null = null;
   const pendingTools: Map<
     string,
     { args: Record<string, unknown>; startedAt: number; priorContent?: string | null }
@@ -958,9 +984,20 @@ export async function runInteractiveMode(
       const { input, output, cost } = sumSessionUsage(session.messages);
       const runningJobs =
         session.backgroundShells?.list().filter((s) => s.status === 'running').length ?? 0;
+      // Reflect the plan-mode model swap in the footer pill the moment the user
+      // toggles in: plan mode shows the strong planner, the implementation phase
+      // of an approved plan (planSwitchPair still set) shows the fast executor.
+      // Falls back to the user's model when the provider has no distinct pairing.
+      const pair = planExecPair(activeProvider, activeModel);
+      const shown =
+        pair && perm.mode === 'plan'
+          ? { provider: pair.strong.provider, model: pair.strong.modelId }
+          : pair && planSwitchPair
+            ? { provider: pair.fast.provider, model: pair.fast.modelId }
+            : { provider: activeProvider, model: activeModel };
       return render.inputFooter({
-        provider: activeProvider,
-        model: activeModel,
+        provider: shown.provider,
+        model: shown.model,
         cwd,
         contextPercent: ctxPercent,
         inputTokens: input,
@@ -1280,8 +1317,23 @@ export async function runInteractiveMode(
 
         case 'approve-plan': {
           const plan = typeof args?.plan === 'string' ? args.plan : '';
+          // Hand the post-plan implementation to the fast executor (the strong
+          // model planned this turn). No-op when there's no distinct pairing.
+          const handToFastModel = () => {
+            if (!planSwitchPair) return;
+            session.agent.state.model = resolveModel(
+              planSwitchPair.fast.provider,
+              planSwitchPair.fast.modelId,
+            );
+            textarea.writeAbove(
+              chalk.dim(
+                `  ◆ implementing with ${planSwitchPair.fast.provider}/${planSwitchPair.fast.modelId}`,
+              ) + '\n',
+            );
+          };
           if (!canPrompt) {
             perm.mode = 'acceptEdits';
+            handToFastModel();
             return policyResult;
           }
           const pressed = await askApproval(render.planApprovalPrompt(plan), [
@@ -1295,6 +1347,7 @@ export async function runInteractiveMode(
             // Drop out of plan mode so the implementation the agent runs next
             // (in this same turn) flows through acceptEdits.
             perm.mode = 'acceptEdits';
+            handToFastModel();
             return policyResult;
           }
           deniedToolCalls.add(ctx.toolCall.id);
@@ -1370,6 +1423,23 @@ export async function runInteractiveMode(
       const echoBlock = echoOverride ?? render.userMessage(echo ?? text);
       textarea.writeAbove('\n' + echoBlock + imgNote + '\n');
 
+      // Plan mode → plan with the strong model; the implementation that follows
+      // plan approval runs on the fast model (handled in the approve-plan gate).
+      // No-op for providers without a distinct planner/executor pairing. The
+      // user's model is restored between turns in `finally`.
+      planSwitchPair = perm.mode === 'plan' ? planExecPair(activeProvider, activeModel) : null;
+      if (planSwitchPair) {
+        session.agent.state.model = resolveModel(
+          planSwitchPair.strong.provider,
+          planSwitchPair.strong.modelId,
+        );
+        textarea.writeAbove(
+          chalk.dim(
+            `  ◆ planning with ${planSwitchPair.strong.provider}/${planSwitchPair.strong.modelId}`,
+          ) + '\n',
+        );
+      }
+
       agentBusy = true;
       startSpinner();
       try {
@@ -1389,6 +1459,12 @@ export async function runInteractiveMode(
         textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
       } finally {
         agentBusy = false;
+        // Restore the user's model after a plan-mode turn's strong/fast swap so
+        // idle state, the footer, and the next non-plan turn use their choice.
+        if (planSwitchPair) {
+          session.agent.state.model = userModel;
+          planSwitchPair = null;
+        }
         // Steering messages still queued when the run ends (aborted, errored,
         // or max-turns before the next drain point) were never delivered.
         // Surface them so the text isn't lost, then clear both the UI stack and
@@ -1577,6 +1653,7 @@ export async function runInteractiveMode(
       setModel: (provider, modelId, model) => {
         activeProvider = provider;
         activeModel = modelId;
+        userModel = model as typeof userModel;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         session.agent.state.model = model as any;
       },
