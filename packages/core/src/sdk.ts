@@ -193,8 +193,11 @@ function convertToLlm(messages: AgentMessage[]): Message[] {
  * openrouter prefers the registry but hand-builds ids newer than the snapshot;
  * every other provider must be in the registry. No network calls — an id is
  * enough to route the request. Shared by the primary and fallback paths.
+ *
+ * Exported so callers that swap models mid-session (e.g. the plan→execute model
+ * switch) can resolve a Model without rebuilding the whole session.
  */
-function resolveModel(provider: string, modelId: string): Model<string> {
+export function resolveModel(provider: string, modelId: string): Model<string> {
   if (provider === 'ollama') {
     const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
     return buildOllamaModel(modelId, baseUrl) as Model<string>;

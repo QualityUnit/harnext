@@ -317,6 +317,7 @@ export type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 export {
   createAgentSession,
+  resolveModel,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
 } from './sdk.js';
