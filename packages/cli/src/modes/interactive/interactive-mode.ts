@@ -259,6 +259,51 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: '/report-harnext-issue',
+    description: 'File a GitHub issue against QualityUnit/harnext from within harnext',
+    pause: false,
+    acceptsArgs: true,
+    action: async (ctx, args) => {
+      const description = args.trim();
+      if (!description) {
+        ctx.writeAbove(chalk.yellow('  Usage: /report-harnext-issue <description>') + '\n\n');
+        return true;
+      }
+
+      const r = ctx.ensureBundledSkills();
+      for (const d of r.diagnostics) {
+        ctx.writeAbove(chalk.yellow(`  ${d.type}: ${d.message}`) + '\n');
+      }
+
+      // Prefer the session-loaded copy (honors user edits); fall back to the
+      // just-seeded file on disk so the command works on first run too.
+      let skill: Skill | undefined = ctx.session.skills.find(
+        (s) => s.name === 'report-harnext-issue',
+      );
+      if (!skill) {
+        const filePath = join(r.target, 'report-harnext-issue', 'SKILL.md');
+        if (existsSync(filePath)) {
+          skill = {
+            name: 'report-harnext-issue',
+            description: '',
+            filePath,
+            baseDir: dirname(filePath),
+            disableModelInvocation: true,
+          };
+        }
+      }
+      if (!skill) {
+        ctx.writeAbove(
+          chalk.red('  report-harnext-issue skill not available. Restart harnext and try again.') +
+            '\n\n',
+        );
+        return true;
+      }
+      await ctx.invokeSkill(skill, description, '/report-harnext-issue');
+      return true;
+    },
+  },
+  {
     name: '/init',
     description: 'Seed built-in skills and scaffold a project setup skill',
     pause: false,
