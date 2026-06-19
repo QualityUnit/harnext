@@ -201,6 +201,8 @@ function toolColor(name: string): RoleColor {
     case 'glob':
     case 'ls':
     case 'find':
+    case 'web_fetch':
+    case 'web_search':
       return { idx: X.accent, ink: c.accent };
     case 'edit':
     case 'write':
@@ -241,6 +243,10 @@ export function toolStart(name: string, args: Record<string, unknown>): string {
     arg = c.green('$ ') + c.bright(cmd);
   } else if (name === 'read' || name === 'write' || name === 'edit') {
     arg = c.bright(fitToWidth(String(args.path ?? ''), argBudget));
+  } else if (name === 'web_fetch') {
+    arg = c.bright(truncateOneLine(String(args.url ?? ''), argBudget));
+  } else if (name === 'web_search') {
+    arg = c.bright(truncateOneLine(String(args.query ?? ''), argBudget));
   } else {
     arg = c.dim(truncateOneLine(JSON.stringify(args), argBudget));
   }

@@ -67,6 +67,24 @@ export {
   createHeartbeatTool,
 } from './heartbeat-tool.js';
 export {
+  type WebFetchToolDetails,
+  type WebFetchToolInput,
+  type CreateWebFetchToolOptions,
+  webFetchTool,
+  createWebFetchTool,
+} from './web-fetch.js';
+export {
+  type WebSearchToolDetails,
+  type WebSearchToolInput,
+  type CreateWebSearchToolOptions,
+  type SearchResult,
+  type SearchBackend,
+  type SearchBackendKind,
+  webSearchTool,
+  createWebSearchTool,
+  selectBackend,
+} from './web-search.js';
+export {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
@@ -86,6 +104,8 @@ import { heartbeatTool, createHeartbeatTool, type CreateHeartbeatToolOptions } f
 import { memoryTool, createMemoryTool } from './memory.js';
 import { readTool, createReadTool } from './read.js';
 import { todoTool, createTodoTool } from './todo.js';
+import { webFetchTool, createWebFetchTool } from './web-fetch.js';
+import { webSearchTool, createWebSearchTool } from './web-search.js';
 import { writeTool, createWriteTool } from './write.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,6 +120,8 @@ export const codingTools: Tool[] = [
   exitPlanTool,
   memoryTool,
   heartbeatTool,
+  webFetchTool,
+  webSearchTool,
 ];
 
 export const allTools = {
@@ -111,6 +133,8 @@ export const allTools = {
   exit_plan: exitPlanTool,
   memory: memoryTool,
   heartbeat: heartbeatTool,
+  web_fetch: webFetchTool,
+  web_search: webSearchTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -137,6 +161,8 @@ export function createCodingTools(cwd: string, options: CreateCodingToolsOptions
     createExitPlanTool(),
     createMemoryTool(cwd),
     createHeartbeatTool(cwd, options.heartbeat),
+    createWebFetchTool(),
+    createWebSearchTool(),
   ];
   // The background-shell companions only exist when a manager is wired in
   // (i.e. background execution is enabled for this session).
@@ -156,5 +182,7 @@ export function createAllTools(cwd: string): Record<ToolName, Tool> {
     exit_plan: createExitPlanTool(),
     memory: createMemoryTool(cwd),
     heartbeat: createHeartbeatTool(cwd),
+    web_fetch: createWebFetchTool(),
+    web_search: createWebSearchTool(),
   };
 }
