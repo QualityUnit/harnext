@@ -25,6 +25,7 @@ import {
 import { wrapMcpToolAsAgentTool } from './mcp-direct-tool.js';
 import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
+import { buildCustomModel } from './custom.js';
 import { buildNvidiaModel } from './nvidia.js';
 import { buildOllamaModel, DEFAULT_OLLAMA_BASE_URL } from './ollama.js';
 import { buildOpenRouterModel, openRouterAppHeaders } from './openrouter.js';
@@ -43,6 +44,10 @@ export interface CreateAgentSessionOptions {
   provider?: string;
   /** Model ID within the provider */
   modelId?: string;
+  /** OpenAI-compatible endpoint URL. Used by the `custom` provider; also overrides the stored Ollama base URL. */
+  baseUrl?: string;
+  /** API key for this session only — never persisted. Threaded into the stream call so it works for providers pi-ai's env registry doesn't know. */
+  apiKey?: string;
   /** Working directory for tools */
   cwd?: string;
   /** Override the system prompt */
@@ -173,6 +178,7 @@ export async function createAgentSession(
 ): Promise<CreateAgentSessionResult> {
   const provider = options.provider ?? 'anthropic';
   const modelId = options.modelId ?? '';
+  const sessionApiKey = options.apiKey;
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
 
@@ -187,13 +193,18 @@ export async function createAgentSession(
   const resolvedSessionId =
     options.resumeSessionId ?? stored?.sessionId ?? options.sessionId;
 
-  // Resolve model: ollama and NVIDIA NIM use custom Model builders (their
-  // catalogs aren't in pi-ai's static registry); every other provider goes
-  // through the registry.
+  // Resolve model: ollama, NVIDIA NIM, and user-supplied custom endpoints use
+  // custom Model builders (their catalogs aren't in pi-ai's static registry);
+  // every other provider goes through the registry.
   let model: Model<string>;
   if (provider === 'ollama') {
-    const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
+    const baseUrl = options.baseUrl ?? getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
     model = buildOllamaModel(modelId, baseUrl) as Model<string>;
+  } else if (provider === 'custom') {
+    const baseUrl = options.baseUrl ?? getProviderConfig('custom')?.baseUrl;
+    if (!baseUrl) throw new Error('Provider "custom" requires a base URL — pass --base-url <url>.');
+    if (!modelId) throw new Error('Provider "custom" requires a model id — pass --model <id>.');
+    model = buildCustomModel(modelId, baseUrl) as Model<string>;
   } else if (provider === 'nvidia') {
     model = buildNvidiaModel(modelId) as Model<string>;
   } else if (provider === 'openrouter') {
@@ -409,16 +420,24 @@ export async function createAgentSession(
       // its env-api-keys registry. Ollama needs a non-empty placeholder
       // (the OpenAI-compatible client refuses empty keys); NVIDIA needs
       // the real NVIDIA_API_KEY since `getEnvApiKey('nvidia')` returns
-      // undefined upstream.
-      let finalOpts = opts;
+      // undefined upstream. A caller-supplied apiKey (options.apiKey /
+      // --api-key) seeds every provider; per-call opts still win.
+      const seeded = sessionApiKey !== undefined ? { ...opts, apiKey: opts?.apiKey ?? sessionApiKey } : opts;
+      let finalOpts = seeded;
       if (m.provider === 'ollama') {
-        finalOpts = { ...opts, apiKey: opts?.apiKey ?? 'ollama' };
+        finalOpts = { ...seeded, apiKey: seeded?.apiKey ?? 'ollama' };
       } else if (m.provider === 'nvidia') {
-        finalOpts = { ...opts, apiKey: opts?.apiKey ?? process.env.NVIDIA_API_KEY ?? '' };
+        finalOpts = { ...seeded, apiKey: seeded?.apiKey ?? process.env.NVIDIA_API_KEY ?? '' };
       } else if (m.provider === 'openrouter') {
         // Attribution headers list harnext on https://openrouter.ai/apps.
         // Caller-supplied headers win, so an embedder can re-attribute.
-        finalOpts = { ...opts, headers: { ...openRouterAppHeaders(), ...opts?.headers } };
+        finalOpts = { ...seeded, headers: { ...openRouterAppHeaders(), ...seeded?.headers } };
+      } else if (m.provider === 'custom') {
+        // Placeholder key is mandatory for keyless endpoints: pi-ai's client
+        // throws on an empty key and would otherwise silently fall back to
+        // $OPENAI_API_KEY — leaking the user's real OpenAI key to an
+        // arbitrary URL.
+        finalOpts = { ...seeded, apiKey: seeded?.apiKey ?? getProviderConfig('custom')?.key ?? 'custom' };
       }
       return streamSimple(m, ctx, finalOpts);
     },

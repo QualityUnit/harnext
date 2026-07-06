@@ -39,11 +39,22 @@ export function resolveApiKey(provider: ProviderInfo): string | undefined {
  * Ensure the target provider is configured.
  * - For API-key providers: find a key in env or on disk, otherwise onboard.
  * - For local providers (ollama): require a stored baseUrl, otherwise onboard.
+ * - CLI overrides (baseUrl/apiKey): fully specify auth for this run — never
+ *   prompt, never persist.
  */
 export async function ensureAuth(
   requestedProvider: string,
   requestedModel: string,
+  overrides?: { baseUrl?: string; apiKey?: string },
 ): Promise<{ provider: string; model: string }> {
+  // A CLI-supplied endpoint/key fully specifies auth for this run — never
+  // prompt, never persist.
+  if (overrides?.baseUrl || overrides?.apiKey) {
+    const info = getProviderById(requestedProvider);
+    if (info && overrides.apiKey) setProviderEnv(info, overrides.apiKey);
+    return { provider: requestedProvider, model: requestedModel };
+  }
+
   const info = getProviderById(requestedProvider);
 
   if (info) {
@@ -61,6 +72,7 @@ export async function ensureAuth(
   }
 
   for (const p of PROVIDERS) {
+    if (p.hidden) continue;
     if (p.local) {
       if (getProviderConfig(p.id)?.baseUrl) {
         return { provider: p.id, model: p.defaultModel };
@@ -194,7 +206,7 @@ async function onboardOpenRouterModel(provider: ProviderInfo): Promise<string> {
 }
 
 async function selectOnboardingProvider(): Promise<ProviderInfo | undefined> {
-  const items: SelectItem<ProviderInfo>[] = PROVIDERS.map((p) => ({
+  const items: SelectItem<ProviderInfo>[] = PROVIDERS.filter((p) => !p.hidden).map((p) => ({
     label: p.name,
     value: p,
     hint: p.defaultModel,

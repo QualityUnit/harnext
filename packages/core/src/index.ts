@@ -443,6 +443,8 @@ export {
   type OllamaModelSummary,
 } from './ollama.js';
 
+export { buildCustomModel, normalizeCustomBaseUrl } from './custom.js';
+
 export {
   NVIDIA_BASE_URL,
   NVIDIA_DEFAULT_MODEL,
