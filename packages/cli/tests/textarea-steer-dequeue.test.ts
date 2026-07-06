@@ -108,4 +108,58 @@ describe('textarea steering dequeue (Esc)', () => {
     expect(onInterrupt).toHaveBeenCalledTimes(1);
     textarea.close();
   });
+
+  // ── #54 QA coverage ───────────────────────────────────────────────
+
+  it('repeated Esc drains the whole queue one message per press, then interrupts', () => {
+    // Model the interactive-mode stack: each dequeue pops the most-recent entry.
+    const queue = ['first', 'second', 'third'];
+    const onSteerDequeue = vi.fn(() => queue.pop() ?? null);
+    const onInterrupt = vi.fn();
+    const onSubmit = vi.fn();
+    const textarea = createTextarea({ prompt: '> ', onSteerDequeue });
+    textarea.on('interrupt', onInterrupt);
+    textarea.on('submit', onSubmit);
+
+    // 1st Esc recalls "third" into the buffer; submit it to clear the buffer so
+    // the next Esc sees an empty input again.
+    emitKey(stdin, 'escape');
+    emitKey(stdin, 'return');
+    expect(onSubmit).toHaveBeenLastCalledWith('third');
+
+    emitKey(stdin, 'escape');
+    emitKey(stdin, 'return');
+    expect(onSubmit).toHaveBeenLastCalledWith('second');
+
+    emitKey(stdin, 'escape');
+    emitKey(stdin, 'return');
+    expect(onSubmit).toHaveBeenLastCalledWith('first');
+
+    // Queue now empty → the next Esc interrupts instead of dequeuing.
+    expect(onInterrupt).not.toHaveBeenCalled();
+    emitKey(stdin, 'escape');
+    expect(onSteerDequeue).toHaveBeenCalledTimes(4);
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    textarea.close();
+  });
+
+  it('does not clobber a non-empty draft buffer on Esc (interrupts instead, draft kept)', () => {
+    const onSteerDequeue = vi.fn(() => 'queued');
+    const onInterrupt = vi.fn();
+    const onSubmit = vi.fn();
+    const textarea = createTextarea({ prompt: '> ', onSteerDequeue });
+    textarea.on('interrupt', onInterrupt);
+    textarea.on('submit', onSubmit);
+
+    emitKey(stdin, 'h', { sequence: 'h' });
+    emitKey(stdin, 'i', { sequence: 'i' });
+    emitKey(stdin, 'escape'); // draft present → interrupt, no dequeue
+    expect(onSteerDequeue).not.toHaveBeenCalled();
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+
+    // The draft survived the interrupt — submitting emits it unchanged.
+    emitKey(stdin, 'return');
+    expect(onSubmit).toHaveBeenCalledWith('hi');
+    textarea.close();
+  });
 });

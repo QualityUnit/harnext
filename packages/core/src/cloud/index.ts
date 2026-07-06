@@ -7,6 +7,8 @@ export {
 
 export {
   discoverClientId,
+  discoverEngine,
+  DEFAULT_ENDPOINT,
   requestDeviceCode,
   pollForToken,
   refreshTokens,
@@ -14,6 +16,7 @@ export {
   type DeviceCodeResponse,
   type TokenResponse,
   type PollOptions,
+  type EngineInfo,
 } from './device-auth.js';
 
 export {

@@ -18,6 +18,7 @@ import { attachConversationUploader } from './cloud/uploader.js';
 import {
   appendHeartbeatTick,
   createAgentSession,
+  getDefaultMode,
   getProviderById,
   getProviderConfig,
   loadHeartbeatConfig,
@@ -194,6 +195,10 @@ export async function main(argv: string[]): Promise<void> {
   // permission_mode hook into the agent — the flag only seeds the starting UI
   // mode. Headless print mode keeps the baked policy hook.
   const permissionMode = args.permissionMode as PermissionMode | undefined;
+  // Interactive sessions restore the last Shift+Tab mode from preferences when
+  // the user didn't pass an explicit --permission-mode. Headless print mode
+  // ignores the saved mode and uses only the flag (its policy is baked once).
+  const interactiveInitialMode = permissionMode ?? getDefaultMode();
   const { session, resumed } = await createAgentSession({
     provider,
     modelId: model,
@@ -209,6 +214,9 @@ export async function main(argv: string[]): Promise<void> {
     maxTurns: args.maxTurns,
     settingSources: args.settingSources as SettingSource[] | undefined,
     resumeSessionId: resumeTarget?.sessionId,
+    fallback: args.fallbackModel
+      ? { provider: args.fallbackProvider, modelId: args.fallbackModel }
+      : undefined,
   });
 
   // Persist this conversation locally so `harnext --resume` can continue it.
@@ -253,7 +261,7 @@ export async function main(argv: string[]): Promise<void> {
       await runInteractiveMode(session, {
         provider,
         model,
-        initialMode: permissionMode,
+        initialMode: interactiveInitialMode,
       });
     } finally {
       recorder.flush();

@@ -12,11 +12,15 @@ import {
   getProjectMemoryDir,
   listAgentRunLogs,
   loadMemoryIndex,
+  loadSession,
   normalizeToolName,
   reconstructMessagesFromRunLog,
   resolveGoalModels,
+  resolveModel,
   runtimeSeconds,
   setDefault,
+  setDefaultMode,
+  sumSessionUsage,
   toolTargetPath,
 } from '@harnext/core';
 import type {
@@ -24,6 +28,7 @@ import type {
   BackgroundShell,
   BackgroundShellManager,
   EnsureResult,
+  GoalPhaseModel,
   ImageContent,
   PermissionMode,
 } from '@harnext/core';
@@ -33,6 +38,17 @@ import { runSetGoalConfigCommand } from '../../cli/goal-config-prompt.js';
 import { runConnectCommand, runDisconnectCommand } from '../../cli/connect-prompt.js';
 import { runConnectGithubCommand } from '../../cli/github-prompt.js';
 import { runHeartbeatCommand } from '../../cli/heartbeat-prompt.js';
+import {
+  LoopController,
+  buildLoopTickPrompt,
+  createLoopManagementTool,
+  createLoopTools,
+  formatLoopDelay,
+  parseLoopArgs,
+  type LoopSpec,
+  type LoopState,
+  type LoopToolHost,
+} from '../../cli/loop.js';
 import {
   clipboardInstallHint,
   formatImageSize,
@@ -47,6 +63,7 @@ import { createPathCompleter } from '../../cli/file-search.js';
 import { createTextarea } from '../../cli/input.js';
 import type { Textarea } from '../../cli/input.js';
 import { pickModel } from '../../cli/model-picker.js';
+import { runResumePicker } from '../../cli/resume.js';
 import { select } from '../../cli/select.js';
 import type { SelectItem } from '../../cli/select.js';
 import type { AgentSession, Skill } from '@harnext/core';
@@ -67,7 +84,7 @@ export interface InteractiveModeOptions {
 }
 
 /** Narrow any PermissionMode to one of the three interactive UI modes. */
-function toUiMode(mode: PermissionMode | undefined): render.Mode {
+export function toUiMode(mode: PermissionMode | undefined): render.Mode {
   return mode === 'plan' || mode === 'bypassPermissions' ? mode : 'acceptEdits';
 }
 
@@ -92,9 +109,11 @@ interface CommandContext {
   ensureBundledSkills: () => EnsureResult;
   invokeSkill: (skill: Skill, args: string, echoLabel: string) => Promise<void>;
   writeAbove: (text: string) => void;
+  /** Handle a `/loop` invocation (start / stop / status / help). */
+  loop: (args: string) => void;
 }
 
-const SLASH_COMMANDS: SlashCommand[] = [
+export const SLASH_COMMANDS: SlashCommand[] = [
   {
     name: '/model',
     description: 'Switch provider and model',
@@ -182,6 +201,47 @@ const SLASH_COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: '/resume',
+    description: 'Resume a previous session from this directory',
+    action: async (ctx) => {
+      // Same per-cwd picker as `harnext --resume`, usable mid-session.
+      const target = await runResumePicker(process.cwd());
+      if (!target) {
+        // Picker cancelled or no saved sessions (it prints its own note).
+        console.log();
+        return true;
+      }
+      const stored = loadSession(target.sessionId, process.cwd());
+      if (!stored || stored.messages.length === 0) {
+        console.log(chalk.yellow('  That session has no messages to resume.'));
+        console.log();
+        return true;
+      }
+      // Swap the live conversation in place: abort any run, reset the agent,
+      // then seed the stored transcript (mirrors the /runs replay path). The
+      // session recorder rewrites the current transcript on the next turn.
+      try {
+        ctx.session.agent.abort();
+      } catch {
+        // no active run — nothing to abort
+      }
+      ctx.session.agent.reset();
+      ctx.session.agent.state.messages = stored.messages;
+      // Repaint: clear the screen, then print the resumed turns. (The command
+      // runs with the textarea torn down, so write straight to stdout — the
+      // textarea + header are redrawn when the command returns.)
+      process.stdout.write('\x1B[2J\x1B[H');
+      process.stdout.write(renderTranscript(stored.messages));
+      console.log(
+        chalk.green('  Resumed session ') +
+          chalk.bold(target.sessionId.slice(0, 8)) +
+          chalk.dim(` — ${stored.messages.length} messages.`),
+      );
+      console.log();
+      return true;
+    },
+  },
+  {
     name: '/memory',
     description: 'Show this project’s memory directory and index',
     pause: false,
@@ -195,6 +255,51 @@ const SLASH_COMMANDS: SlashCommand[] = [
         lines.push(chalk.dim('  (empty — the agent records durable facts here as it learns them)'));
       }
       ctx.writeAbove(lines.join('\n') + '\n\n');
+      return true;
+    },
+  },
+  {
+    name: '/report-harnext-issue',
+    description: 'File a GitHub issue against QualityUnit/harnext from within harnext',
+    pause: false,
+    acceptsArgs: true,
+    action: async (ctx, args) => {
+      const description = args.trim();
+      if (!description) {
+        ctx.writeAbove(chalk.yellow('  Usage: /report-harnext-issue <description>') + '\n\n');
+        return true;
+      }
+
+      const r = ctx.ensureBundledSkills();
+      for (const d of r.diagnostics) {
+        ctx.writeAbove(chalk.yellow(`  ${d.type}: ${d.message}`) + '\n');
+      }
+
+      // Prefer the session-loaded copy (honors user edits); fall back to the
+      // just-seeded file on disk so the command works on first run too.
+      let skill: Skill | undefined = ctx.session.skills.find(
+        (s) => s.name === 'report-harnext-issue',
+      );
+      if (!skill) {
+        const filePath = join(r.target, 'report-harnext-issue', 'SKILL.md');
+        if (existsSync(filePath)) {
+          skill = {
+            name: 'report-harnext-issue',
+            description: '',
+            filePath,
+            baseDir: dirname(filePath),
+            disableModelInvocation: true,
+          };
+        }
+      }
+      if (!skill) {
+        ctx.writeAbove(
+          chalk.red('  report-harnext-issue skill not available. Restart harnext and try again.') +
+            '\n\n',
+        );
+        return true;
+      }
+      await ctx.invokeSkill(skill, description, '/report-harnext-issue');
       return true;
     },
   },
@@ -248,6 +353,16 @@ const SLASH_COMMANDS: SlashCommand[] = [
         cliPath: process.argv[1] ?? '',
         nodePath: process.execPath,
       });
+      return true;
+    },
+  },
+  {
+    name: '/loop',
+    description: 'Loop a prompt in this session (e.g. /loop 5m run tests, or /loop watch CI)',
+    pause: false,
+    acceptsArgs: true,
+    action: async (ctx, args) => {
+      ctx.loop(args);
       return true;
     },
   },
@@ -598,7 +713,7 @@ interface SlashCommandMatch {
  * Commands flagged `acceptsArgs: true` also match `/foo <rest>` and
  * return the trimmed remainder as args.
  */
-function findSlashCommand(input: string): SlashCommandMatch | undefined {
+export function findSlashCommand(input: string): SlashCommandMatch | undefined {
   const exact = SLASH_COMMANDS.find((cmd) => cmd.name === input);
   if (exact) return { cmd: exact, args: '' };
   const argCmd = SLASH_COMMANDS.find(
@@ -665,27 +780,23 @@ function randomMessage(): string {
   return LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)];
 }
 
-// Sum input/output tokens and cost across all assistant turns in the
-// session. Each turn's `input` is cumulative context sent to the model —
-// summing across turns reflects total tokens consumed, not unique tokens.
-function sumSessionUsage(
-  messages: ReadonlyArray<{
-    role: string;
-    usage?: { input?: number; output?: number; cost?: { total?: number } };
-  }>,
-): { input: number; output: number; cost: number } {
-  let input = 0;
-  let output = 0;
-  let cost = 0;
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
-    const u = msg.usage;
-    if (!u) continue;
-    input += u.input ?? 0;
-    output += u.output ?? 0;
-    cost += u.cost?.total ?? 0;
-  }
-  return { input, output, cost };
+/**
+ * The strong (planner) / fast (executor) model pair backing the plan-mode model
+ * switch: plan with the big model, implement with the small one. Reuses /goal's
+ * planner→generator resolution — including any /set-goal-config overrides — so
+ * plan mode and /goal stay consistent. Returns null when the active provider has
+ * no distinct pairing (planner === generator, both falling back to the active
+ * model), making the switch a no-op for that provider.
+ */
+function planExecPair(
+  provider: string,
+  modelId: string,
+): { strong: GoalPhaseModel; fast: GoalPhaseModel } | null {
+  const resolved = resolveGoalModels(provider, modelId);
+  const strong = resolved.planner;
+  const fast = resolved.generator;
+  if (strong.provider === fast.provider && strong.modelId === fast.modelId) return null;
+  return { strong, fast };
 }
 
 /**
@@ -701,6 +812,12 @@ export async function runInteractiveMode(
   const cwd = process.cwd();
   let activeProvider = options.provider;
   let activeModel = options.model;
+  // The model the user explicitly selected (startup or /model). Plan-mode turns
+  // swap session.agent.state.model to a strong planner / fast executor, then
+  // restore this between turns. `planSwitchPair` holds the active turn's pair so
+  // the plan-approval handler can hand off to the fast model (see runPrompt).
+  let userModel = session.agent.state.model;
+  let planSwitchPair: { strong: GoalPhaseModel; fast: GoalPhaseModel } | null = null;
   const pendingTools: Map<
     string,
     { args: Record<string, unknown>; startedAt: number; priorContent?: string | null }
@@ -722,6 +839,45 @@ export async function runInteractiveMode(
   // message_start the loop emits when it injects the message — at which point
   // the entry is committed to the scrollback as a normal user message.
   let pendingSteers: { message: AgentMessage; rawText: string }[] = [];
+
+  // ── Session loop (/loop) ────────────────────────────────────────────
+  // A loop re-injects its prompt as a visible turn on a timer, in this very
+  // session. The controller is pure state; the 1s ticker below (defined once
+  // the textarea + runPrompt exist) drives the actual ticks. Dynamic loops
+  // expose `schedule_wakeup`/`end_loop`, layered onto the live tool list only
+  // while such a loop runs so they never clutter the default set.
+  const loop = new LoopController();
+  const loopTools = createLoopTools(loop);
+  const addLoopTools = (): void => {
+    const present = new Set(session.agent.state.tools.map((t) => t.name));
+    const toAdd = loopTools.filter((t) => !present.has(t.name));
+    // Assign through the setter (the getter may hand back a copy) so the new
+    // tools actually land on the live agent.
+    if (toAdd.length > 0) session.agent.state.tools = [...session.agent.state.tools, ...toAdd];
+  };
+  const removeLoopTools = (): void => {
+    const names = new Set(loopTools.map((t) => t.name));
+    session.agent.state.tools = session.agent.state.tools.filter((t) => !names.has(t.name));
+  };
+  // Stop the loop and announce it (skips the announcement when no textarea is
+  // live, e.g. during teardown). Safe to call when no loop is active; returns
+  // the final state (for a tick count) or null.
+  const stopLoop = (announce = true): LoopState | null => {
+    if (!loop.active) return null;
+    const final = loop.stop();
+    removeLoopTools();
+    if (announce && textarea && textarea.isActive()) {
+      textarea.writeAbove('\n' + render.loopStopped({ iterations: final?.iterations ?? 0 }) + '\n');
+    }
+    return final;
+  };
+  // Footer chip label: the next-wake countdown, or "running" mid-tick.
+  const loopFooterLabel = (): string => {
+    const s = loop.snapshot;
+    if (!s) return '';
+    if (s.status === 'running') return 'running';
+    return `next ${formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))}`;
+  };
 
   // ── Permission mode (cycled with shift+tab) ───────────────────────
   // Three coding-agent modes, mirroring Claude Code:
@@ -873,9 +1029,20 @@ export async function runInteractiveMode(
       const { input, output, cost } = sumSessionUsage(session.messages);
       const runningJobs =
         session.backgroundShells?.list().filter((s) => s.status === 'running').length ?? 0;
+      // Reflect the plan-mode model swap in the footer pill the moment the user
+      // toggles in: plan mode shows the strong planner, the implementation phase
+      // of an approved plan (planSwitchPair still set) shows the fast executor.
+      // Falls back to the user's model when the provider has no distinct pairing.
+      const pair = planExecPair(activeProvider, activeModel);
+      const shown =
+        pair && perm.mode === 'plan'
+          ? { provider: pair.strong.provider, model: pair.strong.modelId }
+          : pair && planSwitchPair
+            ? { provider: pair.fast.provider, model: pair.fast.modelId }
+            : { provider: activeProvider, model: activeModel };
       return render.inputFooter({
-        provider: activeProvider,
-        model: activeModel,
+        provider: shown.provider,
+        model: shown.model,
         cwd,
         contextPercent: ctxPercent,
         inputTokens: input,
@@ -885,11 +1052,19 @@ export async function runInteractiveMode(
         backgroundJobs: runningJobs,
         backgroundJobsFocused: footerFocused,
         attachedImages: pendingImages.length,
+        loop: loop.active ? { label: loopFooterLabel() } : undefined,
       });
     },
     onShiftTab: () => {
       const idx = MODES.indexOf(perm.mode);
       perm.mode = MODES[(idx + 1) % MODES.length];
+      // Persist the choice so the next session starts in the same mode (unless
+      // --permission-mode overrides). Best-effort; a write failure is ignored.
+      try {
+        setDefaultMode(perm.mode);
+      } catch {
+        // ignore — persistence is non-critical
+      }
       // Surface the new mode + a one-line reminder of what it gates, above the
       // input. The footer pill updates on the redraw that follows this handler.
       textarea.writeAbove('\n' + render.modeSwitchLine(perm.mode) + '\n');
@@ -951,7 +1126,12 @@ export async function runInteractiveMode(
     // (their message references are preserved, so future commits still match).
     onSteerDequeue: () => {
       const popped = pendingSteers.pop();
-      if (!popped) return null;
+      if (!popped) {
+        // Nothing queued: Esc on an empty prompt while a loop waits idle stops
+        // the loop (a live tick is interrupted via the normal 'interrupt' path).
+        if (loop.active && !agentBusy) stopLoop();
+        return null;
+      }
       try {
         session.agent.clearSteeringQueue();
         for (const s of pendingSteers) session.agent.steer(s.message);
@@ -1102,6 +1282,8 @@ export async function runInteractiveMode(
 
     textarea.on('exit', () => {
       stopSpinner();
+      clearInterval(loopTimer);
+      stopLoop(false);
       textarea.close();
       resolve();
     });
@@ -1180,8 +1362,23 @@ export async function runInteractiveMode(
 
         case 'approve-plan': {
           const plan = typeof args?.plan === 'string' ? args.plan : '';
+          // Hand the post-plan implementation to the fast executor (the strong
+          // model planned this turn). No-op when there's no distinct pairing.
+          const handToFastModel = () => {
+            if (!planSwitchPair) return;
+            session.agent.state.model = resolveModel(
+              planSwitchPair.fast.provider,
+              planSwitchPair.fast.modelId,
+            );
+            textarea.writeAbove(
+              chalk.dim(
+                `  ◆ implementing with ${planSwitchPair.fast.provider}/${planSwitchPair.fast.modelId}`,
+              ) + '\n',
+            );
+          };
           if (!canPrompt) {
             perm.mode = 'acceptEdits';
+            handToFastModel();
             return policyResult;
           }
           const pressed = await askApproval(render.planApprovalPrompt(plan), [
@@ -1195,6 +1392,7 @@ export async function runInteractiveMode(
             // Drop out of plan mode so the implementation the agent runs next
             // (in this same turn) flows through acceptEdits.
             perm.mode = 'acceptEdits';
+            handToFastModel();
             return policyResult;
           }
           deniedToolCalls.add(ctx.toolCall.id);
@@ -1261,10 +1459,31 @@ export async function runInteractiveMode(
       text: string,
       echo?: string,
       images?: ImageContent[],
+      // Pre-rendered echo block written verbatim instead of the `❯` user-message
+      // caret — used by loop ticks to show their own `⟳ loop tick #N` header.
+      echoOverride?: string,
     ): Promise<void> => {
       // Leading blank separates the echo from the previous block.
       const imgNote = images && images.length > 0 ? chalk.dim(` 🖼 ${images.length}`) : '';
-      textarea.writeAbove('\n' + render.userMessage(echo ?? text) + imgNote + '\n');
+      const echoBlock = echoOverride ?? render.userMessage(echo ?? text);
+      textarea.writeAbove('\n' + echoBlock + imgNote + '\n');
+
+      // Plan mode → plan with the strong model; the implementation that follows
+      // plan approval runs on the fast model (handled in the approve-plan gate).
+      // No-op for providers without a distinct planner/executor pairing. The
+      // user's model is restored between turns in `finally`.
+      planSwitchPair = perm.mode === 'plan' ? planExecPair(activeProvider, activeModel) : null;
+      if (planSwitchPair) {
+        session.agent.state.model = resolveModel(
+          planSwitchPair.strong.provider,
+          planSwitchPair.strong.modelId,
+        );
+        textarea.writeAbove(
+          chalk.dim(
+            `  ◆ planning with ${planSwitchPair.strong.provider}/${planSwitchPair.strong.modelId}`,
+          ) + '\n',
+        );
+      }
 
       agentBusy = true;
       startSpinner();
@@ -1285,6 +1504,12 @@ export async function runInteractiveMode(
         textarea.writeAbove('\n' + render.errorBlock(detail) + '\n');
       } finally {
         agentBusy = false;
+        // Restore the user's model after a plan-mode turn's strong/fast swap so
+        // idle state, the footer, and the next non-plan turn use their choice.
+        if (planSwitchPair) {
+          session.agent.state.model = userModel;
+          planSwitchPair = null;
+        }
         // Steering messages still queued when the run ends (aborted, errored,
         // or max-turns before the next drain point) were never delivered.
         // Surface them so the text isn't lost, then clear both the UI stack and
@@ -1300,6 +1525,154 @@ export async function runInteractiveMode(
           textarea.writeAbove('\n' + render.undeliveredSteers(undelivered) + '\n');
         }
         stopSpinner();
+      }
+    };
+
+    // ── Loop ticker ─────────────────────────────────────────────────────
+    // Once a second, if a tick is due and the agent is idle, inject the loop's
+    // prompt as a visible turn. It runs between turns (never mid-response), then
+    // advances the schedule — fixed loops reschedule by their interval; dynamic
+    // loops follow the wake the model scheduled, or end if it scheduled none.
+    let loopTickInFlight = false;
+    const runLoopTick = async (): Promise<void> => {
+      loopTickInFlight = true;
+      try {
+        const tickNumber = loop.beginTick();
+        const snap = loop.snapshot;
+        if (!snap) return;
+        const header = render.loopTickHeader({ tickNumber, prompt: snap.prompt });
+        const payload = buildLoopTickPrompt({
+          mode: snap.mode,
+          prompt: snap.prompt,
+          tickNumber,
+        });
+        await runPrompt(payload, undefined, undefined, header);
+        const outcome = loop.endTick(Date.now());
+        if (outcome.kind === 'scheduled') {
+          textarea.writeAbove(
+            '\n' +
+              render.loopScheduled({
+                delayLabel: formatLoopDelay(outcome.delayMs),
+                reason: outcome.reason,
+              }) +
+              '\n',
+          );
+        } else if (outcome.kind === 'finished') {
+          removeLoopTools();
+          textarea.writeAbove(
+            '\n' +
+              render.loopFinished({
+                iterations: outcome.iterations,
+                reason: outcome.reason,
+                implicit: outcome.implicit,
+              }) +
+              '\n',
+          );
+        }
+      } finally {
+        loopTickInFlight = false;
+      }
+    };
+    const loopTimer = setInterval(() => {
+      if (loopTickInFlight || agentBusy) return;
+      // Don't fire while a modal viewer/approval owns the screen (textarea paused).
+      if (!textarea.isActive()) return;
+      if (loop.due(Date.now())) void runLoopTick();
+    }, 1000);
+    // Don't let the ticker keep the process alive on its own.
+    loopTimer.unref();
+
+    // Parse and dispatch a `/loop` invocation. Starting a loop only sets state;
+    // the ticker above runs the first tick on its next pass (within ~1s).
+    // Shared start/status logic, used by BOTH the `/loop` slash command and the
+    // always-on `loop` agent tool — so a loop the agent starts behaves exactly
+    // like one the user typed (same render lines, same dynamic-tool wiring).
+    const startLoop = (spec: LoopSpec): { ok: boolean; message: string } => {
+      if (loop.active) {
+        return { ok: false, message: 'A loop is already running — stop it first.' };
+      }
+      if (spec.mode === 'dynamic') addLoopTools();
+      loop.start(spec, Date.now());
+      textarea.writeAbove(
+        render.loopStarted({
+          mode: spec.mode,
+          intervalLabel: spec.intervalMs != null ? formatLoopDelay(spec.intervalMs) : undefined,
+          prompt: spec.prompt,
+        }) + '\n',
+      );
+      textarea.redraw();
+      const cadence =
+        spec.mode === 'fixed' ? `every ${formatLoopDelay(spec.intervalMs ?? 0)}` : 'self-paced';
+      return {
+        ok: true,
+        message: `Started a ${cadence} loop: ${spec.prompt}. The first iteration runs shortly after this turn.`,
+      };
+    };
+
+    const loopStatusText = (): string => {
+      const s = loop.snapshot;
+      if (!s) return 'No loop is running.';
+      const cadence =
+        s.mode === 'fixed' ? `fixed (every ${formatLoopDelay(s.intervalMs ?? 0)})` : 'self-paced';
+      const when =
+        s.status === 'running'
+          ? 'running now'
+          : `next in ${formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))}`;
+      return `Loop: ${cadence}, ${s.iterations} ticks so far, ${when}.\nPrompt: ${s.prompt}`;
+    };
+
+    // Register the always-on `loop` management tool, bridged to this session.
+    const loopHost: LoopToolHost = {
+      start: startLoop,
+      stop: () => {
+        if (!loop.active) return { ok: false, message: 'No loop is running.' };
+        const final = stopLoop(); // announces in-session
+        return { ok: true, message: `Stopped the loop after ${final?.iterations ?? 0} ticks.` };
+      },
+      status: loopStatusText,
+    };
+    session.agent.state.tools = [...session.agent.state.tools, createLoopManagementTool(loopHost)];
+
+    const loopCommand = (args: string): void => {
+      const parsed = parseLoopArgs(args);
+      switch (parsed.kind) {
+        case 'help':
+          textarea.writeAbove(render.loopHelp() + '\n');
+          return;
+        case 'error':
+          textarea.writeAbove('\n' + render.loopError(parsed.message) + '\n');
+          return;
+        case 'command': {
+          if (!loop.active) {
+            textarea.writeAbove('\n' + render.loopError('No loop is running.') + '\n');
+            return;
+          }
+          if (parsed.command === 'stop') {
+            stopLoop();
+            return;
+          }
+          const s = loop.snapshot;
+          if (s) {
+            textarea.writeAbove(
+              render.loopStatus({
+                mode: s.mode,
+                prompt: s.prompt,
+                iterations: s.iterations,
+                running: s.status === 'running',
+                nextInLabel:
+                  s.status === 'waiting'
+                    ? formatLoopDelay(Math.max(0, s.nextFireAt - Date.now()))
+                    : undefined,
+              }) + '\n',
+            );
+          }
+          return;
+        }
+        case 'spec': {
+          const r = startLoop(parsed.spec);
+          if (!r.ok) textarea.writeAbove('\n' + render.loopError(r.message) + '\n');
+          return;
+        }
       }
     };
 
@@ -1325,6 +1698,7 @@ export async function runInteractiveMode(
       setModel: (provider, modelId, model) => {
         activeProvider = provider;
         activeModel = modelId;
+        userModel = model as typeof userModel;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         session.agent.state.model = model as any;
       },
@@ -1334,6 +1708,9 @@ export async function runInteractiveMode(
         } catch {
           // no active run — nothing to abort
         }
+        // A loop is session-scoped; clearing the session ends it. Quietly —
+        // the screen is wiped just below.
+        stopLoop(false);
         session.agent.reset();
         pendingTools.clear();
         pendingImages = [];
@@ -1354,6 +1731,7 @@ export async function runInteractiveMode(
       ensureBundledSkills,
       invokeSkill,
       writeAbove: (text) => textarea.writeAbove(text),
+      loop: (args: string) => loopCommand(args),
     };
 
     // Run a command action. Commands with pause:false stay live on the textarea

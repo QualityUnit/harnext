@@ -103,6 +103,59 @@ describe('createSessionWriter + loadSession', () => {
     expect(listSessions(CWD).find((s) => s.sessionId === 'sess-3')?.firstUserMessage).toBe('one');
   });
 
+  it('persists a mid-session model switch into the meta line (#57)', () => {
+    const writer = createSessionWriter({
+      cwd: CWD,
+      sessionId: 'sess-model-switch',
+      provider: 'openrouter',
+      model: 'qwen/qwen3-coder',
+    });
+    writer.record([user('one'), assistant('a', { input: 10, output: 5 })]);
+
+    // First write captured the creation-time (default) model.
+    expect(loadSession('sess-model-switch', CWD)?.model).toBe('qwen/qwen3-coder');
+
+    // User runs /model and switches; the recorder reports the live model.
+    writer.updateMeta({ provider: 'openrouter', model: 'anthropic/claude-opus-4-8' });
+    writer.record([
+      user('one'),
+      assistant('a', { input: 10, output: 5 }),
+      user('two', 3),
+      assistant('b', { input: 30, output: 5 }, 4),
+    ]);
+
+    const loaded = loadSession('sess-model-switch', CWD);
+    expect(loaded?.model).toBe('anthropic/claude-opus-4-8');
+    expect(loaded?.provider).toBe('openrouter');
+    // The transcript itself is intact after the meta-driven rewrite.
+    expect(loaded?.messages).toHaveLength(4);
+    // listSessions (the --resume picker source) sees the switched model too.
+    expect(listSessions(CWD).find((s) => s.sessionId === 'sess-model-switch')?.model).toBe(
+      'anthropic/claude-opus-4-8',
+    );
+  });
+
+  it('updateMeta with an unchanged model does not force a rewrite path', () => {
+    const writer = createSessionWriter({
+      cwd: CWD,
+      sessionId: 'sess-noop-meta',
+      provider: 'anthropic',
+      model: 'claude-x',
+    });
+    writer.record([user('one'), assistant('a', { input: 10, output: 5 })]);
+    // Same values — append path stays valid and the tail is added correctly.
+    writer.updateMeta({ provider: 'anthropic', model: 'claude-x' });
+    writer.record([
+      user('one'),
+      assistant('a', { input: 10, output: 5 }),
+      user('two', 3),
+      assistant('b', { input: 30, output: 5 }, 4),
+    ]);
+    const loaded = loadSession('sess-noop-meta', CWD);
+    expect(loaded?.model).toBe('claude-x');
+    expect(loaded?.messages).toHaveLength(4);
+  });
+
   it('preserves the original createdAt across resume writes', () => {
     const w1 = createSessionWriter({ cwd: CWD, sessionId: 'sess-4', createdAt: '2020-01-01T00:00:00.000Z' });
     w1.record([user('hi'), assistant('yo', { input: 1, output: 1 })]);

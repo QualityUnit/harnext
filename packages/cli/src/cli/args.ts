@@ -44,8 +44,15 @@ export interface Args {
   settingSources?: string[];
   /** Extra accessible directories (Claude SDK `add_dirs`). Accepted; not yet enforced. */
   addDirs?: string[];
-  /** Fallback model (Claude SDK `fallback_model`). Accepted; not yet enforced. */
+  /**
+   * Availability fallback model (Claude SDK `fallback_model`). On a retryable
+   * pre-stream error (429 / 5xx / network) the current turn is retried against
+   * this model. Defaults to the primary provider; use `--fallback-provider` to
+   * fall back across providers.
+   */
   fallbackModel?: string;
+  /** Provider for `--fallback-model` (defaults to the primary `--provider`). */
+  fallbackProvider?: string;
   /** Output format for print mode: text (default), json, or stream-json. */
   outputFormat?: OutputFormat;
   /** Input format for print mode: text (default) or stream-json (NDJSON on stdin). */
@@ -201,6 +208,9 @@ export function parseArgs(argv: string[]): Args {
         break;
       case '--fallback-model':
         args.fallbackModel = argv[++i];
+        break;
+      case '--fallback-provider':
+        args.fallbackProvider = argv[++i];
         break;
       case '--output-format':
         args.outputFormat = argv[++i] as OutputFormat;
@@ -422,8 +432,12 @@ Runs the OAuth device flow: prints a URL to approve in the engine's dashboard,
 waits for approval, then stores the tokens and turns on cloud sync. Every
 conversation is then streamed to the engine, turn by turn.
 
+The engine's API base is auto-detected (root for a local server, /api for the
+path-routed hosted engine), so just pass the URL you open in your browser.
+
 Options:
-  --endpoint, --url <url>  Context engine base URL (else uses the saved one or prompts)
+  --endpoint, --url <url>  Context engine URL (default: https://app.harnext.dev;
+                           else uses the saved one)
   --disable                Turn cloud sync off (keeps the stored login)
   --cwd <directory>        Working directory [default: .]
 `);
@@ -561,7 +575,8 @@ Options:
   -m, --model <model>          Model ID [default: claude-sonnet-4-6]
   --base-url <url>             OpenAI-compatible endpoint (implies --provider custom)
   --api-key <key>              API key for this run only (not stored)
-  --fallback-model <model>     Model to fall back to (accepted; reserved)
+  --fallback-model <model>     Model to retry the turn against on a 429/5xx/network error
+  --fallback-provider <name>   Provider for --fallback-model (default: --provider)
   --thinking <level>           Thinking level (off, low, medium, high) [default: off]
   --system-prompt <text>       Override system prompt
   --append-system-prompt <t>   Append text to the system prompt

@@ -1,9 +1,19 @@
 import { EventEmitter } from 'node:events';
 import { emitKeypressEvents } from 'node:readline';
 
+import { createPasteStore, shouldStorePaste } from './paste-store.js';
+
 const ESC = '\x1B[';
 const HIDE_CURSOR = `${ESC}?25l`;
 const SHOW_CURSOR = `${ESC}?25h`;
+// Bracketed paste mode: when enabled, the terminal wraps pasted text in
+// ESC[200~ … ESC[201~ so we can capture a paste as one unit instead of letting
+// its newlines fire as Enter keypresses (the #60 infinite-loop on multi-line
+// paste). Node's readline surfaces the markers as `paste-start`/`paste-end`.
+const ENABLE_BRACKETED_PASTE = `${ESC}?2004h`;
+const DISABLE_BRACKETED_PASTE = `${ESC}?2004l`;
+// How long after a first Ctrl+C a second press still means "exit" (#71).
+const CTRL_C_EXIT_WINDOW_MS = 2000;
 
 export interface CompletionItem {
   text: string;
@@ -150,6 +160,20 @@ export function createTextarea(options: TextareaOptions): Textarea {
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw ?? false;
   const hasTTY = !!stdin.isTTY;
+
+  // Large/multi-line pastes are kept here and represented in the buffer by a
+  // compact placeholder token, expanded back to raw text at submit (#53).
+  const pasteStore = createPasteStore();
+  // Bracketed-paste capture state: between paste-start and paste-end we collect
+  // the literal characters here instead of handling them as keystrokes (#60).
+  let pasteCapturing = false;
+  let pasteCapture = '';
+
+  // Ctrl+C is two-stage (#71): the first press interrupts (and arms this flag
+  // for a short window); a second press inside the window exits. The timer
+  // disarms it so an old single press never combines with a much later one.
+  let ctrlCArmed = false;
+  let ctrlCTimer: ReturnType<typeof setTimeout> | undefined;
 
   let buffer = '';
   // Caret index into `buffer` (0..buffer.length). Insertion and deletion
@@ -571,14 +595,93 @@ export function createTextarea(options: TextareaOptions): Textarea {
     return true;
   }
 
+  // Insert pasted text at the caret. A large / multi-line paste is stored
+  // behind a compact placeholder token so the single-line buffer (and its
+  // wrapped-caret math) stays intact; it's expanded back to the raw text at
+  // submit. Small single-line pastes inline as before (newlines flattened).
+  // Shared by the Ctrl+V handler and bracketed-paste capture.
+  function insertPaste(text: string): void {
+    if (!text) {
+      redraw();
+      return;
+    }
+    if (!textareaDrawn) drawTextarea();
+    const insert = shouldStorePaste(text)
+      ? pasteStore.register(text)
+      : text.replace(/\r?\n/g, ' ');
+    buffer = buffer.slice(0, cursorPos) + insert + buffer.slice(cursorPos);
+    cursorPos += insert.length;
+    selectedCompletionIdx = 0;
+    resetHistoryBrowse();
+    redraw();
+  }
+
   const onKeypress = (
     str: string | undefined,
     key: { name?: string; ctrl?: boolean; meta?: boolean; shift?: boolean },
   ) => {
     if (!active || !key) return;
 
-    if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
+    // Ctrl+D: EOF — exit immediately (unchanged).
+    if (key.ctrl && key.name === 'd') {
       emitter.emit('exit');
+      return;
+    }
+
+    // Bracketed paste: capture everything between paste-start and paste-end as
+    // a single paste. Crucially, pasted newlines arrive as `enter` keypresses
+    // here but must NOT submit — collecting them prevents the multi-line-paste
+    // infinite loop (#60). The captured text is then inserted exactly like a
+    // Ctrl+V paste (placeholder for large/multi-line, inline for small).
+    if (key.name === 'paste-start') {
+      pasteCapturing = true;
+      pasteCapture = '';
+      return;
+    }
+    if (pasteCapturing) {
+      if (key.name === 'paste-end') {
+        pasteCapturing = false;
+        const text = pasteCapture;
+        pasteCapture = '';
+        insertPaste(text);
+        return;
+      }
+      // `str` carries the literal character (including '\n' for a newline).
+      if (typeof str === 'string') pasteCapture += str;
+      return;
+    }
+
+    // Ctrl+C: interrupt first, exit on a second press within the window (#71).
+    // The first press fires `interrupt` (interactive mode aborts an in-flight
+    // run; a no-op when idle) so the run stops without leaving the
+    // conversation, and arms a short window; a second Ctrl+C inside it exits.
+    // This also avoids quitting on a single accidental press.
+    //
+    // Exception: while a modal key-capture is pending (e.g. the y/a/n
+    // permission prompt, which owns the keyboard and manages its own
+    // lifecycle), keep the original immediate exit.
+    if (key.ctrl && key.name === 'c' && keyCapture) {
+      emitter.emit('exit');
+      return;
+    }
+    if (key.ctrl && key.name === 'c') {
+      if (ctrlCArmed) {
+        if (ctrlCTimer) clearTimeout(ctrlCTimer);
+        ctrlCArmed = false;
+        emitter.emit('exit');
+        return;
+      }
+      ctrlCArmed = true;
+      emitter.emit('interrupt');
+      const DIM = `${ESC}38;5;245m`;
+      const RESET = `${ESC}39m`;
+      writeAbove(`\n  ${DIM}(press Ctrl+C again to exit)${RESET}\n`);
+      if (ctrlCTimer) clearTimeout(ctrlCTimer);
+      ctrlCTimer = setTimeout(() => {
+        ctrlCArmed = false;
+      }, CTRL_C_EXIT_WINDOW_MS);
+      // Don't let the disarm timer keep the process alive on its own.
+      if (typeof ctrlCTimer.unref === 'function') ctrlCTimer.unref();
       return;
     }
 
@@ -649,15 +752,8 @@ export function createTextarea(options: TextareaOptions): Textarea {
       void options
         .onPaste()
         .then((text) => {
-          if (text) {
-            // The buffer is a single logical line; flatten newlines so the
-            // wrapped-caret math stays correct.
-            const clean = text.replace(/\r?\n/g, ' ');
-            buffer = buffer.slice(0, cursorPos) + clean + buffer.slice(cursorPos);
-            cursorPos += clean.length;
-            selectedCompletionIdx = 0;
-          }
-          redraw();
+          if (text) insertPaste(text);
+          else redraw();
         })
         .catch(() => {});
       return;
@@ -680,7 +776,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
       // A slash panel: submit the selected command verbatim (so partial input
       // like "/co" submits as "/compact"). Otherwise submit the buffer as-is.
       const chosen = active ? active.matches[selectedCompletionIdx] : undefined;
-      const value = chosen ? chosen.text : buffer.trim();
+      // Expand any paste placeholders back to their original raw text (#53)
+      // before recording history / emitting. Completion text never contains a
+      // placeholder, so only the buffer path needs expansion.
+      const value = chosen ? chosen.text : pasteStore.expand(buffer.trim());
       // Full erase/redraw: a single-row clear would leave stale wrapped
       // input rows and any open completions panel on screen.
       if (textareaDrawn) eraseTextarea();
@@ -688,6 +787,7 @@ export function createTextarea(options: TextareaOptions): Textarea {
       cursorPos = 0;
       selectedCompletionIdx = 0;
       panelDismissed = false;
+      pasteStore.clear();
       recordHistory(value);
       drawTextarea();
       emitter.emit('submit', value);
@@ -758,6 +858,17 @@ export function createTextarea(options: TextareaOptions): Textarea {
     }
 
     if (key.name === 'backspace') {
+      // A paste placeholder is an atomic token: backspacing at its right edge
+      // removes the whole token (and frees its stored text), not one char (#53).
+      const token = pasteStore.tokenEndingAt(buffer, cursorPos);
+      if (token) {
+        buffer = buffer.slice(0, token.start) + buffer.slice(token.end);
+        cursorPos = token.start;
+        selectedCompletionIdx = 0;
+        resetHistoryBrowse();
+        redraw();
+        return;
+      }
       if (cursorPos > 0) {
         const hadSlash = buffer.includes('/');
         // An '@' anywhere means the path panel may need to open/close/refresh.
@@ -813,7 +924,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
   function pause() {
     if (!active) return;
     active = false;
+    // Leaving paste-capture half-done would strand the flag; reset it.
+    pasteCapturing = false;
+    pasteCapture = '';
     if (textareaDrawn) eraseTextarea();
+    if (hasTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
     process.stdout.write(SHOW_CURSOR);
     stdin.removeListener('keypress', onKeypress);
     if (hasTTY) stdin.setRawMode(wasRaw);
@@ -822,7 +937,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   function resume() {
     if (active || closed) return;
     emitKeypressEvents(stdin);
-    if (hasTTY) stdin.setRawMode(true);
+    if (hasTTY) {
+      stdin.setRawMode(true);
+      process.stdout.write(ENABLE_BRACKETED_PASTE);
+    }
     stdin.resume();
     stdin.on('keypress', onKeypress);
     active = true;
@@ -832,9 +950,11 @@ export function createTextarea(options: TextareaOptions): Textarea {
   function close() {
     if (closed) return;
     closed = true;
+    if (ctrlCTimer) clearTimeout(ctrlCTimer);
     if (active) {
       active = false;
       if (textareaDrawn) eraseTextarea();
+      if (hasTTY) process.stdout.write(DISABLE_BRACKETED_PASTE);
       process.stdout.write(SHOW_CURSOR);
       stdin.removeListener('keypress', onKeypress);
       if (hasTTY) stdin.setRawMode(wasRaw);
@@ -842,7 +962,10 @@ export function createTextarea(options: TextareaOptions): Textarea {
   }
 
   emitKeypressEvents(stdin);
-  if (hasTTY) stdin.setRawMode(true);
+  if (hasTTY) {
+    stdin.setRawMode(true);
+    process.stdout.write(ENABLE_BRACKETED_PASTE);
+  }
   stdin.resume();
   stdin.on('keypress', onKeypress);
   active = true;

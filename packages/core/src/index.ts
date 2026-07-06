@@ -317,9 +317,19 @@ export type { AgentMessage } from '@earendil-works/pi-agent-core';
 
 export {
   createAgentSession,
+  resolveModel,
   type CreateAgentSessionOptions,
   type CreateAgentSessionResult,
 } from './sdk.js';
+
+export { sumSessionUsage, type SessionUsageTotals } from './usage.js';
+
+export {
+  isRetryableStreamError,
+  streamWithFallback,
+  type FallbackAttempt,
+  type SimpleStreamFn,
+} from './model-fallback.js';
 
 export {
   SESSION_FILE_VERSION,
@@ -343,6 +353,8 @@ export {
   saveCloudTokens,
   clearCloudTokens,
   discoverClientId,
+  discoverEngine,
+  DEFAULT_ENDPOINT,
   requestDeviceCode,
   pollForToken,
   refreshTokens,
@@ -352,6 +364,7 @@ export {
   type DeviceCodeResponse,
   type TokenResponse,
   type PollOptions,
+  type EngineInfo,
   type AgentSessionMeta,
   type AgentEventInput,
   type OpenSessionResult,
@@ -492,6 +505,8 @@ export {
   setDefaultModel,
   getDefaultModel,
   setDefault,
+  setDefaultMode,
+  getDefaultMode,
   type Preferences,
 } from './preferences.js';
 
@@ -610,6 +625,11 @@ export {
   createMemoryTool,
   type MemoryToolDetails,
   type MemoryToolInput,
+  heartbeatTool,
+  createHeartbeatTool,
+  type HeartbeatToolDetails,
+  type HeartbeatToolInput,
+  type CreateHeartbeatToolOptions,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,

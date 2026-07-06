@@ -8,7 +8,8 @@
 import { createInterface } from 'node:readline';
 
 import {
-  discoverClientId,
+  discoverEngine,
+  DEFAULT_ENDPOINT,
   loadSettings,
   pollForToken,
   requestDeviceCode,
@@ -28,7 +29,12 @@ async function readLine(prompt: string): Promise<string> {
   });
 }
 
-function normalizeEndpoint(raw: string): string {
+/**
+ * Tidy whatever the user typed into a usable origin: default the scheme to https
+ * and drop any trailing slash. The actual API base (root vs. a `/api` prefix) is
+ * resolved later by probing the engine, so this stays minimal and predictable.
+ */
+export function normalizeEndpoint(raw: string): string {
   let url = raw.trim().replace(/\/+$/, '');
   if (url && !/^https?:\/\//i.test(url)) url = `https://${url}`;
   return url;
@@ -42,23 +48,25 @@ export interface ConnectOptions {
 
 export async function runConnectCommand(opts: ConnectOptions): Promise<number> {
   const configured = loadSettings(opts.cwd).cloudSync.endpoint;
-  let endpoint = normalizeEndpoint(opts.endpoint ?? configured ?? '');
-  if (!endpoint) {
-    endpoint = normalizeEndpoint(
-      await readLine(chalk.cyan('  Context engine URL (e.g. https://engine.example.com): ')),
-    );
+  let origin = normalizeEndpoint(opts.endpoint ?? configured ?? '');
+  if (!origin) {
+    const entered = await readLine(chalk.cyan(`  Context engine URL [${DEFAULT_ENDPOINT}]: `));
+    origin = normalizeEndpoint(entered || DEFAULT_ENDPOINT);
   }
-  if (!endpoint) {
+  if (!origin) {
     console.error(chalk.red('  A context engine URL is required.'));
     return 1;
   }
 
   console.log();
-  console.log(chalk.dim(`  Connecting to ${endpoint} …`));
+  console.log(chalk.dim(`  Connecting to ${origin} …`));
 
   try {
-    const clientId = await discoverClientId(endpoint);
-    const device = await requestDeviceCode(endpoint, clientId);
+    // Probe to find where the ingest API lives (root for local `make ingest`,
+    // `/api` for the path-routed hosted engine). All token storage + later pushes
+    // use this resolved base, not the bare origin the user typed.
+    const { apiBase, clientId } = await discoverEngine(origin);
+    const device = await requestDeviceCode(apiBase, clientId);
 
     console.log();
     console.log('  Open this URL and approve the request:');
@@ -67,19 +75,19 @@ export async function runConnectCommand(opts: ConnectOptions): Promise<number> {
     console.log();
     console.log(chalk.dim('  Waiting for approval…'));
 
-    const token = await pollForToken(endpoint, clientId, device.device_code, {
+    const token = await pollForToken(apiBase, clientId, device.device_code, {
       intervalSeconds: device.interval,
       expiresInSeconds: device.expires_in,
     });
 
     saveCloudTokens({
-      endpoint,
+      endpoint: apiBase,
       clientId,
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       accessExpiresAt: Date.now() + token.expires_in * 1000,
     });
-    setCloudSyncSettings({ enabled: true, endpoint });
+    setCloudSyncSettings({ enabled: true, endpoint: apiBase });
 
     console.log();
     console.log(chalk.green('  ✓ Connected.') + ' Conversations will now be pushed to the context engine.');

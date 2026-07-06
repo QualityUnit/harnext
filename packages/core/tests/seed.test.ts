@@ -118,7 +118,7 @@ describe('ensureBundledSkills', () => {
     const r = ensureBundledSkills();
 
     expect(r.target).toBe(userDir);
-    expect(r.added.sort()).toEqual(['browser-verify', 'init', 'review']);
+    expect(r.added.sort()).toEqual(['browser-verify', 'init', 'report-harnext-issue', 'review']);
     expect(r.present).toEqual([]);
     expect(r.diagnostics).toEqual([]);
     expect(existsSync(join(userDir, 'init', 'SKILL.md'))).toBe(true);
@@ -135,7 +135,7 @@ describe('ensureBundledSkills', () => {
 
     const r = ensureBundledSkills();
 
-    expect(r.added.sort()).toEqual(['browser-verify', 'review']);
+    expect(r.added.sort()).toEqual(['browser-verify', 'report-harnext-issue', 'review']);
     expect(r.present).toEqual(['init']);
     expect(readFileSync(join(userDir, 'init', 'SKILL.md'), 'utf-8')).toBe(customContent);
     expect(existsSync(join(userDir, 'review', 'SKILL.md'))).toBe(true);
@@ -147,6 +147,6 @@ describe('ensureBundledSkills', () => {
 
     const r = ensureBundledSkills();
 
-    expect(r.added.sort()).toEqual(['browser-verify', 'init', 'review']);
+    expect(r.added.sort()).toEqual(['browser-verify', 'init', 'report-harnext-issue', 'review']);
   });
 });
