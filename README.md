@@ -2,7 +2,7 @@
 
 An AI coding agent with harness engineering. `harnext` is an interactive terminal agent that can read, write, and edit files, run shell commands, drive MCP servers, and pick up GitHub issues through generated GitHub Actions workflows (run on either GitHub-hosted runners or a self-hosted runner registered against your PC).
 
-It works with Anthropic, OpenAI, Google, Ollama, and 20+ other providers via [`pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai).
+It works with Anthropic, OpenAI, Google, Ollama, self-hosted OpenAI-compatible endpoints, and 20+ other providers via [`pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai).
 
 ## Install
 
@@ -50,6 +50,7 @@ node packages/cli/dist/index.js
 harnext                                          # interactive REPL
 harnext -p "list the files in this directory"    # one-shot prompt
 harnext --provider openai -m gpt-4o              # different provider/model
+harnext --base-url http://localhost:8000/v1 -m my-finetune  # self-hosted OpenAI-compatible endpoint
 harnext setup                                    # configure project pipeline
 harnext status                                   # show active agent runs
 harnext runner status                            # inspect the self-hosted runner daemon

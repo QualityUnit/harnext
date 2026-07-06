@@ -2,7 +2,7 @@
 
 An AI coding agent with harness engineering — interactive REPL, MCP support, and a GitHub-issue-driven workflow runner.
 
-Works with Anthropic, OpenAI, Google, Ollama, and 20+ other providers.
+Works with Anthropic, OpenAI, Google, Ollama, self-hosted OpenAI-compatible endpoints, and 20+ other providers.
 
 ## Install
 
@@ -26,6 +26,7 @@ On first run you'll be prompted to pick a provider, paste an API key (stored in 
 harnext                                          # interactive REPL
 harnext -p "list the files in this directory"    # one-shot prompt
 harnext --provider openai -m gpt-4o              # different provider/model
+harnext --base-url http://localhost:8000/v1 -m my-finetune  # self-hosted OpenAI-compatible endpoint
 harnext setup                                    # configure project pipeline
 harnext status                                   # show active agent runs
 harnext runner status                            # inspect the self-hosted runner daemon

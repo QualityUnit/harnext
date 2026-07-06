@@ -22,6 +22,10 @@ export interface Args {
   provider?: string;
   /** Undefined if not passed on the command line — resolved later from saved preferences. */
   model?: string;
+  /** OpenAI-compatible endpoint URL (--base-url). Implies provider "custom" when --provider is absent. */
+  baseUrl?: string;
+  /** API key for this run only (--api-key); never persisted. */
+  apiKey?: string;
   thinkingLevel: string;
   systemPrompt?: string;
   /** Text appended to the system prompt (Claude SDK `append_system_prompt`). */
@@ -164,6 +168,12 @@ export function parseArgs(argv: string[]): Args {
       case '-m':
       case '--model':
         args.model = argv[++i] ?? args.model;
+        break;
+      case '--base-url':
+        args.baseUrl = argv[++i];
+        break;
+      case '--api-key':
+        args.apiKey = argv[++i];
         break;
       case '--thinking':
         args.thinkingLevel = argv[++i] ?? args.thinkingLevel;
@@ -563,6 +573,8 @@ Options:
   --heartbeat <name>           Run the named heartbeat prompt once (for cron)
   --provider <provider>        LLM provider (anthropic, openai, google) [default: anthropic]
   -m, --model <model>          Model ID [default: claude-sonnet-4-6]
+  --base-url <url>             OpenAI-compatible endpoint (implies --provider custom)
+  --api-key <key>              API key for this run only (not stored)
   --fallback-model <model>     Model to retry the turn against on a 429/5xx/network error
   --fallback-provider <name>   Provider for --fallback-model (default: --provider)
   --thinking <level>           Thinking level (off, low, medium, high) [default: off]

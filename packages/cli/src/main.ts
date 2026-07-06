@@ -20,6 +20,7 @@ import {
   createAgentSession,
   getDefaultMode,
   getProviderById,
+  getProviderConfig,
   loadHeartbeatConfig,
   loadPreferences,
   type PermissionMode,
@@ -142,11 +143,14 @@ export async function main(argv: string[]): Promise<void> {
 
   // Resolve provider/model: CLI flags > resumed session > saved preferences >
   // provider's built-in default > fallback. The resumed session's provider/model
-  // are only preferred when the user gave neither --provider nor --model.
+  // are only preferred when the user gave neither --provider nor --model nor
+  // --base-url (resuming with a new endpoint must not reuse the old session's
+  // model id against it). --base-url implies the `custom` provider.
   const prefs = loadPreferences();
-  const preferStored = !!resumeTarget && !args.provider && !args.model;
+  const preferStored = !!resumeTarget && !args.provider && !args.model && !args.baseUrl;
   const resolvedProvider =
     args.provider ??
+    (args.baseUrl ? 'custom' : undefined) ??
     (preferStored ? resumeTarget!.provider : undefined) ??
     prefs.defaultProvider ??
     FALLBACK_PROVIDER;
@@ -157,8 +161,34 @@ export async function main(argv: string[]): Promise<void> {
     getProviderById(resolvedProvider)?.defaultModel ??
     FALLBACK_MODEL;
 
+  if (args.baseUrl) {
+    if (resolvedProvider !== 'custom' && resolvedProvider !== 'ollama') {
+      console.error(chalk.red(`Error: --base-url is not supported with provider "${resolvedProvider}" — use --provider custom or --provider ollama.`));
+      process.exit(1);
+    }
+    try {
+      new URL(args.baseUrl);
+    } catch {
+      console.error(chalk.red(`Error: invalid --base-url "${args.baseUrl}".`));
+      process.exit(1);
+    }
+  }
+  if (resolvedProvider === 'custom') {
+    if (!resolvedModel) {
+      console.error(chalk.red('Error: --provider custom requires --model <id> (the endpoint\'s catalog is unknown).'));
+      process.exit(1);
+    }
+    if (!args.baseUrl && !getProviderConfig('custom')?.baseUrl) {
+      console.error(chalk.red('Error: provider "custom" needs --base-url <url>.'));
+      process.exit(1);
+    }
+  }
+
   // Resolve auth — onboards if no API key is found
-  const { provider, model } = await ensureAuth(resolvedProvider, resolvedModel);
+  const { provider, model } = await ensureAuth(resolvedProvider, resolvedModel, {
+    baseUrl: args.baseUrl,
+    apiKey: args.apiKey,
+  });
 
   // Interactive sessions own the permission mode dynamically (Shift+Tab cycles
   // plan / acceptEdits / bypassPermissions), so we don't bake a fixed
@@ -172,6 +202,8 @@ export async function main(argv: string[]): Promise<void> {
   const { session, resumed } = await createAgentSession({
     provider,
     modelId: model,
+    baseUrl: args.baseUrl,
+    apiKey: args.apiKey,
     cwd: args.cwd,
     systemPrompt: args.systemPrompt,
     appendSystemPrompt: args.appendSystemPrompt,

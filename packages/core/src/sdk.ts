@@ -31,6 +31,7 @@ import {
 import { wrapMcpToolAsAgentTool } from './mcp-direct-tool.js';
 import { createMcpProxyTool } from './mcp-proxy-tool.js';
 import { McpServerManager } from './mcp-server-manager.js';
+import { buildCustomModel } from './custom.js';
 import {
   streamWithFallback,
   type FallbackAttempt,
@@ -53,6 +54,10 @@ export interface CreateAgentSessionOptions {
   provider?: string;
   /** Model ID within the provider */
   modelId?: string;
+  /** OpenAI-compatible endpoint URL. Used by the `custom` provider; also overrides the stored Ollama base URL. */
+  baseUrl?: string;
+  /** API key for this session only — never persisted. Threaded into the stream call so it works for providers pi-ai's env registry doesn't know. */
+  apiKey?: string;
   /** Working directory for tools */
   cwd?: string;
   /** Override the system prompt */
@@ -188,19 +193,29 @@ function convertToLlm(messages: AgentMessage[]): Message[] {
 }
 
 /**
- * Resolve a `(provider, modelId)` pair to a pi-ai `Model`. ollama and NVIDIA NIM
- * use custom builders (their catalogs aren't in pi-ai's static registry);
- * openrouter prefers the registry but hand-builds ids newer than the snapshot;
- * every other provider must be in the registry. No network calls — an id is
- * enough to route the request. Shared by the primary and fallback paths.
+ * Resolve a `(provider, modelId)` pair to a pi-ai `Model`. ollama, NVIDIA NIM,
+ * and user-supplied custom OpenAI-compatible endpoints use custom builders
+ * (their catalogs aren't in pi-ai's static registry); openrouter prefers the
+ * registry but hand-builds ids newer than the snapshot; every other provider
+ * must be in the registry. No network calls — an id is enough to route the
+ * request. Shared by the primary and fallback paths.
+ *
+ * `baseUrl` (optional) overrides the endpoint for the `custom` and `ollama`
+ * providers; ignored by the rest.
  *
  * Exported so callers that swap models mid-session (e.g. the plan→execute model
  * switch) can resolve a Model without rebuilding the whole session.
  */
-export function resolveModel(provider: string, modelId: string): Model<string> {
+export function resolveModel(provider: string, modelId: string, baseUrl?: string): Model<string> {
   if (provider === 'ollama') {
-    const baseUrl = getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
-    return buildOllamaModel(modelId, baseUrl) as Model<string>;
+    const url = baseUrl ?? getProviderConfig('ollama')?.baseUrl ?? DEFAULT_OLLAMA_BASE_URL;
+    return buildOllamaModel(modelId, url) as Model<string>;
+  }
+  if (provider === 'custom') {
+    const url = baseUrl ?? getProviderConfig('custom')?.baseUrl;
+    if (!url) throw new Error('Provider "custom" requires a base URL — pass --base-url <url>.');
+    if (!modelId) throw new Error('Provider "custom" requires a model id — pass --model <id>.');
+    return buildCustomModel(modelId, url) as Model<string>;
   }
   if (provider === 'nvidia') {
     return buildNvidiaModel(modelId) as Model<string>;
@@ -243,6 +258,12 @@ function withProviderAuth(
     // Attribution headers list harnext on https://openrouter.ai/apps.
     // Caller-supplied headers win, so an embedder can re-attribute.
     next.headers = { ...openRouterAppHeaders(), ...opts.headers };
+  } else if (model.provider === 'custom') {
+    // Placeholder key is mandatory for keyless endpoints: pi-ai's client
+    // throws on an empty key and would otherwise silently fall back to
+    // $OPENAI_API_KEY — leaking the user's real OpenAI key to an
+    // arbitrary URL.
+    next.apiKey = next.apiKey || getProviderConfig('custom')?.key || 'custom';
   }
   return next;
 }
@@ -252,6 +273,7 @@ export async function createAgentSession(
 ): Promise<CreateAgentSessionResult> {
   const provider = options.provider ?? 'anthropic';
   const modelId = options.modelId ?? '';
+  const sessionApiKey = options.apiKey;
   const cwd = options.cwd ?? process.cwd();
   const thinkingLevel: ThinkingLevel = options.thinkingLevel ?? 'off';
 
@@ -269,9 +291,11 @@ export async function createAgentSession(
   // Resolve the primary model and, if configured, the availability-fallback
   // model (built once and captured in the streamFn closure below). The fallback
   // provider defaults to the primary so a bare `--fallback-model <id>` works.
-  const model: Model<string> = resolveModel(provider, modelId);
+  // `options.baseUrl` flows through to both so a custom/ollama fallback that
+  // shares the endpoint resolves correctly (harmless for registry providers).
+  const model: Model<string> = resolveModel(provider, modelId, options.baseUrl);
   const fallbackModel: Model<string> | undefined = options.fallback
-    ? resolveModel(options.fallback.provider ?? provider, options.fallback.modelId)
+    ? resolveModel(options.fallback.provider ?? provider, options.fallback.modelId, options.baseUrl)
     : undefined;
 
   // Background-shell manager: one per session, shared by the bash / bash_output
@@ -469,15 +493,21 @@ export async function createAgentSession(
     convertToLlm,
     streamFn: async (m, ctx, opts) => {
       const baseOpts = (opts ?? {}) as SimpleStreamOptions;
+      // --api-key / options.apiKey seeds the primary provider's key; a
+      // cross-provider fallback resolves its own env key in withProviderAuth.
+      const seededOpts =
+        sessionApiKey !== undefined
+          ? { ...baseOpts, apiKey: baseOpts.apiKey ?? sessionApiKey }
+          : baseOpts;
       // Primary first, then the fallback model (if any). Each attempt gets its
       // own provider auth/headers. With no fallback this is a thin pass-through.
       const attempts: FallbackAttempt[] = [
-        { model: m, opts: withProviderAuth(m, baseOpts, provider) },
+        { model: m, opts: withProviderAuth(m, seededOpts, provider) },
       ];
       if (fallbackModel) {
         attempts.push({
           model: fallbackModel,
-          opts: withProviderAuth(fallbackModel, baseOpts, provider),
+          opts: withProviderAuth(fallbackModel, seededOpts, provider),
         });
       }
       return streamWithFallback(ctx as Context, attempts, streamSimple);

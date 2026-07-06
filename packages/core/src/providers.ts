@@ -22,6 +22,11 @@ export interface ProviderInfo {
    * providers (with API keys + fixed remote URLs) opt in too.
    */
   customResolution?: boolean;
+  /**
+   * Excluded from the interactive provider menus (onboarding + /model);
+   * reachable via CLI flags or stored config.
+   */
+  hidden?: boolean;
 }
 
 /**
@@ -62,6 +67,15 @@ export const PROVIDERS: ProviderInfo[] = [
     local: true,
     customResolution: true,
     defaultBaseUrl: 'http://localhost:11434',
+  },
+  {
+    id: 'custom',
+    name: 'Custom (OpenAI-compatible)',
+    envVar: '',
+    defaultModel: '',
+    local: true,
+    customResolution: true,
+    hidden: true,
   },
 ];
 

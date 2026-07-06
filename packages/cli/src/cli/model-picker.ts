@@ -218,7 +218,7 @@ async function promptBaseUrlUpdate(provider: ProviderInfo): Promise<boolean> {
 // ── Provider selection ───────────────────────────────────────────────
 
 async function selectProvider(): Promise<ProviderInfo | undefined> {
-  const items: SelectItem<ProviderInfo>[] = PROVIDERS.map((p) => {
+  const items: SelectItem<ProviderInfo>[] = PROVIDERS.filter((p) => !p.hidden).map((p) => {
     const tag = isProviderConfigured(p) ? chalk.green(' ✓') : '';
     return {
       label: p.name + tag,
