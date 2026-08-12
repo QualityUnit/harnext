@@ -26,7 +26,7 @@
     "@earendil-works/pi-agent-core": "^0.74.2",
     "@earendil-works/pi-ai": "^0.74.2",
     "@huggingface/transformers": "^4.2.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@sinclair/typebox": "^0.34.41",
     "yaml": "^2.5.0"
   },
